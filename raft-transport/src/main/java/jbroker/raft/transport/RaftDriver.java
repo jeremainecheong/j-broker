@@ -259,6 +259,19 @@ public final class RaftDriver implements AutoCloseable {
                 case RaftEffect.RejectConfigChange ignored -> {
                     /* Admin tool surfaces this reason via RPC in a later phase */
                 }
+                case RaftEffect.SendInstallSnapshot ignored -> {
+                    /* Phase F wire-up: streaming gRPC call pending */
+                }
+                case RaftEffect.SendInstallSnapshotResp ignored -> {
+                    /* Phase F wire-up */
+                }
+                case RaftEffect.ApplySnapshot a -> {
+                    try {
+                        stateMachine.restore(new java.io.ByteArrayInputStream(a.snapshot()));
+                    } catch (java.io.IOException e) {
+                        LOG.warn("state-machine restore failed", e);
+                    }
+                }
             }
         }
     }

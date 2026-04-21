@@ -92,4 +92,20 @@ public sealed interface RaftEffect {
      * config change is still in flight, or this node is not the leader.
      */
     record RejectConfigChange(String reason) implements RaftEffect {}
+
+    /** Leader → follower: install full state-machine snapshot. */
+    record SendInstallSnapshot(
+            NodeId to, Term term, NodeId leaderId, long lastIncludedIndex, Term lastIncludedTerm, byte[] snapshot)
+            implements RaftEffect {}
+
+    /** Follower → leader: snapshot install completed (or term bumped). */
+    record SendInstallSnapshotResp(NodeId to, Term term) implements RaftEffect {}
+
+    /**
+     * Driver should replace the state machine's contents with {@code snapshot}
+     * (via {@link StateMachine#restore}). The raft layer has already updated
+     * {@code commitIndex} / {@code lastApplied} and truncated the log prefix;
+     * the driver only needs to restore the state machine.
+     */
+    record ApplySnapshot(long lastIncludedIndex, Term lastIncludedTerm, byte[] snapshot) implements RaftEffect {}
 }

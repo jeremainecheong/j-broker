@@ -116,4 +116,23 @@ public sealed interface RaftEvent {
             }
         }
     }
+
+    /** Leader → lagging follower: install a full state-machine snapshot. */
+    record InstallSnapshotReq(
+            Term term, NodeId leaderId, long lastIncludedIndex, Term lastIncludedTerm, byte[] snapshot, long nowNanos)
+            implements RaftEvent {
+        public InstallSnapshotReq {
+            Objects.requireNonNull(term, "term");
+            Objects.requireNonNull(leaderId, "leaderId");
+            Objects.requireNonNull(lastIncludedTerm, "lastIncludedTerm");
+            Objects.requireNonNull(snapshot, "snapshot");
+        }
+    }
+
+    record InstallSnapshotResp(NodeId from, Term term) implements RaftEvent {
+        public InstallSnapshotResp {
+            Objects.requireNonNull(from, "from");
+            Objects.requireNonNull(term, "term");
+        }
+    }
 }

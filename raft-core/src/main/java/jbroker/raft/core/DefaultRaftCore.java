@@ -72,6 +72,14 @@ public final class DefaultRaftCore implements RaftCore {
     private long inflightConfigChangeIndex;
 
     /**
+     * Bytes of the most recent state-machine snapshot the driver has handed to
+     * us. Used when a peer lags past the compaction point and must be caught
+     * up via {@link RaftEffect.SendInstallSnapshot}. {@code null} until the
+     * driver (or a test) calls {@link #installSnapshotBytesForTesting}.
+     */
+    private byte[] currentSnapshotBytes;
+
+    /**
      * Constructs a new {@code DefaultRaftCore}.
      *
      * @param nowNanos the current monotonic timestamp in nanoseconds, used to
@@ -141,6 +149,8 @@ public final class DefaultRaftCore implements RaftCore {
             case RaftEvent.TimeoutNow t -> onTimeoutNow(t, effects);
             case RaftEvent.ClientRead r -> onClientRead(r, effects);
             case RaftEvent.ProposeConfigChange c -> onProposeConfigChange(c, effects);
+            case RaftEvent.InstallSnapshotReq r -> onInstallSnapshotReq(r, effects);
+            case RaftEvent.InstallSnapshotResp r -> onInstallSnapshotResp(r, effects);
         }
         return effects;
     }
@@ -545,11 +555,106 @@ public final class DefaultRaftCore implements RaftCore {
 
     private void sendAppendEntriesTo(NodeId peer, List<RaftEffect> effects) {
         long next = nextIndex.getOrDefault(peer, log.lastIndex() + 1);
+        // If the peer has fallen behind past our compaction point, AE can't
+        // catch it up — the entries it needs no longer exist. Fall back to
+        // InstallSnapshot (Raft §7).
+        if (next <= log.lastIncludedIndex() && log.lastIncludedIndex() > 0) {
+            if (currentSnapshotBytes != null) {
+                effects.add(new RaftEffect.SendInstallSnapshot(
+                        peer,
+                        persistentState.currentTerm(),
+                        config.selfId(),
+                        log.lastIncludedIndex(),
+                        log.lastIncludedTerm(),
+                        currentSnapshotBytes));
+            }
+            // If no snapshot bytes are cached yet, the driver should call
+            // installSnapshotBytesForTesting / the production equivalent
+            // before the next tick. Dropping this heartbeat is acceptable;
+            // the peer will retry.
+            return;
+        }
         long prevIndex = next - 1;
         Term prevTerm = prevIndex == 0 ? Term.ZERO : log.termAt(prevIndex).orElse(Term.ZERO);
         var batch = log.read(next, config.maxEntriesPerAppend());
         effects.add(new RaftEffect.SendAppendEntries(
                 peer, persistentState.currentTerm(), config.selfId(), prevIndex, prevTerm, batch, commitIndex));
+    }
+
+    /**
+     * Hook for tests / drivers to seed the snapshot bytes used by the leader
+     * when a peer falls behind the log-compaction point. In production, the
+     * driver calls this after taking a state-machine snapshot.
+     */
+    public void installSnapshotBytesForTesting(byte[] bytes) {
+        this.currentSnapshotBytes = bytes;
+    }
+
+    private void onInstallSnapshotReq(RaftEvent.InstallSnapshotReq req, List<RaftEffect> effects) {
+        lastKnownNowNanos = req.nowNanos();
+        var currentTerm = persistentState.currentTerm();
+        if (req.term().compareTo(currentTerm) < 0) {
+            effects.add(new RaftEffect.SendInstallSnapshotResp(req.leaderId(), currentTerm));
+            return;
+        }
+        if (req.term().compareTo(currentTerm) > 0) {
+            becomeFollower(req.term(), Optional.empty(), effects);
+            currentTerm = req.term();
+        } else if (role != Role.FOLLOWER) {
+            role = Role.FOLLOWER;
+            votesReceived.clear();
+            preVotesReceived.clear();
+            nextIndex.clear();
+            matchIndex.clear();
+        }
+        leaderId = Optional.of(req.leaderId());
+        electionDeadlineNanos = req.nowNanos() + randomisedElectionTimeout();
+
+        long snapIdx = req.lastIncludedIndex();
+        Term snapTerm = req.lastIncludedTerm();
+        // If we already have this entry committed and applied, the snapshot is
+        // stale relative to our own progress — just ack.
+        if (snapIdx <= lastApplied) {
+            effects.add(new RaftEffect.SendInstallSnapshotResp(req.leaderId(), currentTerm));
+            return;
+        }
+        // Truncate log prefix up to the snapshot point; if our log has an
+        // entry at snapIdx with matching term, we keep the suffix. Otherwise
+        // drop everything (the snapshot supersedes our divergent log).
+        var ourTermAtSnap = log.termAt(snapIdx);
+        if (ourTermAtSnap.isPresent() && ourTermAtSnap.get().equals(snapTerm)) {
+            log.truncatePrefix(snapIdx + 1, snapTerm);
+        } else {
+            if (log.lastIndex() >= log.firstIndex()) {
+                log.truncateFrom(log.firstIndex());
+            }
+            log.truncatePrefix(snapIdx + 1, snapTerm);
+        }
+        commitIndex = Math.max(commitIndex, snapIdx);
+        lastApplied = Math.max(lastApplied, snapIdx);
+
+        effects.add(new RaftEffect.ApplySnapshot(snapIdx, snapTerm, req.snapshot()));
+        effects.add(new RaftEffect.SendInstallSnapshotResp(req.leaderId(), currentTerm));
+    }
+
+    private void onInstallSnapshotResp(RaftEvent.InstallSnapshotResp resp, List<RaftEffect> effects) {
+        if (role != Role.LEADER) {
+            return;
+        }
+        var currentTerm = persistentState.currentTerm();
+        if (resp.term().compareTo(currentTerm) > 0) {
+            becomeFollower(resp.term(), Optional.empty(), effects);
+            return;
+        }
+        if (!resp.term().equals(currentTerm)) {
+            return;
+        }
+        // Peer now has everything up through our lastIncludedIndex; advance
+        // nextIndex and keep going with normal AE.
+        long lastIncluded = log.lastIncludedIndex();
+        nextIndex.put(resp.from(), lastIncluded + 1);
+        matchIndex.put(resp.from(), lastIncluded);
+        sendAppendEntriesTo(resp.from(), effects);
     }
 
     private void onVoteReq(RaftEvent.VoteReq req, List<RaftEffect> effects) {

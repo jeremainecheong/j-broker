@@ -7,6 +7,9 @@
 build/
 !**/src/**/build/
 
+# jqwik property-test failure-replay cache
+.jqwik-database
+
 # Java
 *.class
 *.jar

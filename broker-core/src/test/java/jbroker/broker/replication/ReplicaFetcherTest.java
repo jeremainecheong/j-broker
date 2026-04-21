@@ -26,7 +26,7 @@ class ReplicaFetcherTest {
                     encodedBatch(0L, List.of(valueOf("a"), valueOf("b"), valueOf("c"))), /* hwm */ 3L, /* epoch */ 0);
 
             var fetcher = new ReplicaFetcher(lm, "orders", 0, /* selfBrokerId */ 2, peer);
-            fetcher.pollOnce(0);
+            assertThat(fetcher.pollOnce(0)).isEqualTo(ReplicaFetcher.PollResult.ADVANCED);
 
             var log = lm.logFor("orders", 0);
             assertThat(log.nextOffset()).isEqualTo(3L);
@@ -41,7 +41,7 @@ class ReplicaFetcherTest {
             peer.enqueue(ByteString.EMPTY, 0L, 0);
 
             var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
-            fetcher.pollOnce(0);
+            assertThat(fetcher.pollOnce(0)).isEqualTo(ReplicaFetcher.PollResult.EMPTY);
 
             assertThat(lm.logFor("orders", 0).nextOffset()).isZero();
         }
@@ -81,9 +81,20 @@ class ReplicaFetcherTest {
             peer.enqueueError(jbroker.broker.ErrorCodes.FENCED_EPOCH, /* current epoch */ 5);
 
             var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
-            fetcher.pollOnce(/* my epoch */ 3);
+            assertThat(fetcher.pollOnce(/* my epoch */ 3)).isEqualTo(ReplicaFetcher.PollResult.FENCED);
 
             assertThat(lm.logFor("orders", 0).nextOffset()).isZero();
+        }
+    }
+
+    @Test
+    void pollOnArbitraryErrorReturnsErrorResult(@TempDir Path dir) throws Exception {
+        try (var lm = lm(dir)) {
+            var peer = new StubPeer();
+            peer.enqueueError(jbroker.broker.ErrorCodes.IO_ERROR, 0);
+
+            var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
+            assertThat(fetcher.pollOnce(0)).isEqualTo(ReplicaFetcher.PollResult.ERROR);
         }
     }
 

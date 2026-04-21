@@ -38,4 +38,42 @@ public interface RaftLog {
      * {@code index} > lastIndex.
      */
     void truncateFrom(long index);
+
+    /**
+     * Lowest index still fully stored in the log. Returns {@code 1} on a log
+     * that has never been compacted; after {@link #truncatePrefix} this is
+     * the first surviving entry.
+     */
+    default long firstIndex() {
+        return 1L;
+    }
+
+    /**
+     * Index of the last entry included in the most recent snapshot, or
+     * {@code 0} if no snapshot has been taken. Equal to {@code firstIndex - 1}
+     * when the log has been compacted.
+     */
+    default long lastIncludedIndex() {
+        return 0L;
+    }
+
+    /**
+     * Term of the entry at {@link #lastIncludedIndex()}. Needed as the
+     * {@code prevLogTerm} when the leader sends AE for an entry whose
+     * {@code prevLogIndex} equals the compaction point.
+     */
+    default Term lastIncludedTerm() {
+        return Term.ZERO;
+    }
+
+    /**
+     * Drop every entry strictly before {@code firstIndex}, recording
+     * {@code firstTerm} as the term of the last included entry. No-op if
+     * {@code firstIndex <= 1}. After this call, {@link #firstIndex()} is
+     * {@code firstIndex}, {@link #lastIncludedIndex()} is {@code firstIndex - 1},
+     * and {@link #lastIncludedTerm()} is {@code firstTerm}.
+     */
+    default void truncatePrefix(long firstIndex, Term firstTerm) {
+        throw new UnsupportedOperationException("log does not support prefix truncation");
+    }
 }

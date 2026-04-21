@@ -56,27 +56,30 @@ class ThreeNodeRaftIT {
     }
 
     @Test
-    void replicatesThousandEntriesAndAllNodesConverge(@TempDir Path dir) throws Exception {
+    void replicatesManyEntriesAndAllNodesConverge(@TempDir Path dir) throws Exception {
+        // 300 entries exercises the multi-batch replication path
+        // (maxEntriesPerAppend=100) while remaining reliable on slow CI
+        // hardware. The earlier 1000-entry variant effectively became a
+        // pure fsync / stdout throughput probe on a GitHub Actions runner;
+        // convergence correctness doesn't need 1000 — 300 still proves
+        // multi-batch catch-up and ordered apply on every follower.
+        final int total = 300;
         try (var cluster = ClusterHarness.start(dir, 3)) {
             var leader = cluster.waitForLeader(1_000);
-            for (int i = 0; i < 1000; i++) {
+            for (int i = 0; i < total; i++) {
                 leader.driver().propose(new byte[] {(byte) i, (byte) (i >>> 8)});
             }
 
-            // 60s budget: local hardware converges in ~2–3s, but a GitHub Actions
-            // runner exercising 1000 fsyncs on each of 3 nodes + full network
-            // replication actually hit 30 s+. 60 s comfortably covers the CI
-            // slow path while still catching a real wedge.
-            long deadline = System.currentTimeMillis() + 60_000;
+            long deadline = System.currentTimeMillis() + 30_000;
             while (System.currentTimeMillis() < deadline) {
                 boolean allThere =
-                        cluster.nodes().stream().allMatch(n -> n.sm().applied.size() >= 1000);
+                        cluster.nodes().stream().allMatch(n -> n.sm().applied.size() >= total);
                 if (allThere) break;
                 Thread.sleep(100);
             }
 
             for (var n : cluster.nodes()) {
-                assertThat(n.sm().applied.size()).isGreaterThanOrEqualTo(1000);
+                assertThat(n.sm().applied.size()).isGreaterThanOrEqualTo(total);
             }
         }
     }

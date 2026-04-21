@@ -150,6 +150,10 @@ public final class RaftDriver implements AutoCloseable {
         return core.role();
     }
 
+    public java.util.Collection<RaftPeerClient> peers() {
+        return peers.values();
+    }
+
     private void pumpLoop() {
         while (running.get()) {
             try {

@@ -13,18 +13,27 @@ import jbroker.storage.RecordBatch;
  * re-encodes them with the assigned {@code baseOffset} from the target
  * partition's {@link jbroker.storage.Log}, and appends.
  *
- * <p>Phase 6.7 adds idempotent-producer dedup: when a request carries a
- * real {@code producer_id} ({@code >= 0}), the handler tracks the
- * highest-seen base sequence per {@code (topic, partition, producer_id,
- * producer_epoch)} and no-ops duplicates, returning the cached offsets.
- * Out-of-order sequences are rejected with {@link ErrorCodes#OUT_OF_ORDER_SEQUENCE}.
- * Legacy requests ({@code producer_id == -1}) skip dedup entirely.
+ * <p>Phase 6.7 adds idempotent-producer dedup. A request is considered
+ * idempotent iff {@code producer_id > 0} (proto3 default {@code 0} and the
+ * explicit legacy sentinel {@code -1} both bypass dedup — see
+ * {@link ProducerIdRegistry}, whose first allocation is {@code 1}).
+ *
+ * <p>The handler tracks the highest-seen base sequence per
+ * {@code (topic, partition, producer_id, producer_epoch)} and no-ops
+ * duplicates, returning the cached offsets. Out-of-order sequences,
+ * including a retry with a different record count, are rejected with
+ * {@link ErrorCodes#OUT_OF_ORDER_SEQUENCE}.
  */
 public final class ProduceHandler {
 
     private final LogManager logManager;
     private final TopicManager topicManager;
     private final int selfBrokerId;
+
+    // TODO(P6.8): idle-producer-state expiration. This map grows unbounded
+    // across (topic, partition, producer_id, producer_epoch) pairs ever
+    // seen. A long-running broker with many transient producers leaks
+    // memory; chaos scripts in P6.8 will need an LRU cap.
     private final ConcurrentHashMap<DedupKey, DedupEntry> dedup = new ConcurrentHashMap<>();
 
     public ProduceHandler(LogManager logManager, TopicManager topicManager, int selfBrokerId) {
@@ -56,49 +65,68 @@ public final class ProduceHandler {
                     "leader is broker " + state.get().leader() + " for " + req.getTopic() + "-" + req.getPartition());
         }
 
-        // Idempotent-producer path: only engages when producer_id >= 0.
-        boolean idempotent = req.getProducerId() >= 0;
-        DedupKey key = idempotent
-                ? new DedupKey(req.getTopic(), req.getPartition(), req.getProducerId(), req.getProducerEpoch())
-                : null;
-        if (idempotent) {
-            var cached = dedup.get(key);
-            if (cached != null && req.getBaseSequence() == cached.lastBaseSequence) {
-                // Duplicate — return cached offsets without appending.
-                return ProduceResponse.newBuilder()
+        // Decode once up front so the dedup path can compare record count.
+        RecordBatch.Parsed parsed;
+        try {
+            parsed = RecordBatch.decode(ByteBuffer.wrap(req.getBatch().toByteArray()));
+        } catch (IllegalArgumentException e) {
+            return err(ErrorCodes.CORRUPT_BATCH, e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+
+        boolean idempotent = req.getProducerId() > 0;
+        if (!idempotent) {
+            return appendAndRespond(req, parsed);
+        }
+
+        // Atomic dedup+append under a per-(producer, partition) key lock so
+        // two concurrent retries for the same sequence can't both append.
+        // The returned response is either a cached-duplicate or a fresh
+        // append; the IOException wrapper below unwraps the IO failure.
+        var result = new ProduceResult();
+        var key = new DedupKey(req.getTopic(), req.getPartition(), req.getProducerId(), req.getProducerEpoch());
+        dedup.compute(key, (k, cached) -> {
+            if (cached != null
+                    && cached.lastBaseSequence == req.getBaseSequence()
+                    && cached.recordCount == parsed.records().size()) {
+                result.response = ProduceResponse.newBuilder()
                         .setBaseOffset(cached.baseOffset)
                         .setLastOffset(cached.lastOffset)
                         .build();
+                return cached;
             }
-        }
-
-        try {
-            var incoming = ByteBuffer.wrap(req.getBatch().toByteArray());
-            var parsed = RecordBatch.decode(incoming);
-            if (idempotent) {
-                var cached = dedup.get(key);
-                // First batch for a (producer_id, epoch) pair establishes the
-                // baseline — base_sequence can be any non-negative int. Once
-                // a cache entry exists, subsequent batches must be strictly
-                // contiguous so a lost-retry doesn't silently create a gap.
-                if (cached != null) {
-                    int expected = cached.lastBaseSequence + cached.recordCount;
-                    if (req.getBaseSequence() != expected) {
-                        return err(
-                                ErrorCodes.OUT_OF_ORDER_SEQUENCE,
-                                "expected base_sequence " + expected + ", got " + req.getBaseSequence());
-                    }
+            // A retry with the same baseSequence but a different record count
+            // is treated as out-of-order — the client re-batched and we
+            // refuse to return offsets that don't cover the retry's payload.
+            if (cached != null) {
+                int expected = cached.lastBaseSequence + cached.recordCount;
+                if (req.getBaseSequence() != expected) {
+                    result.response = err(
+                            ErrorCodes.OUT_OF_ORDER_SEQUENCE,
+                            "expected base_sequence " + expected + ", got " + req.getBaseSequence());
+                    return cached;
                 }
             }
+            // First batch or contiguous next batch: append.
+            var appendResult = appendAndRespond(req, parsed);
+            result.response = appendResult;
+            if (!appendResult.hasError()) {
+                return new DedupEntry(
+                        req.getBaseSequence(),
+                        parsed.records().size(),
+                        appendResult.getBaseOffset(),
+                        appendResult.getLastOffset());
+            }
+            return cached;
+        });
+        return result.response;
+    }
+
+    private ProduceResponse appendAndRespond(ProduceRequest req, RecordBatch.Parsed parsed) {
+        try {
             var log = logManager.logFor(req.getTopic(), req.getPartition());
             long now = System.currentTimeMillis();
             long last = log.append(parsed.records(), now);
             long first = last - (parsed.records().size() - 1);
-            if (idempotent) {
-                dedup.put(
-                        key,
-                        new DedupEntry(req.getBaseSequence(), parsed.records().size(), first, last));
-            }
             return ProduceResponse.newBuilder()
                     .setBaseOffset(first)
                     .setLastOffset(last)
@@ -120,4 +148,8 @@ public final class ProduceHandler {
     private record DedupKey(String topic, int partition, long producerId, int producerEpoch) {}
 
     private record DedupEntry(int lastBaseSequence, int recordCount, long baseOffset, long lastOffset) {}
+
+    private static final class ProduceResult {
+        ProduceResponse response;
+    }
 }

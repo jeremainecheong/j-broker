@@ -70,7 +70,9 @@ class MetadataStateMachineSnapshotTest {
         dstSm.restore(new ByteArrayInputStream(baos.toByteArray()));
 
         assertThat(dstTopics.describe("t")).isPresent();
-        assertThat(dstReg.peekNextProducerId()).isEqualTo(0L);
+        // v2 stream carries no producer-id trailer — registry stays at its
+        // fresh-boot starting value (1 since P6.7's legacy-sentinel fix).
+        assertThat(dstReg.peekNextProducerId()).isEqualTo(1L);
     }
 
     private static LogEntry producerIdApply(long producerId, long nextProducerId) {

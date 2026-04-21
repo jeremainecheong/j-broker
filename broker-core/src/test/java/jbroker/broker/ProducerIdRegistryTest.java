@@ -7,13 +7,15 @@ import org.junit.jupiter.api.Test;
 class ProducerIdRegistryTest {
 
     @Test
-    void startsAtZeroAndAllocatesMonotonicallyIncreasingIds() {
+    void startsAtOneAndAllocatesMonotonicallyIncreasingIds() {
+        // Counter starts at 1 so producer_id = 0 stays reserved as the
+        // proto3-default "unassigned" sentinel.
         var reg = new ProducerIdRegistry();
-        assertThat(reg.peekNextProducerId()).isEqualTo(0L);
-        assertThat(reg.allocateNext()).isEqualTo(0L);
+        assertThat(reg.peekNextProducerId()).isEqualTo(1L);
         assertThat(reg.allocateNext()).isEqualTo(1L);
         assertThat(reg.allocateNext()).isEqualTo(2L);
-        assertThat(reg.peekNextProducerId()).isEqualTo(3L);
+        assertThat(reg.allocateNext()).isEqualTo(3L);
+        assertThat(reg.peekNextProducerId()).isEqualTo(4L);
     }
 
     @Test

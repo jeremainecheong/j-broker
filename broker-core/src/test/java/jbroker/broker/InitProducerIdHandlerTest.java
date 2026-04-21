@@ -10,12 +10,11 @@ import org.junit.jupiter.api.Test;
 class InitProducerIdHandlerTest {
 
     @Test
-    void firstCallReturnsIdZeroAndProposesAssignmentRecord() throws Exception {
+    void firstCallReturnsIdOneAndProposesAssignmentRecord() throws Exception {
         var registry = new ProducerIdRegistry();
         var proposed = new ArrayList<byte[]>();
         var handler = new InitProducerIdHandler(registry, (payload, timeoutMs) -> {
             proposed.add(payload);
-            // Simulate the apply path that the state machine would run.
             var record = MetadataRecord.parseFrom(payload).getProducerIdAssignment();
             registry.applyAssignment(record.getNextProducerId());
         });
@@ -23,12 +22,13 @@ class InitProducerIdHandlerTest {
         var resp = handler.initProducerId(InitProducerIdRequest.newBuilder().build());
 
         assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
-        assertThat(resp.getProducerId()).isEqualTo(0L);
+        // Registry starts at 1 so producer_id=0 stays as the legacy sentinel.
+        assertThat(resp.getProducerId()).isEqualTo(1L);
         assertThat(resp.getProducerEpoch()).isEqualTo(0);
         assertThat(proposed).hasSize(1);
         var record = MetadataRecord.parseFrom(proposed.get(0)).getProducerIdAssignment();
-        assertThat(record.getProducerId()).isEqualTo(0L);
-        assertThat(record.getNextProducerId()).isEqualTo(1L);
+        assertThat(record.getProducerId()).isEqualTo(1L);
+        assertThat(record.getNextProducerId()).isEqualTo(2L);
     }
 
     @Test
@@ -46,7 +46,7 @@ class InitProducerIdHandlerTest {
                     .getProducerId());
         }
 
-        assertThat(ids).containsExactly(0L, 1L, 2L);
+        assertThat(ids).containsExactly(1L, 2L, 3L);
     }
 
     @Test

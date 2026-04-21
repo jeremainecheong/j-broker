@@ -6,10 +6,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * Monotonic producer-id counter, advanced by the active controller on
  * {@code InitProducerId} and replicated via {@code ProducerIdAssignmentRecord}.
  *
- * <p>The counter is 0-based; each allocation returns the current value and
- * increments. Apply-side uses {@link #applyAssignment(long)} to bump the
- * counter to the observed {@code nextProducerId} — never regressing, so a
- * stale replay during snapshot restore or follower catch-up is a no-op.
+ * <p>The counter starts at 1 so {@code producer_id = 0} stays reserved as
+ * the proto3-default "unassigned" sentinel — a client that forgets to call
+ * {@code InitProducerId} can't collide with a real allocation. Each
+ * allocation returns the current value and increments. Apply-side uses
+ * {@link #applyAssignment(long)} to bump the counter to the observed
+ * {@code nextProducerId} — never regressing, so a stale replay during
+ * snapshot restore or follower catch-up is a no-op.
  *
  * <p>In Phase 6.7 single-broker mode, the controller (== this broker) is
  * the only producer-id allocator, so the counter on the apply side and the
@@ -19,7 +22,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class ProducerIdRegistry {
 
-    private final AtomicLong nextProducerId = new AtomicLong(0L);
+    private final AtomicLong nextProducerId = new AtomicLong(1L);
 
     /**
      * Allocate the next producer id and advance the counter by one. Called

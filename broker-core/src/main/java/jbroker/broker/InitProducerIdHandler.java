@@ -30,8 +30,12 @@ public final class InitProducerIdHandler {
     public InitProducerIdResponse initProducerId(InitProducerIdRequest req) {
         // allocateNext is atomic on the proposer side so concurrent
         // InitProducerId calls can't assign the same id even before their
-        // Raft records commit. If the Raft propose fails below, the id is
-        // leaked — harmless; monotonic ids don't require tight packing.
+        // Raft records commit. Ids burned on propose failure are safe in
+        // single-broker mode because a restart replays the Raft log and
+        // the registry advances only on successful apply; multi-broker
+        // failover (P6.5) will need the controller to track propose
+        // outcomes so a failed InitProducerId on an outgoing leader
+        // doesn't collide with a fresh allocation on the new leader.
         long id = registry.allocateNext();
         var record = MetadataRecord.newBuilder()
                 .setProducerIdAssignment(ProducerIdAssignmentRecord.newBuilder()

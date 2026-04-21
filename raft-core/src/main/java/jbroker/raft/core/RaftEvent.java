@@ -18,7 +18,13 @@ public sealed interface RaftEvent {
     }
 
     record AppendEntriesReq(
-            Term term, NodeId leaderId, long prevLogIndex, Term prevLogTerm, List<LogEntry> entries, long leaderCommit)
+            Term term,
+            NodeId leaderId,
+            long prevLogIndex,
+            Term prevLogTerm,
+            List<LogEntry> entries,
+            long leaderCommit,
+            long nowNanos)
             implements RaftEvent {
         public AppendEntriesReq {
             Objects.requireNonNull(term, "term");
@@ -38,7 +44,8 @@ public sealed interface RaftEvent {
         }
     }
 
-    record VoteReq(Term term, NodeId candidateId, long lastLogIndex, Term lastLogTerm) implements RaftEvent {
+    record VoteReq(Term term, NodeId candidateId, long lastLogIndex, Term lastLogTerm, long nowNanos)
+            implements RaftEvent {
         public VoteReq {
             Objects.requireNonNull(term, "term");
             Objects.requireNonNull(candidateId, "candidateId");

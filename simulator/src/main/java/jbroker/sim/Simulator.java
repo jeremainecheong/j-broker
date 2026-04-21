@@ -7,9 +7,11 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import jbroker.raft.core.DefaultRaftCore;
 import jbroker.raft.core.LogEntry;
 import jbroker.raft.core.NodeId;
+import jbroker.raft.core.PersistentState;
 import jbroker.raft.core.RaftConfig;
 import jbroker.raft.core.RaftEffect;
 import jbroker.raft.core.RaftEvent;
@@ -34,10 +36,10 @@ public final class Simulator {
         public final NodeId id;
         public final DefaultRaftCore core;
         public final InMemoryRaftLog log;
-        public final InMemoryPersistentState state;
+        public final PersistentState state;
         public final RecordingStateMachine sm;
 
-        Node(NodeId id, DefaultRaftCore core, InMemoryRaftLog log, InMemoryPersistentState state) {
+        Node(NodeId id, DefaultRaftCore core, InMemoryRaftLog log, PersistentState state) {
             this.id = id;
             this.core = core;
             this.log = log;
@@ -58,23 +60,64 @@ public final class Simulator {
 
     private static final long TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
     private static final long MIN_DELIVERY_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
-    private static final long MAX_DELIVERY_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
+    private static final long MAX_DELIVERY_NANOS = TimeUnit.MILLISECONDS.toNanos(40);
+
+    /**
+     * Chaos configuration. Probabilities are independent; a message is first
+     * tested for drop, then for duplicate.
+     */
+    public static final class Chaos {
+        public double dropProbability;
+        public double duplicateProbability;
+        /** When non-empty, addressed messages TO nodes in this set are silently dropped (simulates crash/partition). */
+        public final java.util.Set<NodeId> crashedNodes = new java.util.HashSet<>();
+
+        public static Chaos noChaos() {
+            return new Chaos();
+        }
+
+        public static Chaos lossy(double drop, double dup) {
+            var c = new Chaos();
+            c.dropProbability = drop;
+            c.duplicateProbability = dup;
+            return c;
+        }
+    }
 
     private final long seed;
     private final Random random;
     private final Map<NodeId, Node> nodes = new HashMap<>();
     private final PriorityQueue<ScheduledEvent> queue = new PriorityQueue<>();
+    private final Invariants invariants = new Invariants();
+    private final Chaos chaos;
     private long now;
     private long eventCounter;
+    /** Per-node role snapshot, used to detect leader transitions for invariant bookkeeping. */
+    private final Map<NodeId, Role> lastRole = new HashMap<>();
 
     public Simulator(long seed, int clusterSize) {
+        this(seed, clusterSize, Chaos.noChaos(), InMemoryPersistentState::new);
+    }
+
+    public Simulator(long seed, int clusterSize, Chaos chaos) {
+        this(seed, clusterSize, chaos, InMemoryPersistentState::new);
+    }
+
+    /**
+     * Factory-backed constructor: useful for injected-bug tests where the
+     * test supplies a deliberately broken {@link PersistentState}
+     * implementation to prove the invariant checkers catch the resulting
+     * safety violations.
+     */
+    public Simulator(long seed, int clusterSize, Chaos chaos, Supplier<PersistentState> stateFactory) {
         this.seed = seed;
         this.random = new Random(seed);
+        this.chaos = chaos;
         var ids = new ArrayList<NodeId>();
         for (int i = 1; i <= clusterSize; i++) ids.add(new NodeId(i));
         for (var id : ids) {
             var log = new InMemoryRaftLog();
-            var state = new InMemoryPersistentState();
+            var state = stateFactory.get();
             var config = new RaftConfig(
                     id,
                     ids,
@@ -149,8 +192,33 @@ public final class Simulator {
     private void deliver(NodeId to, RaftEvent event) {
         var node = nodes.get(to);
         if (node == null) return;
+        // Crashed nodes don't process inbound messages, but they still
+        // exist as book-keeping placeholders so their logs are preserved
+        // for post-crash restart.
+        if (chaos.crashedNodes.contains(to)) return;
         var effects = node.core.step(event);
+        // Track leader transitions for election-safety.
+        var prior = lastRole.get(to);
+        var cur = node.core.role();
+        if (cur == Role.LEADER && prior != Role.LEADER) {
+            invariants.onBecameLeader(to, node.core.currentTerm());
+        }
+        lastRole.put(to, cur);
         handleEffects(node, effects);
+    }
+
+    /** Expose the running {@link Invariants} so tests can assert no violations. */
+    public Invariants invariants() {
+        return invariants;
+    }
+
+    /** Finalise checks that can only run over the full log state at end-of-run. */
+    public void checkInvariantsAtEnd() {
+        invariants.checkLogMatching(nodes);
+    }
+
+    public Chaos chaos() {
+        return chaos;
     }
 
     private void handleEffects(Node from, List<RaftEffect> effects) {
@@ -201,7 +269,10 @@ public final class Simulator {
                                 now));
                 case RaftEffect.SendInstallSnapshotResp r -> scheduleMessage(
                         r.to(), new RaftEvent.InstallSnapshotResp(from.id, r.term()));
-                case RaftEffect.ApplyCommitted a -> from.sm.apply(a.entry());
+                case RaftEffect.ApplyCommitted a -> {
+                    from.sm.apply(a.entry());
+                    invariants.onApplied(from.id, a.entry());
+                }
                 case RaftEffect.ApplySnapshot a -> {
                     /* SM restore — test SM is payload-list only; snapshot bytes unused. */
                 }
@@ -234,8 +305,22 @@ public final class Simulator {
     }
 
     private void scheduleMessage(NodeId to, RaftEvent event) {
+        if (chaos.dropProbability > 0 && random.nextDouble() < chaos.dropProbability) return;
         long delay = MIN_DELIVERY_NANOS + (long) (random.nextDouble() * (MAX_DELIVERY_NANOS - MIN_DELIVERY_NANOS));
         queue.add(new ScheduledEvent(now + delay, eventCounter++, to, event, false));
+        if (chaos.duplicateProbability > 0 && random.nextDouble() < chaos.duplicateProbability) {
+            long delay2 = MIN_DELIVERY_NANOS + (long) (random.nextDouble() * (MAX_DELIVERY_NANOS - MIN_DELIVERY_NANOS));
+            queue.add(new ScheduledEvent(now + delay2, eventCounter++, to, event, false));
+        }
+    }
+
+    /** Crash a node: its inbox is silently discarded until {@link #restart}. Log state is preserved. */
+    public void crash(NodeId id) {
+        chaos.crashedNodes.add(id);
+    }
+
+    public void restart(NodeId id) {
+        chaos.crashedNodes.remove(id);
     }
 
     private void enqueueTickFor(NodeId to, long at) {

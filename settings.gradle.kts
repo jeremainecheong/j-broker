@@ -7,4 +7,6 @@ include(
     "integration-tests",
     "simulator",
     "broker-storage",
+    "broker-core",
+    "broker-app",
 )

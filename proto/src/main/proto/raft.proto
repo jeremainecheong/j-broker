@@ -81,3 +81,36 @@ message TimeoutNowRequest {
 message TimeoutNowResponse {
   int64 term = 1;
 }
+
+// -------- Metadata records (replicated via Raft, applied to the broker's
+// metadata state machine) --------
+
+message TopicRecord {
+  string topic = 1;
+  int32 partitions = 2;
+  int32 replication_factor = 3;
+  int64 created_millis = 4;
+}
+
+message PartitionRecord {
+  string topic = 1;
+  int32 partition = 2;
+  repeated int32 replicas = 3;
+  int32 leader = 4;
+}
+
+message BrokerRegistrationRecord {
+  int32 broker_id = 1;
+  string host = 2;
+  int32 port = 3;
+}
+
+// Tagged union of metadata records; the Raft state machine tags payloads
+// with this wrapper so it can dispatch.
+message MetadataRecord {
+  oneof kind {
+    TopicRecord topic = 1;
+    PartitionRecord partition = 2;
+    BrokerRegistrationRecord broker = 3;
+  }
+}

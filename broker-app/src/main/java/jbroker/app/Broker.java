@@ -29,6 +29,8 @@ import jbroker.raft.core.Role;
 import jbroker.raft.transport.RaftDriver;
 import jbroker.raft.transport.RaftPeerClient;
 import jbroker.storage.LogManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Single-node broker. Wires together:
@@ -46,6 +48,8 @@ import jbroker.storage.LogManager;
  * a multi-node config; the data-plane stays the same shape.
  */
 public final class Broker implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(Broker.class);
 
     public record Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {}
 
@@ -82,7 +86,7 @@ public final class Broker implements AutoCloseable {
         Files.createDirectories(topicsDir);
 
         // --- Raft layer (metadata log) ---
-        var log = FileRaftLog.open(raftDir.resolve("log.bin"));
+        var raftLog = FileRaftLog.open(raftDir.resolve("log.bin"));
         var state = FilePersistentState.open(raftDir.resolve("state.bin"));
         var raftConfig = new RaftConfig(
                 config.selfId(),
@@ -91,7 +95,7 @@ public final class Broker implements AutoCloseable {
                 TimeUnit.MILLISECONDS.toNanos(250),
                 TimeUnit.MILLISECONDS.toNanos(100),
                 100);
-        var core = new DefaultRaftCore(raftConfig, log, state, Long.MAX_VALUE);
+        var core = new DefaultRaftCore(raftConfig, raftLog, state, Long.MAX_VALUE);
 
         var topicManager = new TopicManager();
         var metadataSm = new MetadataStateMachine(topicManager);
@@ -167,9 +171,13 @@ public final class Broker implements AutoCloseable {
                             raftDriver.propose(proposal);
                             fut.get(3, TimeUnit.SECONDS);
                         }
-                    } catch (Exception ignored) {
-                        // Propose/apply can fail during election windows or on
-                        // shutdown — just let the next tick try again.
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
+                        // Election windows + shutdown races are expected; log
+                        // at debug so real bugs (NPE/CCE/logic errors) are
+                        // still surfaced on any appender set above debug.
+                        log.debug("ISR tick failed, retrying on next tick", e);
                     }
                 },
                 2,
@@ -189,7 +197,14 @@ public final class Broker implements AutoCloseable {
 
     @Override
     public void close() {
+        // Shut the ticker down first and wait briefly so an in-flight
+        // propose()/fut.get() chain can't race against raftDriver.close().
         isrTicker.shutdownNow();
+        try {
+            isrTicker.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         brokerServer.shutdown();
         try {
             brokerServer.awaitTermination(5, TimeUnit.SECONDS);

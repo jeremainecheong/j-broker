@@ -225,6 +225,16 @@ public final class DefaultRaftCore implements RaftCore {
         return 1L;
     }
 
+    /** Returns the highest index whose entry has the given term, or 0 if none. */
+    private long lastIndexOfTerm(Term term) {
+        for (long i = log.lastIndex(); i >= 1; i--) {
+            if (log.termAt(i).map(t -> t.equals(term)).orElse(false)) {
+                return i;
+            }
+        }
+        return 0L;
+    }
+
     private void advanceCommit(long newCommit, List<RaftEffect> effects) {
         while (lastApplied < newCommit) {
             lastApplied++;
@@ -252,7 +262,18 @@ public final class DefaultRaftCore implements RaftCore {
             nextIndex.put(resp.from(), resp.matchIndex() + 1);
             maybeAdvanceLeaderCommit(effects);
         } else {
-            long newNext = Math.max(1, resp.conflictIndex());
+            long newNext;
+            if (resp.conflictTerm().equals(Term.ZERO)) {
+                // Follower's log is too short; use the conflict index directly.
+                newNext = Math.max(1, resp.conflictIndex());
+            } else {
+                // Figure-8 optimisation: if the leader has entries at the
+                // follower's conflictTerm, jump past the last one rather than
+                // backing off one entry at a time.  If it doesn't, defer to
+                // the follower's conflictIndex.
+                long lastIdxOfTerm = lastIndexOfTerm(resp.conflictTerm());
+                newNext = lastIdxOfTerm > 0 ? lastIdxOfTerm + 1 : Math.max(1, resp.conflictIndex());
+            }
             nextIndex.put(resp.from(), newNext);
             sendAppendEntriesTo(resp.from(), effects);
         }

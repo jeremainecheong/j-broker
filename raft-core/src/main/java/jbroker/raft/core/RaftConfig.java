@@ -23,6 +23,9 @@ public record RaftConfig(
         if (electionTimeoutNanos <= 0 || heartbeatIntervalNanos <= 0) {
             throw new IllegalArgumentException("timeouts must be positive");
         }
+        if (electionJitterNanos < 0) {
+            throw new IllegalArgumentException("electionJitterNanos must be non-negative");
+        }
         if (heartbeatIntervalNanos >= electionTimeoutNanos) {
             throw new IllegalArgumentException("heartbeat must be less than election timeout");
         }

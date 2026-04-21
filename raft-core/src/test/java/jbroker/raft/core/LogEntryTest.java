@@ -18,8 +18,7 @@ class LogEntryTest {
 
     @Test
     void rejectsNegativeIndex() {
-        assertThatThrownBy(
-                () -> new LogEntry(-1L, Term.ZERO, LogEntry.Type.NORMAL, new byte[0]))
+        assertThatThrownBy(() -> new LogEntry(-1L, Term.ZERO, LogEntry.Type.NORMAL, new byte[0]))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

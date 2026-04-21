@@ -58,8 +58,7 @@ class HighVolumeSmokeTest {
             }
             long fetchNs = System.nanoTime() - t1;
 
-            System.out.printf(
-                    "100k round-trip: produce=%.2fs fetch=%.2fs%n", produceNs / 1e9, fetchNs / 1e9);
+            System.out.printf("100k round-trip: produce=%.2fs fetch=%.2fs%n", produceNs / 1e9, fetchNs / 1e9);
 
             assertThat(fetched).hasSize(total);
             // Strict ordering: the i-th fetched value must be the string "i".

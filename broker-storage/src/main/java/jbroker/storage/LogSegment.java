@@ -130,6 +130,51 @@ public final class LogSegment implements AutoCloseable {
     }
 
     /**
+     * Append a pre-encoded batch byte-for-byte. The batch's {@code baseOffset}
+     * must equal this segment's {@link #nextOffset()} — used by the follower
+     * replication path (P6.4) to preserve the leader's baseSequence,
+     * producerId, producerEpoch, partitionLeaderEpoch, and timestamps.
+     *
+     * <p>Verifies the batch's header matches {@code expectedBaseOffset} and
+     * throws {@link IllegalArgumentException} otherwise.
+     */
+    public synchronized int appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+        if (expectedBaseOffset != nextOffset) {
+            throw new IllegalArgumentException(
+                    "expectedBaseOffset " + expectedBaseOffset + " != segment nextOffset " + nextOffset);
+        }
+        var view = ByteBuffer.wrap(encodedBatch);
+        long batchBaseOffset = view.getLong();
+        if (batchBaseOffset != expectedBaseOffset) {
+            throw new IllegalArgumentException(
+                    "batch baseOffset " + batchBaseOffset + " != expectedBaseOffset " + expectedBaseOffset);
+        }
+        // Peek the header fields we need for the indexes.
+        // Layout: baseOffset(8) batchLength(4) partitionLeaderEpoch(4) magic(1)
+        //         crc(4) attributes(2) lastOffsetDelta(4) firstTimestamp(8) maxTimestamp(8) ...
+        view.position(8 + 4 + 4 + 1 + 4 + 2); // skip to lastOffsetDelta
+        int lastOffsetDelta = view.getInt();
+        view.getLong(); // firstTimestamp (unused here)
+        long maxTs = view.getLong();
+
+        int pos = (int) logChannel.size();
+        var toWrite = ByteBuffer.wrap(encodedBatch);
+        while (toWrite.hasRemaining()) {
+            logChannel.write(toWrite, pos + (encodedBatch.length - toWrite.remaining()));
+        }
+
+        if (bytesSinceLastIndex >= indexIntervalBytes || offsetIndex.size() == 0) {
+            offsetIndex.append(expectedBaseOffset, pos);
+            timeIndex.append(maxTs, expectedBaseOffset);
+            bytesSinceLastIndex = 0;
+        }
+        bytesSinceLastIndex += encodedBatch.length;
+        nextOffset = expectedBaseOffset + lastOffsetDelta + 1;
+        if (maxTs > this.maxTimestamp) this.maxTimestamp = maxTs;
+        return pos;
+    }
+
+    /**
      * Append a single batch. The batch's {@code baseOffset} is expected to be
      * this segment's {@link #nextOffset()}. Returns the position at which the
      * batch was written.

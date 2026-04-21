@@ -67,6 +67,24 @@ public final class Log implements AutoCloseable {
         }
     }
 
+    /**
+     * Append a pre-encoded batch to the end of the log at
+     * {@code expectedBaseOffset} (= {@link #nextOffset()} at call time).
+     * Used by the follower replication path to preserve every byte of the
+     * leader's batch header.
+     */
+    public synchronized long appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+        var active = segments.get(segments.size() - 1);
+        active.appendRaw(encodedBatch, expectedBaseOffset);
+        long assignedLast = active.nextOffset() - 1;
+        if (active.sizeBytes() >= config.segmentBytes()) {
+            var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
+            active.force();
+            segments.add(next);
+        }
+        return assignedLast;
+    }
+
     public synchronized long append(List<Record> records, long nowMillis) throws IOException {
         var active = segments.get(segments.size() - 1);
         long firstTimestamp = nowMillis;

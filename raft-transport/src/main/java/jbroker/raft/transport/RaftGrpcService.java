@@ -43,9 +43,13 @@ public final class RaftGrpcService extends RaftGrpc.RaftImplBase {
 
     @Override
     public void installSnapshot(InstallSnapshotRequest req, StreamObserver<InstallSnapshotResponse> out) {
-        // Phase 2 feature; stub returns default response for now.
-        out.onNext(InstallSnapshotResponse.newBuilder().build());
-        out.onCompleted();
+        try {
+            var resp = driver.handleInstallSnapshot(req);
+            out.onNext(resp);
+            out.onCompleted();
+        } catch (Exception e) {
+            out.onError(e);
+        }
     }
 
     @Override

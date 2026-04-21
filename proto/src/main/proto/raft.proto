@@ -69,5 +69,10 @@ message InstallSnapshotResponse {
   int64 term = 1;
 }
 
-message TimeoutNowRequest {}
-message TimeoutNowResponse {}
+message TimeoutNowRequest {
+  int64 term = 1;
+  int32 leader_id = 2;
+}
+message TimeoutNowResponse {
+  int64 term = 1;
+}

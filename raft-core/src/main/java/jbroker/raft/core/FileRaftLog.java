@@ -3,6 +3,7 @@ package jbroker.raft.core;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -33,22 +34,61 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
 
     private final FileChannel channel;
     private final List<LogEntry> index;
+    private final Path metaPath; // null for test seam
+    private long lastIncludedIndex;
+    private Term lastIncludedTerm;
 
-    private FileRaftLog(FileChannel channel, List<LogEntry> index) {
+    private FileRaftLog(FileChannel channel, List<LogEntry> index, Path metaPath) {
         this.channel = channel;
         this.index = index;
+        this.metaPath = metaPath;
+        this.lastIncludedIndex = 0L;
+        this.lastIncludedTerm = Term.ZERO;
     }
 
     public static FileRaftLog open(Path path) throws IOException {
         var channel =
                 FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
-        return openWithChannel(channel);
+        var metaPath = path.resolveSibling(path.getFileName() + ".meta");
+        var entries = rehydrate(channel);
+        var log = new FileRaftLog(channel, entries, metaPath);
+        log.loadMeta();
+        return log;
     }
 
     /** Test-only seam: allows injecting a fault-injecting {@link FileChannel}. */
     static FileRaftLog openWithChannel(FileChannel channel) throws IOException {
         var index = rehydrate(channel);
-        return new FileRaftLog(channel, index);
+        return new FileRaftLog(channel, index, null);
+    }
+
+    private void loadMeta() throws IOException {
+        if (metaPath == null || !Files.exists(metaPath)) {
+            return;
+        }
+        byte[] bytes = Files.readAllBytes(metaPath);
+        if (bytes.length < Long.BYTES * 2) {
+            return;
+        }
+        var buf = ByteBuffer.wrap(bytes);
+        this.lastIncludedIndex = buf.getLong();
+        this.lastIncludedTerm = new Term(buf.getLong());
+    }
+
+    private void persistMeta() throws IOException {
+        if (metaPath == null) {
+            return;
+        }
+        var buf = ByteBuffer.allocate(Long.BYTES * 2);
+        buf.putLong(lastIncludedIndex);
+        buf.putLong(lastIncludedTerm.value());
+        Files.write(
+                metaPath,
+                buf.array(),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.SYNC);
     }
 
     private static List<LogEntry> rehydrate(FileChannel channel) throws IOException {
@@ -95,15 +135,33 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
 
     @Override
     public synchronized long lastIndex() {
-        return index.isEmpty() ? 0L : index.get(index.size() - 1).index();
+        return index.isEmpty() ? lastIncludedIndex : index.get(index.size() - 1).index();
+    }
+
+    @Override
+    public synchronized long firstIndex() {
+        return lastIncludedIndex + 1;
+    }
+
+    @Override
+    public synchronized long lastIncludedIndex() {
+        return lastIncludedIndex;
+    }
+
+    @Override
+    public synchronized Term lastIncludedTerm() {
+        return lastIncludedTerm;
     }
 
     @Override
     public synchronized Optional<Term> termAt(long idx) {
-        if (idx < 1 || idx > lastIndex()) {
+        if (idx == lastIncludedIndex && lastIncludedIndex > 0) {
+            return Optional.of(lastIncludedTerm);
+        }
+        if (idx < firstIndex() || idx > lastIndex()) {
             return Optional.empty();
         }
-        return Optional.of(index.get((int) (idx - 1)).term());
+        return Optional.of(index.get((int) (idx - firstIndex())).term());
     }
 
     @Override
@@ -165,20 +223,21 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
 
     @Override
     public synchronized List<LogEntry> read(long fromIndex, int maxEntries) {
-        if (fromIndex < 1 || fromIndex > lastIndex()) {
+        if (fromIndex < firstIndex() || fromIndex > lastIndex()) {
             return List.of();
         }
-        int start = (int) (fromIndex - 1);
+        int start = (int) (fromIndex - firstIndex());
         int end = Math.min(index.size(), start + maxEntries);
         return List.copyOf(index.subList(start, end));
     }
 
     @Override
     public synchronized void truncateFrom(long idx) {
-        if (idx < 1 || idx > lastIndex()) {
+        if (idx < firstIndex() || idx > lastIndex()) {
             return;
         }
-        var survivors = new ArrayList<>(index.subList(0, (int) (idx - 1)));
+        int listPos = (int) (idx - firstIndex());
+        var survivors = new ArrayList<>(index.subList(0, listPos));
         try {
             channel.truncate(0);
             channel.position(0);
@@ -190,6 +249,45 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
             channel.force(true);
         } catch (IOException e) {
             throw new IllegalStateException("failed to truncate", e);
+        }
+    }
+
+    /**
+     * Drop the log prefix. <b>Known crash-safety limitation:</b> this rewrites
+     * the log file in place with {@code truncate(0)} + sequential writes, then
+     * persists a sidecar {@code .meta} file with the new {@code
+     * lastIncludedIndex}/{@code Term}. A crash between the log rewrite and the
+     * meta persist leaves the log on disk with entries whose indices are
+     * inconsistent with {@code firstIndex()}. Full crash-safety needs a
+     * temp-file + atomic-rename strategy; tracked as Phase 3 hardening.
+     */
+    @Override
+    public synchronized void truncatePrefix(long firstIndex, Term firstTerm) {
+        if (firstIndex <= firstIndex()) {
+            return;
+        }
+        long newLastIncluded = firstIndex - 1;
+        // Keep entries at absolute index >= firstIndex.
+        var survivors = new ArrayList<LogEntry>();
+        for (var e : index) {
+            if (e.index() >= firstIndex) {
+                survivors.add(e);
+            }
+        }
+        try {
+            channel.truncate(0);
+            channel.position(0);
+            index.clear();
+            for (var e : survivors) {
+                writeFrame(e);
+                index.add(e);
+            }
+            channel.force(true);
+            this.lastIncludedIndex = newLastIncluded;
+            this.lastIncludedTerm = Objects.requireNonNull(firstTerm, "firstTerm");
+            persistMeta();
+        } catch (IOException e) {
+            throw new IllegalStateException("failed to truncate prefix", e);
         }
     }
 

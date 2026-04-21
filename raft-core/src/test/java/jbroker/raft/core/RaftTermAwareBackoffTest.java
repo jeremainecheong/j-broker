@@ -40,6 +40,7 @@ class RaftTermAwareBackoffTest {
 
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
             core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+            core.step(new RaftEvent.PreVoteResp(new NodeId(2), new Term(2), true));
             core.step(new RaftEvent.VoteResp(new NodeId(2), new Term(3), true));
             assertThat(core.role()).isEqualTo(Role.LEADER);
 
@@ -78,6 +79,7 @@ class RaftTermAwareBackoffTest {
 
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
             core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+            core.step(new RaftEvent.PreVoteResp(new NodeId(2), new Term(3), true));
             core.step(new RaftEvent.VoteResp(new NodeId(2), new Term(4), true));
             assertThat(core.role()).isEqualTo(Role.LEADER);
 

@@ -34,6 +34,6 @@ class ValueTypesTest {
 
     @Test
     void roleEnumHasExpectedValues() {
-        assertThat(Role.values()).containsExactly(Role.FOLLOWER, Role.CANDIDATE, Role.LEADER);
+        assertThat(Role.values()).containsExactly(Role.FOLLOWER, Role.PRE_CANDIDATE, Role.CANDIDATE, Role.LEADER);
     }
 }

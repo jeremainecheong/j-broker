@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -15,6 +16,8 @@ public final class DefaultRaftCore implements RaftCore {
     private final RaftConfig config;
     private final RaftLog log;
     private final PersistentState persistentState;
+    /** Null means fall back to {@link ThreadLocalRandom}; the simulator injects a seeded instance. */
+    private final Random random;
 
     private Role role = Role.FOLLOWER;
     private Optional<NodeId> leaderId = Optional.empty();
@@ -112,9 +115,21 @@ public final class DefaultRaftCore implements RaftCore {
      *                 before any elections should fire.
      */
     public DefaultRaftCore(RaftConfig config, RaftLog log, PersistentState persistentState, long nowNanos) {
+        this(config, log, persistentState, nowNanos, null);
+    }
+
+    /**
+     * Deterministic-simulator-friendly constructor: pass a seeded
+     * {@link Random} so election-timeout jitter is reproducible under a fixed
+     * seed. Production callers should use the 4-arg constructor, which falls
+     * back to {@link ThreadLocalRandom}.
+     */
+    public DefaultRaftCore(
+            RaftConfig config, RaftLog log, PersistentState persistentState, long nowNanos, Random random) {
         this.config = Objects.requireNonNull(config, "config");
         this.log = Objects.requireNonNull(log, "log");
         this.persistentState = Objects.requireNonNull(persistentState, "persistentState");
+        this.random = random;
         // Long.MAX_VALUE is a sentinel meaning "defer the first election until the
         // first real Tick arrives" (the onTick sentinel path handles this).
         this.electionDeadlineNanos =
@@ -850,8 +865,19 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private long randomisedElectionTimeout() {
-        long jitter = ThreadLocalRandom.current().nextLong(0, config.electionJitterNanos() + 1);
+        long bound = config.electionJitterNanos() + 1;
+        long jitter = (random == null) ? ThreadLocalRandom.current().nextLong(0, bound) : nextLongBounded(bound);
         return config.electionTimeoutNanos() + jitter;
+    }
+
+    private long nextLongBounded(long bound) {
+        // java.util.Random has nextInt(bound) but not nextLong(bound); emulate
+        // for long bounds we expect (well under Integer.MAX_VALUE for normal
+        // timeouts, but cast defensively).
+        if (bound <= Integer.MAX_VALUE) {
+            return random.nextInt((int) bound);
+        }
+        return (random.nextLong() & Long.MAX_VALUE) % bound;
     }
 
     long commitIndex() {

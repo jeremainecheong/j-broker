@@ -29,14 +29,15 @@ public final class RaftMessageCodec {
         return b.build();
     }
 
-    public static RaftEvent.AppendEntriesReq fromProto(AppendEntriesRequest p) {
+    public static RaftEvent.AppendEntriesReq fromProto(AppendEntriesRequest p, long nowNanos) {
         return new RaftEvent.AppendEntriesReq(
                 new Term(p.getTerm()),
                 new NodeId(p.getLeaderId()),
                 p.getPrevLogIndex(),
                 new Term(p.getPrevLogTerm()),
                 p.getEntriesList().stream().map(RaftMessageCodec::fromProto).toList(),
-                p.getLeaderCommit());
+                p.getLeaderCommit(),
+                nowNanos);
     }
 
     public static AppendEntriesResponse toProto(RaftEffect.SendAppendEntriesResp eff) {
@@ -67,12 +68,13 @@ public final class RaftMessageCodec {
                 .build();
     }
 
-    public static RaftEvent.VoteReq fromProto(RequestVoteRequest p) {
+    public static RaftEvent.VoteReq fromProto(RequestVoteRequest p, long nowNanos) {
         return new RaftEvent.VoteReq(
                 new Term(p.getTerm()),
                 new NodeId(p.getCandidateId()),
                 p.getLastLogIndex(),
-                new Term(p.getLastLogTerm()));
+                new Term(p.getLastLogTerm()),
+                nowNanos);
     }
 
     public static RequestVoteResponse toProto(RaftEffect.SendVoteResp eff) {

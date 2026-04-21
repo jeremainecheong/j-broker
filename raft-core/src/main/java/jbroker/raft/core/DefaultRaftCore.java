@@ -170,7 +170,7 @@ public final class DefaultRaftCore implements RaftCore {
         }
 
         leaderId = Optional.of(req.leaderId());
-        electionDeadlineNanos = Long.MAX_VALUE;
+        electionDeadlineNanos = req.nowNanos() + randomisedElectionTimeout();
 
         if (req.prevLogIndex() > 0) {
             var localTerm = log.termAt(req.prevLogIndex());
@@ -330,7 +330,7 @@ public final class DefaultRaftCore implements RaftCore {
             persistentState.update(currentTerm, Optional.of(req.candidateId()));
             effects.add(new RaftEffect.PersistState(currentTerm, Optional.of(req.candidateId())));
             effects.add(new RaftEffect.SendVoteResp(req.candidateId(), currentTerm, true));
-            electionDeadlineNanos = Long.MAX_VALUE;
+            electionDeadlineNanos = req.nowNanos() + randomisedElectionTimeout();
         } else {
             effects.add(new RaftEffect.SendVoteResp(req.candidateId(), currentTerm, false));
         }

@@ -23,7 +23,7 @@ class RaftElectionTest {
         try (var log = FileRaftLog.open(dir.resolve("log.bin"));
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
-            var effects = core.step(new RaftEvent.VoteReq(new Term(1), new NodeId(2), 0L, Term.ZERO));
+            var effects = core.step(new RaftEvent.VoteReq(new Term(1), new NodeId(2), 0L, Term.ZERO, 0L));
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendVoteResp)
                     .extracting(e -> ((RaftEffect.SendVoteResp) e).granted())
@@ -37,8 +37,8 @@ class RaftElectionTest {
         try (var log = FileRaftLog.open(dir.resolve("log.bin"));
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
-            core.step(new RaftEvent.VoteReq(new Term(1), new NodeId(2), 0L, Term.ZERO));
-            var effects = core.step(new RaftEvent.VoteReq(new Term(1), new NodeId(3), 0L, Term.ZERO));
+            core.step(new RaftEvent.VoteReq(new Term(1), new NodeId(2), 0L, Term.ZERO, 0L));
+            var effects = core.step(new RaftEvent.VoteReq(new Term(1), new NodeId(3), 0L, Term.ZERO, 0L));
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendVoteResp)
                     .extracting(e -> ((RaftEffect.SendVoteResp) e).granted())
@@ -52,7 +52,7 @@ class RaftElectionTest {
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {
             log.append(List.of(new LogEntry(1, new Term(5), LogEntry.Type.NORMAL, new byte[0])));
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
-            var effects = core.step(new RaftEvent.VoteReq(new Term(6), new NodeId(2), 0L, new Term(1)));
+            var effects = core.step(new RaftEvent.VoteReq(new Term(6), new NodeId(2), 0L, new Term(1), 0L));
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendVoteResp)
                     .extracting(e -> ((RaftEffect.SendVoteResp) e).granted())

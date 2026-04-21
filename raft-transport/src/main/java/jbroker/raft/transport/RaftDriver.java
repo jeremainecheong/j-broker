@@ -117,10 +117,14 @@ public final class RaftDriver implements AutoCloseable {
     }
 
     public AppendEntriesResponse handleAppendEntries(AppendEntriesRequest req) throws InterruptedException {
-        var event = RaftMessageCodec.fromProto(req);
+        var event = RaftMessageCodec.fromProto(req, clock.nanoTime());
         var future = new CompletableFuture<RaftEffect.SendAppendEntriesResp>();
         queue.put(new PendingEvent(event, future));
         try {
+            // If the pump is backlogged past 3s, this RPC times out and the caller
+            // sees UNAVAILABLE; the event is still processed by the pump and the
+            // completion is silently dropped. The peer retries, so worst case is a
+            // wasted heartbeat, not a correctness problem.
             return RaftMessageCodec.toProto(future.get(3, TimeUnit.SECONDS));
         } catch (ExecutionException | TimeoutException e) {
             throw new RuntimeException(e);
@@ -128,10 +132,12 @@ public final class RaftDriver implements AutoCloseable {
     }
 
     public RequestVoteResponse handleRequestVote(RequestVoteRequest req) throws InterruptedException {
-        var event = RaftMessageCodec.fromProto(req);
+        var event = RaftMessageCodec.fromProto(req, clock.nanoTime());
         var future = new CompletableFuture<RaftEffect.SendVoteResp>();
         queue.put(new PendingEvent(event, future));
         try {
+            // See handleAppendEntries: timeout here means the RPC caller sees
+            // UNAVAILABLE but the vote is still processed locally. Peer retries.
             return RaftMessageCodec.toProto(future.get(3, TimeUnit.SECONDS));
         } catch (ExecutionException | TimeoutException e) {
             throw new RuntimeException(e);

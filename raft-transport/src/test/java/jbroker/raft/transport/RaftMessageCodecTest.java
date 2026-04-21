@@ -15,9 +15,11 @@ class RaftMessageCodecTest {
     @Test
     void roundtripsAppendEntries() {
         var entry = new LogEntry(1, new Term(1), LogEntry.Type.NORMAL, new byte[] {9, 9});
-        var req = new RaftEvent.AppendEntriesReq(new Term(2), new NodeId(3), 0L, Term.ZERO, List.of(entry), 0L);
+        // nowNanos is a receive-time stamp set by the driver, not part of the wire;
+        // round-trip by re-applying the original stamp.
+        var req = new RaftEvent.AppendEntriesReq(new Term(2), new NodeId(3), 0L, Term.ZERO, List.of(entry), 0L, 42L);
         AppendEntriesRequest proto = RaftMessageCodec.toProto(req);
-        RaftEvent.AppendEntriesReq roundtrip = RaftMessageCodec.fromProto(proto);
+        RaftEvent.AppendEntriesReq roundtrip = RaftMessageCodec.fromProto(proto, req.nowNanos());
         assertThat(roundtrip).isEqualTo(req);
     }
 }

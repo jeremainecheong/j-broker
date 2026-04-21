@@ -25,7 +25,7 @@ class RaftAppendEntriesTest {
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
             var entry = new LogEntry(1, new Term(1), LogEntry.Type.NORMAL, new byte[] {1});
             var effects = core.step(
-                    new RaftEvent.AppendEntriesReq(new Term(1), new NodeId(2), 0L, Term.ZERO, List.of(entry), 0L));
+                    new RaftEvent.AppendEntriesReq(new Term(1), new NodeId(2), 0L, Term.ZERO, List.of(entry), 0L, 0L));
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendAppendEntriesResp)
                     .extracting(e -> ((RaftEffect.SendAppendEntriesResp) e).success())
@@ -40,8 +40,8 @@ class RaftAppendEntriesTest {
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {
             state.update(new Term(5), java.util.Optional.empty());
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
-            var effects =
-                    core.step(new RaftEvent.AppendEntriesReq(new Term(3), new NodeId(2), 0L, Term.ZERO, List.of(), 0L));
+            var effects = core.step(
+                    new RaftEvent.AppendEntriesReq(new Term(3), new NodeId(2), 0L, Term.ZERO, List.of(), 0L, 0L));
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendAppendEntriesResp)
                     .extracting(e -> ((RaftEffect.SendAppendEntriesResp) e).success())
@@ -56,7 +56,7 @@ class RaftAppendEntriesTest {
             log.append(List.of(new LogEntry(1, new Term(2), LogEntry.Type.NORMAL, new byte[0])));
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
             var effects = core.step(
-                    new RaftEvent.AppendEntriesReq(new Term(3), new NodeId(2), 1L, new Term(1), List.of(), 0L));
+                    new RaftEvent.AppendEntriesReq(new Term(3), new NodeId(2), 1L, new Term(1), List.of(), 0L, 0L));
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendAppendEntriesResp)
                     .extracting(e -> ((RaftEffect.SendAppendEntriesResp) e).success())
@@ -74,8 +74,8 @@ class RaftAppendEntriesTest {
                     new LogEntry(3, new Term(1), LogEntry.Type.NORMAL, new byte[] {3})));
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
             var newEntry = new LogEntry(2, new Term(2), LogEntry.Type.NORMAL, new byte[] {9});
-            core.step(
-                    new RaftEvent.AppendEntriesReq(new Term(2), new NodeId(2), 1L, new Term(1), List.of(newEntry), 0L));
+            core.step(new RaftEvent.AppendEntriesReq(
+                    new Term(2), new NodeId(2), 1L, new Term(1), List.of(newEntry), 0L, 0L));
             assertThat(log.lastIndex()).isEqualTo(2L);
             assertThat(log.read(2, 1).get(0).payload()).containsExactly(9);
         }
@@ -89,8 +89,8 @@ class RaftAppendEntriesTest {
             var entries = List.of(
                     new LogEntry(1, new Term(1), LogEntry.Type.NORMAL, new byte[] {1}),
                     new LogEntry(2, new Term(1), LogEntry.Type.NORMAL, new byte[] {2}));
-            var effects =
-                    core.step(new RaftEvent.AppendEntriesReq(new Term(1), new NodeId(2), 0L, Term.ZERO, entries, 2L));
+            var effects = core.step(
+                    new RaftEvent.AppendEntriesReq(new Term(1), new NodeId(2), 0L, Term.ZERO, entries, 2L, 0L));
             long applied = effects.stream()
                     .filter(e -> e instanceof RaftEffect.ApplyCommitted)
                     .count();

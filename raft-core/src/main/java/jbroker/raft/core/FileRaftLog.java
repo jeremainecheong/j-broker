@@ -111,6 +111,7 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
                 writeFrame(entry);
                 index.add(entry);
             }
+            channel.force(true);
         } catch (IOException e) {
             throw new IllegalStateException("failed to append", e);
         }
@@ -156,6 +157,7 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
                 writeFrame(e);
                 index.add(e);
             }
+            channel.force(true);
         } catch (IOException e) {
             throw new IllegalStateException("failed to truncate", e);
         }

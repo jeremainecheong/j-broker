@@ -105,6 +105,35 @@ message BrokerRegistrationRecord {
   int32 port = 3;
 }
 
+// Emitted by the partition leader (via the controller's Raft log) whenever
+// (leader, ISR, leader_epoch) changes for a partition. Applied to every
+// broker's MetadataStateMachine. leader_epoch is strictly monotonic per
+// partition; stale records are ignored by the state machine.
+//
+// Invariants:
+//   - isr[0] MUST be the leader; the state machine rejects records where
+//     leader is not isr[0]. Subsequent order within isr is not significant.
+message PartitionChangeRecord {
+  string topic = 1;
+  int32 partition = 2;
+  int32 leader = 3;
+  repeated int32 isr = 4;
+  int32 leader_epoch = 5;
+
+  // 6: reserved for controller_epoch (Phase 6.5+).
+  reserved 6;
+}
+
+// Atomic create-topic bundle: TopicRecord + the initial PartitionChangeRecord
+// for every partition, all applied inside a single state-machine transition.
+// Without this, topic creation would be split across N+1 Raft log entries and
+// a crash between them could leave the topic catalogue without leader state
+// for some partitions.
+message CreateTopicRecord {
+  TopicRecord topic = 1;
+  repeated PartitionChangeRecord partition_changes = 2;
+}
+
 // Tagged union of metadata records; the Raft state machine tags payloads
 // with this wrapper so it can dispatch.
 message MetadataRecord {
@@ -112,5 +141,7 @@ message MetadataRecord {
     TopicRecord topic = 1;
     PartitionRecord partition = 2;
     BrokerRegistrationRecord broker = 3;
+    PartitionChangeRecord partition_change = 4;
+    CreateTopicRecord create_topic = 5;
   }
 }

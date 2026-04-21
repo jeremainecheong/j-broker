@@ -22,8 +22,13 @@ class SimulatorSmokeTest {
         sim.runFor(TimeUnit.MILLISECONDS.toNanos(500));
 
         for (var n : sim.nodes().values()) {
-            assertThat(n.sm.applied).hasSize(1);
-            assertThat(n.sm.applied.get(0).payload()).containsExactly(1, 2, 3);
+            // Leader emits a NO_OP on election win (Raft §8), so the applied
+            // list contains NO_OP + the client's NORMAL entry.
+            var normal = n.sm.applied.stream()
+                    .filter(e -> e.type() == jbroker.raft.core.LogEntry.Type.NORMAL)
+                    .toList();
+            assertThat(normal).hasSize(1);
+            assertThat(normal.get(0).payload()).containsExactly(1, 2, 3);
         }
     }
 

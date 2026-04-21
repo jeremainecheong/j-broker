@@ -39,7 +39,9 @@ class RaftClientProposeTest {
             core.step(new RaftEvent.PreVoteResp(new NodeId(2), Term.ZERO, true));
             core.step(new RaftEvent.VoteResp(new NodeId(2), new Term(1), true));
             var effects = core.step(new RaftEvent.ClientPropose(new byte[] {42}));
-            assertThat(log.lastIndex()).isEqualTo(1L);
+            // Index 1 is the NO_OP the leader appended on election win
+            // (Raft §8 commit-safety). The client's propose lands at index 2.
+            assertThat(log.lastIndex()).isEqualTo(2L);
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.PersistLog)
                     .hasSize(1);

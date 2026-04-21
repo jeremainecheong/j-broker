@@ -17,7 +17,8 @@ public sealed interface RaftEffect {
             long prevLogIndex,
             Term prevLogTerm,
             List<LogEntry> entries,
-            long leaderCommit)
+            long leaderCommit,
+            long heartbeatSeq)
             implements RaftEffect {
         public SendAppendEntries {
             Objects.requireNonNull(to);
@@ -26,11 +27,36 @@ public sealed interface RaftEffect {
             Objects.requireNonNull(prevLogTerm);
             entries = List.copyOf(entries);
         }
+
+        /** Backward-compatible constructor: {@code heartbeatSeq} defaults to 0. */
+        public SendAppendEntries(
+                NodeId to,
+                Term term,
+                NodeId leaderId,
+                long prevLogIndex,
+                Term prevLogTerm,
+                List<LogEntry> entries,
+                long leaderCommit) {
+            this(to, term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit, 0L);
+        }
     }
 
     record SendAppendEntriesResp(
-            NodeId to, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex)
-            implements RaftEffect {}
+            NodeId to,
+            Term term,
+            boolean success,
+            long conflictIndex,
+            Term conflictTerm,
+            long matchIndex,
+            long heartbeatSeq)
+            implements RaftEffect {
+
+        /** Backward-compatible constructor: {@code heartbeatSeq} defaults to 0. */
+        public SendAppendEntriesResp(
+                NodeId to, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex) {
+            this(to, term, success, conflictIndex, conflictTerm, matchIndex, 0L);
+        }
+    }
 
     record SendVoteReq(NodeId to, Term term, NodeId candidateId, long lastLogIndex, Term lastLogTerm)
             implements RaftEffect {}
@@ -55,4 +81,57 @@ public sealed interface RaftEffect {
 
     /** Inform the driver the proposal cannot be accepted (not leader). */
     record RejectClientPropose(Optional<NodeId> knownLeader) implements RaftEffect {}
+
+    record SendPreVoteReq(NodeId to, Term hypotheticalTerm, NodeId candidateId, long lastLogIndex, Term lastLogTerm)
+            implements RaftEffect {}
+
+    record SendPreVoteResp(NodeId to, Term term, boolean granted) implements RaftEffect {}
+
+    /**
+     * Signals that a {@link RaftEvent.ClientPropose} was recognised as a duplicate
+     * of an already-accepted {@code (clientId, clientSeq)} pair on this leader.
+     * The entry was not re-appended; the driver should surface the cached
+     * success response to the client.
+     */
+    record DuplicateClientPropose(long clientId, long clientSeq) implements RaftEffect {}
+
+    /** Leader tells {@code to} to start a real election at term+1 immediately. */
+    record SendTimeoutNow(NodeId to, Term term) implements RaftEffect {}
+
+    /**
+     * Read-index confirmed: driver may now read the state machine and return
+     * it to the client. {@code readIndex} is the {@code commitIndex} captured
+     * when the read arrived; by the time this effect is emitted,
+     * {@code lastApplied >= readIndex} is guaranteed.
+     */
+    record ServeClientRead(long clientId, long requestId, long readIndex) implements RaftEffect {}
+
+    /**
+     * Read-index aborted: either this node is not the leader, or it stepped
+     * down before the heartbeat-quorum confirmation completed. Driver should
+     * redirect the client to {@code knownLeader} if present.
+     */
+    record RejectClientRead(long clientId, long requestId, Optional<NodeId> knownLeader) implements RaftEffect {}
+
+    /**
+     * Admin-initiated config change was refused — typically because another
+     * config change is still in flight, or this node is not the leader.
+     */
+    record RejectConfigChange(String reason) implements RaftEffect {}
+
+    /** Leader → follower: install full state-machine snapshot. */
+    record SendInstallSnapshot(
+            NodeId to, Term term, NodeId leaderId, long lastIncludedIndex, Term lastIncludedTerm, byte[] snapshot)
+            implements RaftEffect {}
+
+    /** Follower → leader: snapshot install completed (or term bumped). */
+    record SendInstallSnapshotResp(NodeId to, Term term) implements RaftEffect {}
+
+    /**
+     * Driver should replace the state machine's contents with {@code snapshot}
+     * (via {@link StateMachine#restore}). The raft layer has already updated
+     * {@code commitIndex} / {@code lastApplied} and truncated the log prefix;
+     * the driver only needs to restore the state machine.
+     */
+    record ApplySnapshot(long lastIncludedIndex, Term lastIncludedTerm, byte[] snapshot) implements RaftEffect {}
 }

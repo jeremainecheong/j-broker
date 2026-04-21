@@ -29,22 +29,31 @@ class DefaultRaftCoreTest {
     }
 
     @Test
-    void followerTimingOutBecomesCandidateAndRequestsVotes(@TempDir Path dir) throws Exception {
+    void followerTimingOutEntersPreVoteAndThenRequestsRealVotes(@TempDir Path dir) throws Exception {
         try (var log = FileRaftLog.open(dir.resolve("log.bin"));
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {
 
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
             long farFuture = TimeUnit.MILLISECONDS.toNanos(5_000);
-            var effects = core.step(new RaftEvent.Tick(farFuture));
+            var preVoteEffects = core.step(new RaftEvent.Tick(farFuture));
+
+            // Timeout first enters pre-vote (term unchanged).
+            assertThat(core.role()).isEqualTo(Role.PRE_CANDIDATE);
+            assertThat(core.currentTerm()).isEqualTo(Term.ZERO);
+            assertThat(preVoteEffects)
+                    .filteredOn(e -> e instanceof RaftEffect.SendPreVoteReq)
+                    .extracting(e -> ((RaftEffect.SendPreVoteReq) e).to())
+                    .containsExactlyInAnyOrder(new NodeId(2), new NodeId(3));
+
+            // A granted pre-vote triggers the real election.
+            var voteEffects = core.step(new RaftEvent.PreVoteResp(new NodeId(2), Term.ZERO, true));
 
             assertThat(core.role()).isEqualTo(Role.CANDIDATE);
             assertThat(core.currentTerm()).isEqualTo(new Term(1));
-
-            assertThat(effects)
+            assertThat(voteEffects)
                     .filteredOn(e -> e instanceof RaftEffect.PersistState)
                     .hasSize(1);
-
-            assertThat(effects)
+            assertThat(voteEffects)
                     .filteredOn(e -> e instanceof RaftEffect.SendVoteReq)
                     .extracting(e -> ((RaftEffect.SendVoteReq) e).to())
                     .containsExactlyInAnyOrder(new NodeId(2), new NodeId(3));
@@ -57,6 +66,7 @@ class DefaultRaftCoreTest {
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
             core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+            core.step(new RaftEvent.PreVoteResp(new NodeId(2), Term.ZERO, true));
             core.step(new RaftEvent.VoteResp(new NodeId(2), new Term(1), true));
             var effects = core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_001)));
             assertThat(effects)

@@ -11,9 +11,14 @@ public sealed interface RaftEvent {
 
     record Tick(long nowNanos) implements RaftEvent {}
 
-    record ClientPropose(byte[] payload) implements RaftEvent {
+    record ClientPropose(long clientId, long clientSeq, byte[] payload) implements RaftEvent {
         public ClientPropose {
             Objects.requireNonNull(payload, "payload");
+        }
+
+        /** Convenience for legacy / test call sites that don't track client identity. */
+        public ClientPropose(byte[] payload) {
+            this(0L, 0L, payload);
         }
     }
 
@@ -24,7 +29,8 @@ public sealed interface RaftEvent {
             Term prevLogTerm,
             List<LogEntry> entries,
             long leaderCommit,
-            long nowNanos)
+            long nowNanos,
+            long heartbeatSeq)
             implements RaftEvent {
         public AppendEntriesReq {
             Objects.requireNonNull(term, "term");
@@ -32,15 +38,45 @@ public sealed interface RaftEvent {
             Objects.requireNonNull(prevLogTerm, "prevLogTerm");
             entries = List.copyOf(entries);
         }
+
+        /**
+         * Backward-compatible constructor: {@code heartbeatSeq} defaults to 0.
+         * Used by transport callers that haven't been wired up for read-index
+         * barrier propagation yet. With seq=0, responses to the resulting AE
+         * will never satisfy a read-index barrier, so ClientRead times out
+         * rather than being served on stale evidence.
+         */
+        public AppendEntriesReq(
+                Term term,
+                NodeId leaderId,
+                long prevLogIndex,
+                Term prevLogTerm,
+                List<LogEntry> entries,
+                long leaderCommit,
+                long nowNanos) {
+            this(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit, nowNanos, 0L);
+        }
     }
 
     record AppendEntriesResp(
-            NodeId from, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex)
+            NodeId from,
+            Term term,
+            boolean success,
+            long conflictIndex,
+            Term conflictTerm,
+            long matchIndex,
+            long heartbeatSeq)
             implements RaftEvent {
         public AppendEntriesResp {
             Objects.requireNonNull(from, "from");
             Objects.requireNonNull(term, "term");
             Objects.requireNonNull(conflictTerm, "conflictTerm");
+        }
+
+        /** Backward-compatible constructor: {@code heartbeatSeq} defaults to 0. */
+        public AppendEntriesResp(
+                NodeId from, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex) {
+            this(from, term, success, conflictIndex, conflictTerm, matchIndex, 0L);
         }
     }
 
@@ -55,6 +91,77 @@ public sealed interface RaftEvent {
 
     record VoteResp(NodeId from, Term term, boolean granted) implements RaftEvent {
         public VoteResp {
+            Objects.requireNonNull(from, "from");
+            Objects.requireNonNull(term, "term");
+        }
+    }
+
+    record PreVoteReq(Term term, NodeId candidateId, long lastLogIndex, Term lastLogTerm, long nowNanos)
+            implements RaftEvent {
+        public PreVoteReq {
+            Objects.requireNonNull(term, "term");
+            Objects.requireNonNull(candidateId, "candidateId");
+            Objects.requireNonNull(lastLogTerm, "lastLogTerm");
+        }
+    }
+
+    record PreVoteResp(NodeId from, Term term, boolean granted) implements RaftEvent {
+        public PreVoteResp {
+            Objects.requireNonNull(from, "from");
+            Objects.requireNonNull(term, "term");
+        }
+    }
+
+    /** Client-/admin-initiated: ask the current leader to hand off to {@code target}. */
+    record TransferLeadership(NodeId target) implements RaftEvent {
+        public TransferLeadership {
+            Objects.requireNonNull(target, "target");
+        }
+    }
+
+    /** From current leader: start a real election at term+1 immediately, skipping pre-vote. */
+    record TimeoutNow(NodeId from, Term term, long nowNanos) implements RaftEvent {
+        public TimeoutNow {
+            Objects.requireNonNull(from, "from");
+            Objects.requireNonNull(term, "term");
+        }
+    }
+
+    /**
+     * Linearizable read request. {@code clientId} + {@code requestId} are opaque
+     * identifiers the driver uses to correlate the response; they do not affect
+     * raft state. {@code clientId==0} is allowed (legacy / unauthenticated).
+     */
+    record ClientRead(long clientId, long requestId) implements RaftEvent {}
+
+    /**
+     * Admin-initiated single-server membership change: replace the active voter
+     * list with {@code newVoters}. Takes effect on append (Raft §4.2). Rejected
+     * by the leader if another config change is still in flight.
+     */
+    record ProposeConfigChange(List<NodeId> newVoters) implements RaftEvent {
+        public ProposeConfigChange {
+            newVoters = List.copyOf(newVoters);
+            if (newVoters.isEmpty()) {
+                throw new IllegalArgumentException("newVoters must be non-empty");
+            }
+        }
+    }
+
+    /** Leader → lagging follower: install a full state-machine snapshot. */
+    record InstallSnapshotReq(
+            Term term, NodeId leaderId, long lastIncludedIndex, Term lastIncludedTerm, byte[] snapshot, long nowNanos)
+            implements RaftEvent {
+        public InstallSnapshotReq {
+            Objects.requireNonNull(term, "term");
+            Objects.requireNonNull(leaderId, "leaderId");
+            Objects.requireNonNull(lastIncludedTerm, "lastIncludedTerm");
+            Objects.requireNonNull(snapshot, "snapshot");
+        }
+    }
+
+    record InstallSnapshotResp(NodeId from, Term term) implements RaftEvent {
+        public InstallSnapshotResp {
             Objects.requireNonNull(from, "from");
             Objects.requireNonNull(term, "term");
         }

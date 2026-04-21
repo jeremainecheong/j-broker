@@ -1,5 +1,10 @@
 package jbroker.raft.core;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -28,6 +33,29 @@ final class MapStateMachine implements StateMachine {
 
     public Map<String, String> snapshot() {
         return Map.copyOf(store);
+    }
+
+    @Override
+    public void snapshot(OutputStream out) throws IOException {
+        var dout = new DataOutputStream(out);
+        dout.writeInt(store.size());
+        for (var e : store.entrySet()) {
+            dout.writeUTF(e.getKey());
+            dout.writeUTF(e.getValue());
+        }
+        dout.flush();
+    }
+
+    @Override
+    public void restore(InputStream in) throws IOException {
+        store.clear();
+        var din = new DataInputStream(in);
+        int n = din.readInt();
+        for (int i = 0; i < n; i++) {
+            var k = din.readUTF();
+            var v = din.readUTF();
+            store.put(k, v);
+        }
     }
 
     public static byte[] encode(String key, String value) {

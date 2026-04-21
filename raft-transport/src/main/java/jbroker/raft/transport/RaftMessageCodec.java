@@ -65,11 +65,31 @@ public final class RaftMessageCodec {
                 .setCandidateId(eff.candidateId().value())
                 .setLastLogIndex(eff.lastLogIndex())
                 .setLastLogTerm(eff.lastLogTerm().value())
+                .setPreVote(false)
+                .build();
+    }
+
+    public static RequestVoteRequest toProto(RaftEffect.SendPreVoteReq eff) {
+        return RequestVoteRequest.newBuilder()
+                .setTerm(eff.hypotheticalTerm().value())
+                .setCandidateId(eff.candidateId().value())
+                .setLastLogIndex(eff.lastLogIndex())
+                .setLastLogTerm(eff.lastLogTerm().value())
+                .setPreVote(true)
                 .build();
     }
 
     public static RaftEvent.VoteReq fromProto(RequestVoteRequest p, long nowNanos) {
         return new RaftEvent.VoteReq(
+                new Term(p.getTerm()),
+                new NodeId(p.getCandidateId()),
+                p.getLastLogIndex(),
+                new Term(p.getLastLogTerm()),
+                nowNanos);
+    }
+
+    public static RaftEvent.PreVoteReq preVoteFromProto(RequestVoteRequest p, long nowNanos) {
+        return new RaftEvent.PreVoteReq(
                 new Term(p.getTerm()),
                 new NodeId(p.getCandidateId()),
                 p.getLastLogIndex(),
@@ -84,8 +104,19 @@ public final class RaftMessageCodec {
                 .build();
     }
 
+    public static RequestVoteResponse toProto(RaftEffect.SendPreVoteResp eff) {
+        return RequestVoteResponse.newBuilder()
+                .setTerm(eff.term().value())
+                .setVoteGranted(eff.granted())
+                .build();
+    }
+
     public static RaftEvent.VoteResp fromProto(RequestVoteResponse p, NodeId from) {
         return new RaftEvent.VoteResp(from, new Term(p.getTerm()), p.getVoteGranted());
+    }
+
+    public static RaftEvent.PreVoteResp preVoteRespFromProto(RequestVoteResponse p, NodeId from) {
+        return new RaftEvent.PreVoteResp(from, new Term(p.getTerm()), p.getVoteGranted());
     }
 
     private static jbroker.proto.raft.LogEntry toProto(LogEntry e) {

@@ -23,6 +23,7 @@ class RaftLeaderCommitTest {
         var state = FilePersistentState.open(dir.resolve("state.bin"));
         var core = new DefaultRaftCore(CONFIG, log, state, 0L);
         core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+        core.step(new RaftEvent.PreVoteResp(new NodeId(2), Term.ZERO, true));
         core.step(new RaftEvent.VoteResp(new NodeId(2), new Term(1), true));
         assertThat(core.role()).isEqualTo(Role.LEADER);
         return core;

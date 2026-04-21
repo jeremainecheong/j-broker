@@ -2,6 +2,7 @@ package jbroker.it;
 
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -75,6 +76,12 @@ public final class ClusterHarness implements AutoCloseable {
             peers.values().forEach(RaftPeerClient::warmUp);
             nodes.add(new Node(self, port, driver, sm));
         }
+        // Block until every gRPC server port is accepting TCP connections.
+        // This ensures that when the first election fires (after the deferred
+        // deadline), all vote RPCs can reach their targets without hitting
+        // connection-refused, which would silently drop the vote and cause a
+        // re-election that may exceed the 1 s waitForLeader budget.
+        awaitAllPortsOpen(ports, 2_000);
         return new ClusterHarness(nodes);
     }
 
@@ -114,6 +121,25 @@ public final class ClusterHarness implements AutoCloseable {
             return sock.getLocalPort();
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private static void awaitAllPortsOpen(int[] ports, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        for (int port : ports) {
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    new Socket("127.0.0.1", port).close();
+                    break; // port is open
+                } catch (IOException ignored) {
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
         }
     }
 

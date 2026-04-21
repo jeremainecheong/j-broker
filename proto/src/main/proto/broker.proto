@@ -1,0 +1,89 @@
+syntax = "proto3";
+package jbroker.broker;
+option java_multiple_files = true;
+option java_package = "jbroker.proto.broker";
+
+service Producer {
+  rpc Produce(ProduceRequest) returns (ProduceResponse);
+}
+
+service Consumer {
+  rpc Fetch(FetchRequest) returns (FetchResponse);
+}
+
+service Admin {
+  rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
+  rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
+  rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
+}
+
+// ===== Produce =====
+
+message ProduceRequest {
+  string topic = 1;
+  int32 partition = 2;
+  // Raw Kafka v2 record-batch bytes, prepared by the client.
+  bytes batch = 3;
+}
+
+message ProduceResponse {
+  int64 base_offset = 1;
+  int64 last_offset = 2;
+  Error error = 3;
+}
+
+// ===== Fetch =====
+
+message FetchRequest {
+  string topic = 1;
+  int32 partition = 2;
+  int64 offset = 3;
+  int32 max_bytes = 4;
+}
+
+message FetchResponse {
+  // Raw bytes containing one or more v2 record batches; may be empty if the
+  // offset is at or past the log end.
+  bytes records = 1;
+  int64 high_watermark = 2;
+  Error error = 3;
+}
+
+// ===== Admin =====
+
+message CreateTopicRequest {
+  string topic = 1;
+  int32 partitions = 2;
+  int32 replication_factor = 3;
+}
+
+message CreateTopicResponse {
+  Error error = 1;
+}
+
+message ListTopicsRequest {}
+
+message ListTopicsResponse {
+  repeated TopicDescription topics = 1;
+}
+
+message DescribeTopicRequest {
+  string topic = 1;
+}
+
+message DescribeTopicResponse {
+  TopicDescription topic = 1;
+  Error error = 2;
+}
+
+message TopicDescription {
+  string topic = 1;
+  int32 partitions = 2;
+  int32 replication_factor = 3;
+  int64 created_millis = 4;
+}
+
+message Error {
+  int32 code = 1;
+  string message = 2;
+}

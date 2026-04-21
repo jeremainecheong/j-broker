@@ -147,11 +147,12 @@ class RaftMembershipTest {
         assertThat(core.role()).isEqualTo(Role.LEADER);
         assertThat(core.activeVoters()).containsExactlyInAnyOrder(N2, N3);
 
-        // New quorum is 2 (of N2+N3). Acks from N2 AND N3 commit the entry.
-        core.step(new RaftEvent.AppendEntriesResp(N2, new Term(1), true, 0L, Term.ZERO, 1L));
-        var effects = core.step(new RaftEvent.AppendEntriesResp(N3, new Term(1), true, 0L, Term.ZERO, 1L));
+        // New quorum is 2 (of N2+N3). With the on-election NO_OP at index 1,
+        // the CONFIG_CHANGE lands at index 2. Acks at matchIndex=2 commit both.
+        core.step(new RaftEvent.AppendEntriesResp(N2, new Term(1), true, 0L, Term.ZERO, 2L));
+        var effects = core.step(new RaftEvent.AppendEntriesResp(N3, new Term(1), true, 0L, Term.ZERO, 2L));
 
-        assertThat(core.commitIndex()).isEqualTo(1L);
+        assertThat(core.commitIndex()).isEqualTo(2L);
         assertThat(core.role()).isEqualTo(Role.FOLLOWER);
         // A PersistState effect accompanies the step-down.
         assertThat(effects)

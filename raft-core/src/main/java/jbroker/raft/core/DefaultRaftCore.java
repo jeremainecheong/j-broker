@@ -374,12 +374,26 @@ public final class DefaultRaftCore implements RaftCore {
                     matchIndex.put(peer, 0L);
                 }
             }
+            // Append a NO_OP at the new leader's term (Raft §8 / §5.4.2).
+            // Without this, previous-term entries can never commit on a
+            // restarted cluster — the commit-safety rule forbids counting
+            // replicas for entries whose term != currentTerm. The NO_OP's
+            // own commit transitively advances commitIndex past every
+            // preceding entry, unlocking apply.
+            long noOpIdx = lastIdx + 1;
+            var noOp = new LogEntry(noOpIdx, persistentState.currentTerm(), LogEntry.Type.NO_OP, new byte[0]);
+            log.append(List.of(noOp));
+            effects.add(new RaftEffect.PersistLog(List.of(noOp)));
+            matchIndex.put(config.selfId(), noOpIdx);
             // Force an immediate heartbeat from the next Tick: we don't have
             // 'now' here, so park lastHeartbeatNanos far enough in the past
             // that (now - lastHeartbeatNanos) >= heartbeatInterval regardless
             // of the nowNanos the Tick carries. Using MIN_VALUE/2 keeps the
             // delta from overflowing if now is itself negative.
             lastHeartbeatNanos = Long.MIN_VALUE / 2;
+            // Single-node: no peers will ack the NO_OP, so advance commit
+            // now. Multi-node: this is a no-op (no peer matchIndex yet).
+            maybeAdvanceLeaderCommit(effects);
         }
     }
 
@@ -410,6 +424,12 @@ public final class DefaultRaftCore implements RaftCore {
                 sendAppendEntriesTo(peer, effects);
             }
         }
+        // Single-node clusters have no peers to return AE responses, so
+        // maybeAdvanceLeaderCommit would otherwise never fire. Invoke it
+        // inline so the entry commits immediately — in multi-node this is
+        // harmless (no peer matchIndex has advanced yet, so count == 1 <
+        // quorum and nothing changes).
+        maybeAdvanceLeaderCommit(effects);
     }
 
     private void onAppendEntriesReq(RaftEvent.AppendEntriesReq req, List<RaftEffect> effects) {

@@ -213,44 +213,56 @@ public final class RaftDriver implements AutoCloseable {
     private void dispatchAppend(RaftEffect.SendAppendEntries eff) {
         var peer = peers.get(eff.to());
         if (peer == null) return;
-        try {
-            var proto = AppendEntriesRequest.newBuilder()
-                    .setTerm(eff.term().value())
-                    .setLeaderId(eff.leaderId().value())
-                    .setPrevLogIndex(eff.prevLogIndex())
-                    .setPrevLogTerm(eff.prevLogTerm().value())
-                    .setLeaderCommit(eff.leaderCommit());
-            for (var e : eff.entries()) {
-                proto.addEntries(jbroker.proto.raft.LogEntry.newBuilder()
-                        .setIndex(e.index())
-                        .setTerm(e.term().value())
-                        .setType(EntryType.forNumber(e.type().ordinal()))
-                        .setPayload(ByteString.copyFrom(e.payload()))
-                        .build());
-            }
-            var resp = peer.appendEntries(proto.build());
-            long matchHint = eff.prevLogIndex() + eff.entries().size();
-            queue.put(new PendingEvent(RaftMessageCodec.fromProto(resp, eff.to(), matchHint), null));
-        } catch (Exception e) {
-            LOG.debug("append to {} failed: {}", eff.to(), e.getMessage());
-        }
+        // Run the blocking RPC on a virtual thread so the pump remains free to
+        // process incoming events (e.g. vote requests) concurrently.
+        Thread.ofVirtual()
+                .name("raft-append-" + selfId.value() + "->" + eff.to().value())
+                .start(() -> {
+                    try {
+                        var proto = AppendEntriesRequest.newBuilder()
+                                .setTerm(eff.term().value())
+                                .setLeaderId(eff.leaderId().value())
+                                .setPrevLogIndex(eff.prevLogIndex())
+                                .setPrevLogTerm(eff.prevLogTerm().value())
+                                .setLeaderCommit(eff.leaderCommit());
+                        for (var e : eff.entries()) {
+                            proto.addEntries(jbroker.proto.raft.LogEntry.newBuilder()
+                                    .setIndex(e.index())
+                                    .setTerm(e.term().value())
+                                    .setType(EntryType.forNumber(e.type().ordinal()))
+                                    .setPayload(ByteString.copyFrom(e.payload()))
+                                    .build());
+                        }
+                        var resp = peer.appendEntries(proto.build());
+                        long matchHint = eff.prevLogIndex() + eff.entries().size();
+                        queue.put(new PendingEvent(RaftMessageCodec.fromProto(resp, eff.to(), matchHint), null));
+                    } catch (Exception e) {
+                        LOG.debug("append to {} failed: {}", eff.to(), e.getMessage());
+                    }
+                });
     }
 
     private void dispatchVote(RaftEffect.SendVoteReq eff) {
         var peer = peers.get(eff.to());
         if (peer == null) return;
-        try {
-            var proto = RequestVoteRequest.newBuilder()
-                    .setTerm(eff.term().value())
-                    .setCandidateId(eff.candidateId().value())
-                    .setLastLogIndex(eff.lastLogIndex())
-                    .setLastLogTerm(eff.lastLogTerm().value())
-                    .build();
-            var resp = peer.requestVote(proto);
-            queue.put(new PendingEvent(RaftMessageCodec.fromProto(resp, eff.to()), null));
-        } catch (Exception e) {
-            LOG.debug("vote to {} failed: {}", eff.to(), e.getMessage());
-        }
+        // Run the blocking RPC on a virtual thread so the pump remains free to
+        // process incoming events (e.g. vote requests from other candidates).
+        Thread.ofVirtual()
+                .name("raft-vote-" + selfId.value() + "->" + eff.to().value())
+                .start(() -> {
+                    try {
+                        var proto = RequestVoteRequest.newBuilder()
+                                .setTerm(eff.term().value())
+                                .setCandidateId(eff.candidateId().value())
+                                .setLastLogIndex(eff.lastLogIndex())
+                                .setLastLogTerm(eff.lastLogTerm().value())
+                                .build();
+                        var resp = peer.requestVote(proto);
+                        queue.put(new PendingEvent(RaftMessageCodec.fromProto(resp, eff.to()), null));
+                    } catch (Exception e) {
+                        LOG.debug("vote to {} failed: {}", eff.to(), e.getMessage());
+                    }
+                });
     }
 
     private record PendingEvent(RaftEvent event, CompletableFuture<?> future) {}

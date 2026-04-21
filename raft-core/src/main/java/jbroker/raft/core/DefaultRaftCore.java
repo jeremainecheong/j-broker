@@ -27,11 +27,26 @@ public final class DefaultRaftCore implements RaftCore {
     private final Map<NodeId, Long> nextIndex = new HashMap<>();
     private final Map<NodeId, Long> matchIndex = new HashMap<>();
 
+    /**
+     * Constructs a new {@code DefaultRaftCore}.
+     *
+     * @param nowNanos the current monotonic timestamp in nanoseconds, used to
+     *                 set the initial election deadline.  Pass
+     *                 {@link Long#MAX_VALUE} to defer the first election: the
+     *                 deadline is held at {@code Long.MAX_VALUE} until the first
+     *                 {@link RaftEvent.Tick} arrives, at which point the timeout
+     *                 is reset from that real timestamp.  This is useful for
+     *                 integration tests where network servers need time to start
+     *                 before any elections should fire.
+     */
     public DefaultRaftCore(RaftConfig config, RaftLog log, PersistentState persistentState, long nowNanos) {
         this.config = Objects.requireNonNull(config, "config");
         this.log = Objects.requireNonNull(log, "log");
         this.persistentState = Objects.requireNonNull(persistentState, "persistentState");
-        this.electionDeadlineNanos = nowNanos + randomisedElectionTimeout();
+        // Long.MAX_VALUE is a sentinel meaning "defer the first election until the
+        // first real Tick arrives" (the onTick sentinel path handles this).
+        this.electionDeadlineNanos =
+                (nowNanos == Long.MAX_VALUE) ? Long.MAX_VALUE : nowNanos + randomisedElectionTimeout();
     }
 
     @Override

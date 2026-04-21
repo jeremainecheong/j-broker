@@ -7,6 +7,7 @@ import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.DescribeTopicResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
+import jbroker.proto.raft.CreateTopicRecord;
 import jbroker.proto.raft.MetadataRecord;
 import jbroker.proto.raft.PartitionChangeRecord;
 import jbroker.proto.raft.TopicRecord;
@@ -45,33 +46,31 @@ public final class AdminHandler {
                             .build())
                     .build();
         }
-        var record = MetadataRecord.newBuilder()
+        // Single-broker P6.1: self is controller and the sole replica of
+        // every partition. Bundle the TopicRecord and per-partition leader
+        // assignments into one CreateTopicRecord so both halves commit in the
+        // same state-machine transition — no half-initialised topic window.
+        // Multi-broker Phase 6+ will keep the same atomic shape with the
+        // controller picking replicas per partition.
+        var ct = CreateTopicRecord.newBuilder()
                 .setTopic(TopicRecord.newBuilder()
                         .setTopic(req.getTopic())
                         .setPartitions(req.getPartitions())
                         .setReplicationFactor(req.getReplicationFactor())
                         .setCreatedMillis(System.currentTimeMillis())
-                        .build())
-                .build();
+                        .build());
+        for (int p = 0; p < req.getPartitions(); p++) {
+            ct.addPartitionChanges(PartitionChangeRecord.newBuilder()
+                    .setTopic(req.getTopic())
+                    .setPartition(p)
+                    .setLeader(selfBrokerId)
+                    .addIsr(selfBrokerId)
+                    .setLeaderEpoch(0)
+                    .build());
+        }
+        var record = MetadataRecord.newBuilder().setCreateTopic(ct.build()).build();
         try {
             proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
-            // Single-broker P6.1: self is controller, self is the sole
-            // replica of every partition. Emit one PartitionChangeRecord per
-            // partition so the ProduceHandler leader check succeeds. When
-            // multi-broker replication lands (P6.2+), the controller picks
-            // replicas per partition instead of hardcoding self.
-            for (int p = 0; p < req.getPartitions(); p++) {
-                var change = MetadataRecord.newBuilder()
-                        .setPartitionChange(PartitionChangeRecord.newBuilder()
-                                .setTopic(req.getTopic())
-                                .setPartition(p)
-                                .setLeader(selfBrokerId)
-                                .addIsr(selfBrokerId)
-                                .setLeaderEpoch(0)
-                                .build())
-                        .build();
-                proposer.proposeAndWait(change.toByteArray(), TimeUnit.SECONDS.toMillis(5));
-            }
         } catch (Exception e) {
             return CreateTopicResponse.newBuilder()
                     .setError(jbroker.proto.broker.Error.newBuilder()

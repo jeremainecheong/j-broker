@@ -38,12 +38,23 @@ public final class MetadataStateMachine implements StateMachine {
             topicManager.onTopicCommitted(
                     t.getTopic(), t.getPartitions(), t.getReplicationFactor(), t.getCreatedMillis());
         } else if (record.hasPartitionChange()) {
-            var p = record.getPartitionChange();
-            topicManager.onPartitionChange(
-                    p.getTopic(), p.getPartition(), p.getLeader(), p.getIsrList(), p.getLeaderEpoch());
+            applyPartitionChange(record.getPartitionChange());
+        } else if (record.hasCreateTopic()) {
+            var ct = record.getCreateTopic();
+            var t = ct.getTopic();
+            topicManager.onTopicCommitted(
+                    t.getTopic(), t.getPartitions(), t.getReplicationFactor(), t.getCreatedMillis());
+            for (var p : ct.getPartitionChangesList()) {
+                applyPartitionChange(p);
+            }
         }
         // PartitionRecord / BrokerRegistrationRecord: not yet dispatched;
         // Phase 6 later steps will consume them.
+    }
+
+    private void applyPartitionChange(jbroker.proto.raft.PartitionChangeRecord p) {
+        topicManager.onPartitionChange(
+                p.getTopic(), p.getPartition(), p.getLeader(), p.getIsrList(), p.getLeaderEpoch());
     }
 
     @Override

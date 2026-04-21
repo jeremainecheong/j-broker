@@ -23,7 +23,12 @@ public final class FollowerStateTracker {
 
     private record Key(String topic, int partition, int brokerId) {}
 
+    private record PartitionKey(String topic, int partition) {}
+
     private final ConcurrentHashMap<Key, Match> state = new ConcurrentHashMap<>();
+    // Per-partition HWM floor. HWM must be monotonically non-decreasing;
+    // once committed, advancing the floor is the only way it changes.
+    private final ConcurrentHashMap<PartitionKey, Long> hwmFloor = new ConcurrentHashMap<>();
 
     public void record(String topic, int partition, int brokerId, long leo, long nowMillis) {
         state.put(new Key(topic, partition, brokerId), new Match(leo, nowMillis));
@@ -34,20 +39,34 @@ public final class FollowerStateTracker {
     }
 
     /**
-     * HWM = min(LEO across ISR). Leader's own LEO is passed in explicitly
-     * rather than read from the map so we don't require the leader to
-     * self-record. If any non-leader ISR member has no tracked LEO yet, HWM
-     * is conservatively 0.
+     * HWM = max(prior HWM, min(LEO across ISR)). Leader's own LEO is passed
+     * in explicitly rather than read from the map so we don't require the
+     * leader to self-record. If any non-leader ISR member has no tracked
+     * LEO yet, the min-LEO term is conservatively 0 — but the prior HWM
+     * floor still holds, so a snapshot-restored broker that hasn't
+     * re-fetched yet can't drag HWM down.
+     *
+     * <p>Also guarantees monotonicity across ISR expansion: when a just-
+     * caught-up broker is added to ISR, its stale tracker LEO can't regress
+     * the committed HWM.
      */
     public long computeHwm(String topic, int partition, List<Integer> isr, int leaderBrokerId, long leaderLeo) {
         long min = leaderLeo;
+        boolean anyMissing = false;
         for (int broker : isr) {
             if (broker == leaderBrokerId) continue;
             var m = state.get(new Key(topic, partition, broker));
-            if (m == null) return 0L;
+            if (m == null) {
+                anyMissing = true;
+                continue;
+            }
             if (m.leo() < min) min = m.leo();
         }
-        return min;
+        long candidate = anyMissing ? 0L : min;
+        var key = new PartitionKey(topic, partition);
+        // ConcurrentHashMap.merge guarantees atomic max-update under
+        // concurrent callers.
+        return hwmFloor.merge(key, candidate, Math::max);
     }
 
     /**

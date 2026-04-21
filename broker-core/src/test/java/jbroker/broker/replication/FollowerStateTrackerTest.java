@@ -64,6 +64,25 @@ class FollowerStateTrackerTest {
     }
 
     @Test
+    void computeHwmIsMonotonicAcrossIsrExpand() {
+        // Reviewer's issue #1 (CRITICAL): when a just-caught-up broker is
+        // added to ISR, its stale tracker LEO can't be allowed to drag
+        // HWM back down.
+        var tracker = new FollowerStateTracker();
+        tracker.record("orders", 0, 2, 11L, 1_000L);
+        // HWM over {leader=1, follower=2} is 11.
+        long firstHwm = tracker.computeHwm("orders", 0, List.of(1, 2), 1, 11L);
+        assertThat(firstHwm).isEqualTo(11L);
+
+        // Now broker 3 is added to ISR with its last tracker entry stale at
+        // LEO=1 (it caught up to 1, was added, hasn't fetched since).
+        tracker.record("orders", 0, 3, 1L, 1_000L);
+        long afterExpand = tracker.computeHwm("orders", 0, List.of(1, 2, 3), 1, 11L);
+        // min(11, 11, 1) would be 1 — but HWM must not regress.
+        assertThat(afterExpand).isEqualTo(11L);
+    }
+
+    @Test
     void laggardsOfTreatsNeverFetchedAsLaggard() {
         var tracker = new FollowerStateTracker();
         var laggards = tracker.laggardsOf("orders", 0, List.of(2), 10_000L, 3_000L);

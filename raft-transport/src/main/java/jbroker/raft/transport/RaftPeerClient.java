@@ -65,6 +65,10 @@ public final class RaftPeerClient implements AutoCloseable {
         return stub.withDeadlineAfter(2, TimeUnit.SECONDS).requestVote(req);
     }
 
+    public jbroker.proto.raft.TimeoutNowResponse timeoutNow(jbroker.proto.raft.TimeoutNowRequest req) {
+        return stub.withDeadlineAfter(2, TimeUnit.SECONDS).timeoutNow(req);
+    }
+
     @Override
     public void close() {
         channel.shutdown();

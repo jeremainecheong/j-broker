@@ -158,6 +158,20 @@ public final class RaftDriver implements AutoCloseable {
         queue.put(new PendingEvent(new RaftEvent.ClientPropose(payload), null));
     }
 
+    public void transferLeadership(NodeId target) throws InterruptedException {
+        queue.put(new PendingEvent(new RaftEvent.TransferLeadership(target), null));
+    }
+
+    public jbroker.proto.raft.TimeoutNowResponse handleTimeoutNow(jbroker.proto.raft.TimeoutNowRequest req)
+            throws InterruptedException {
+        queue.put(new PendingEvent(
+                new RaftEvent.TimeoutNow(new NodeId(req.getLeaderId()), new Term(req.getTerm()), clock.nanoTime()),
+                null));
+        return jbroker.proto.raft.TimeoutNowResponse.newBuilder()
+                .setTerm(core.currentTerm().value())
+                .build();
+    }
+
     public Term currentTerm() {
         return core.currentTerm();
     }
@@ -235,8 +249,27 @@ public final class RaftDriver implements AutoCloseable {
                 case RaftEffect.DuplicateClientPropose ignored -> {
                     /* Phase 5 wires the cached-response path to the client */
                 }
+                case RaftEffect.SendTimeoutNow t -> dispatchTimeoutNow(t);
             }
         }
+    }
+
+    private void dispatchTimeoutNow(RaftEffect.SendTimeoutNow eff) {
+        var peer = peers.get(eff.to());
+        if (peer == null) return;
+        Thread.ofVirtual()
+                .name("raft-timeoutnow-" + selfId.value() + "->" + eff.to().value())
+                .start(() -> {
+                    try {
+                        var proto = jbroker.proto.raft.TimeoutNowRequest.newBuilder()
+                                .setTerm(eff.term().value())
+                                .setLeaderId(selfId.value())
+                                .build();
+                        peer.timeoutNow(proto);
+                    } catch (Exception e) {
+                        LOG.debug("timeoutNow to {} failed: {}", eff.to(), e.getMessage());
+                    }
+                });
     }
 
     private void dispatchAppend(RaftEffect.SendAppendEntries eff) {

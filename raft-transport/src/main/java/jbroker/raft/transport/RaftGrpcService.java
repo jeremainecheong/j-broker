@@ -50,8 +50,12 @@ public final class RaftGrpcService extends RaftGrpc.RaftImplBase {
 
     @Override
     public void timeoutNow(TimeoutNowRequest req, StreamObserver<TimeoutNowResponse> out) {
-        // Phase 2 feature; stub.
-        out.onNext(TimeoutNowResponse.newBuilder().build());
-        out.onCompleted();
+        try {
+            var resp = driver.handleTimeoutNow(req);
+            out.onNext(resp);
+            out.onCompleted();
+        } catch (Exception e) {
+            out.onError(e);
+        }
     }
 }

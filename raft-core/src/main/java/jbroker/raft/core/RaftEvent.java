@@ -80,4 +80,19 @@ public sealed interface RaftEvent {
             Objects.requireNonNull(term, "term");
         }
     }
+
+    /** Client-/admin-initiated: ask the current leader to hand off to {@code target}. */
+    record TransferLeadership(NodeId target) implements RaftEvent {
+        public TransferLeadership {
+            Objects.requireNonNull(target, "target");
+        }
+    }
+
+    /** From current leader: start a real election at term+1 immediately, skipping pre-vote. */
+    record TimeoutNow(NodeId from, Term term, long nowNanos) implements RaftEvent {
+        public TimeoutNow {
+            Objects.requireNonNull(from, "from");
+            Objects.requireNonNull(term, "term");
+        }
+    }
 }

@@ -81,8 +81,35 @@ public final class DefaultRaftCore implements RaftCore {
             case RaftEvent.VoteResp resp -> onVoteResp(resp, effects);
             case RaftEvent.PreVoteReq req -> onPreVoteReq(req, effects);
             case RaftEvent.PreVoteResp resp -> onPreVoteResp(resp, effects);
+            case RaftEvent.TransferLeadership t -> onTransferLeadership(t, effects);
+            case RaftEvent.TimeoutNow t -> onTimeoutNow(t, effects);
         }
         return effects;
+    }
+
+    private void onTransferLeadership(RaftEvent.TransferLeadership ev, List<RaftEffect> effects) {
+        if (role != Role.LEADER) {
+            return;
+        }
+        if (ev.target().equals(config.selfId())) {
+            return;
+        }
+        effects.add(new RaftEffect.SendTimeoutNow(ev.target(), persistentState.currentTerm()));
+    }
+
+    private void onTimeoutNow(RaftEvent.TimeoutNow ev, List<RaftEffect> effects) {
+        lastKnownNowNanos = ev.nowNanos();
+        var currentTerm = persistentState.currentTerm();
+        if (ev.term().compareTo(currentTerm) < 0) {
+            return; // stale TimeoutNow from a former leader
+        }
+        // Catch up to the sender's term first so our next election lands at
+        // sender-term + 1 (beating any concurrent candidate at sender-term).
+        if (ev.term().compareTo(currentTerm) > 0) {
+            becomeFollower(ev.term(), Optional.empty(), effects);
+        }
+        // Skip pre-vote — the incumbent leader has already vouched for us.
+        startElection(ev.nowNanos(), effects);
     }
 
     private void onTick(RaftEvent.Tick tick, List<RaftEffect> effects) {

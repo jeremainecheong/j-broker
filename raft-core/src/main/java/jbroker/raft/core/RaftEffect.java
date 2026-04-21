@@ -68,4 +68,7 @@ public sealed interface RaftEffect {
      * success response to the client.
      */
     record DuplicateClientPropose(long clientId, long clientSeq) implements RaftEffect {}
+
+    /** Leader tells {@code to} to start a real election at term+1 immediately. */
+    record SendTimeoutNow(NodeId to, Term term) implements RaftEffect {}
 }

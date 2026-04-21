@@ -1,7 +1,6 @@
 import com.google.protobuf.gradle.id
 
 plugins {
-    `java-library`
     id("jbroker.java-conventions")
     id("com.google.protobuf") version "0.9.4"
 }

@@ -8,6 +8,7 @@ import jbroker.proto.broker.DescribeTopicResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
 import jbroker.proto.raft.MetadataRecord;
+import jbroker.proto.raft.PartitionChangeRecord;
 import jbroker.proto.raft.TopicRecord;
 
 /**
@@ -27,10 +28,12 @@ public final class AdminHandler {
 
     private final TopicManager topicManager;
     private final MetadataProposer proposer;
+    private final int selfBrokerId;
 
-    public AdminHandler(TopicManager topicManager, MetadataProposer proposer) {
+    public AdminHandler(TopicManager topicManager, MetadataProposer proposer, int selfBrokerId) {
         this.topicManager = topicManager;
         this.proposer = proposer;
+        this.selfBrokerId = selfBrokerId;
     }
 
     public CreateTopicResponse createTopic(CreateTopicRequest req) {
@@ -52,6 +55,23 @@ public final class AdminHandler {
                 .build();
         try {
             proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
+            // Single-broker P6.1: self is controller, self is the sole
+            // replica of every partition. Emit one PartitionChangeRecord per
+            // partition so the ProduceHandler leader check succeeds. When
+            // multi-broker replication lands (P6.2+), the controller picks
+            // replicas per partition instead of hardcoding self.
+            for (int p = 0; p < req.getPartitions(); p++) {
+                var change = MetadataRecord.newBuilder()
+                        .setPartitionChange(PartitionChangeRecord.newBuilder()
+                                .setTopic(req.getTopic())
+                                .setPartition(p)
+                                .setLeader(selfBrokerId)
+                                .addIsr(selfBrokerId)
+                                .setLeaderEpoch(0)
+                                .build())
+                        .build();
+                proposer.proposeAndWait(change.toByteArray(), TimeUnit.SECONDS.toMillis(5));
+            }
         } catch (Exception e) {
             return CreateTopicResponse.newBuilder()
                     .setError(jbroker.proto.broker.Error.newBuilder()

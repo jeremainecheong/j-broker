@@ -104,13 +104,17 @@ public final class Broker implements AutoCloseable {
         raftDriver.start(config.raftPort());
 
         // --- Broker gRPC server ---
-        var produce = new ProduceHandler(logManager, topicManager);
+        var produce =
+                new ProduceHandler(logManager, topicManager, config.selfId().value());
         var fetch = new FetchHandler(logManager, topicManager);
-        var admin = new AdminHandler(topicManager, (payload, timeoutMs) -> {
-            var fut = waitingSm.awaitApply(payload);
-            raftDriver.propose(payload);
-            fut.get(timeoutMs, TimeUnit.MILLISECONDS);
-        });
+        var admin = new AdminHandler(
+                topicManager,
+                (payload, timeoutMs) -> {
+                    var fut = waitingSm.awaitApply(payload);
+                    raftDriver.propose(payload);
+                    fut.get(timeoutMs, TimeUnit.MILLISECONDS);
+                },
+                config.selfId().value());
 
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce))

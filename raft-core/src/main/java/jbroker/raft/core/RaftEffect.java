@@ -60,4 +60,12 @@ public sealed interface RaftEffect {
             implements RaftEffect {}
 
     record SendPreVoteResp(NodeId to, Term term, boolean granted) implements RaftEffect {}
+
+    /**
+     * Signals that a {@link RaftEvent.ClientPropose} was recognised as a duplicate
+     * of an already-accepted {@code (clientId, clientSeq)} pair on this leader.
+     * The entry was not re-appended; the driver should surface the cached
+     * success response to the client.
+     */
+    record DuplicateClientPropose(long clientId, long clientSeq) implements RaftEffect {}
 }

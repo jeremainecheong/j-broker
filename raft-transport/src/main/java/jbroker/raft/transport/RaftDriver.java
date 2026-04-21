@@ -232,6 +232,9 @@ public final class RaftDriver implements AutoCloseable {
                 case RaftEffect.RejectClientPropose ignored -> {
                     /* Phase 5 wires this to client */
                 }
+                case RaftEffect.DuplicateClientPropose ignored -> {
+                    /* Phase 5 wires the cached-response path to the client */
+                }
             }
         }
     }

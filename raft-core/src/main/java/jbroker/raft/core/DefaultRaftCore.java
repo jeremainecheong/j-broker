@@ -29,6 +29,12 @@ public final class DefaultRaftCore implements RaftCore {
     private final Map<NodeId, Long> matchIndex = new HashMap<>();
     /** Last observed timestamp from any timestamp-bearing event (Tick / AE / VoteReq / PreVoteReq). */
     private long lastKnownNowNanos;
+    /**
+     * Per-client highest {@code clientSeq} accepted by this leader. Used to
+     * short-circuit duplicate proposals. In-memory only; rebuilt when this
+     * node next becomes leader. {@code clientId == 0} is treated as "no dedup".
+     */
+    private final Map<Long, Long> highestAcceptedSeq = new HashMap<>();
 
     /**
      * Constructs a new {@code DefaultRaftCore}.
@@ -176,11 +182,23 @@ public final class DefaultRaftCore implements RaftCore {
             effects.add(new RaftEffect.RejectClientPropose(leaderId));
             return;
         }
+        // Dedup: clientId == 0 opts out. Otherwise, if this (clientId, seq)
+        // has already been accepted on this leader, short-circuit.
+        if (event.clientId() != 0L) {
+            Long prev = highestAcceptedSeq.get(event.clientId());
+            if (prev != null && event.clientSeq() <= prev) {
+                effects.add(new RaftEffect.DuplicateClientPropose(event.clientId(), event.clientSeq()));
+                return;
+            }
+        }
         long nextIdx = log.lastIndex() + 1;
         var entry = new LogEntry(nextIdx, persistentState.currentTerm(), LogEntry.Type.NORMAL, event.payload());
         log.append(List.of(entry));
         effects.add(new RaftEffect.PersistLog(List.of(entry)));
         matchIndex.put(config.selfId(), nextIdx);
+        if (event.clientId() != 0L) {
+            highestAcceptedSeq.merge(event.clientId(), event.clientSeq(), Math::max);
+        }
         for (var peer : config.voters()) {
             if (!peer.equals(config.selfId())) {
                 sendAppendEntriesTo(peer, effects);

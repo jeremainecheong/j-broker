@@ -11,9 +11,14 @@ public sealed interface RaftEvent {
 
     record Tick(long nowNanos) implements RaftEvent {}
 
-    record ClientPropose(byte[] payload) implements RaftEvent {
+    record ClientPropose(long clientId, long clientSeq, byte[] payload) implements RaftEvent {
         public ClientPropose {
             Objects.requireNonNull(payload, "payload");
+        }
+
+        /** Convenience for legacy / test call sites that don't track client identity. */
+        public ClientPropose(byte[] payload) {
+            this(0L, 0L, payload);
         }
     }
 

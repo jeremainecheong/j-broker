@@ -1,0 +1,17 @@
+<configuration>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{20} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Keep gRPC/Netty at WARN; unfiltered DEBUG floods CI stdout and
+       starves the test JVM under a 1000-entry replication burst. -->
+  <logger name="io.grpc" level="WARN"/>
+  <logger name="io.netty" level="WARN"/>
+  <logger name="jbroker" level="INFO"/>
+
+  <root level="WARN">
+    <appender-ref ref="STDOUT"/>
+  </root>
+</configuration>

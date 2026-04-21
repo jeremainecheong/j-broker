@@ -122,6 +122,12 @@ message PartitionChangeRecord {
 
   // 6: reserved for controller_epoch (Phase 6.5+).
   reserved 6;
+
+  // Full replica set for this partition — superset of isr. An out-of-ISR
+  // replica still fetches so it can catch up and rejoin the ISR. Added in
+  // P6.3; pre-P6.3 records leave this empty and the state machine defaults
+  // replicas = isr for backward compatibility.
+  repeated int32 replicas = 7;
 }
 
 // Atomic create-topic bundle: TopicRecord + the initial PartitionChangeRecord

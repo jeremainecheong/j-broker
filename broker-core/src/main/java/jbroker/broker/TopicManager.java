@@ -29,13 +29,23 @@ public final class TopicManager {
      * currently-applied epoch is ignored, so out-of-order delivery during
      * recovery cannot regress partition state.
      */
-    public void onPartitionChange(String topic, int partition, int leader, List<Integer> isr, int leaderEpoch) {
+    public void onPartitionChange(
+            String topic, int partition, int leader, List<Integer> isr, List<Integer> replicas, int leaderEpoch) {
         var key = new PartitionKey(topic, partition);
-        var next = new PartitionState(leader, isr, leaderEpoch);
+        var next = new PartitionState(leader, isr, replicas, leaderEpoch);
         partitions.merge(
                 key,
                 next,
                 (existing, proposed) -> proposed.leaderEpoch() > existing.leaderEpoch() ? proposed : existing);
+    }
+
+    /**
+     * Back-compat overload: defaults {@code replicas} to {@code isr}. Used by
+     * pre-P6.3 call sites (snapshot v2 restore, tests that haven't migrated)
+     * until the replica set is plumbed all the way through.
+     */
+    public void onPartitionChange(String topic, int partition, int leader, List<Integer> isr, int leaderEpoch) {
+        onPartitionChange(topic, partition, leader, isr, isr, leaderEpoch);
     }
 
     public Optional<TopicDescription> describe(String topic) {

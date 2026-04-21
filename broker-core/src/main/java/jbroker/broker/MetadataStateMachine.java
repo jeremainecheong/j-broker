@@ -53,15 +53,18 @@ public final class MetadataStateMachine implements StateMachine {
     }
 
     private void applyPartitionChange(jbroker.proto.raft.PartitionChangeRecord p) {
+        // Empty replicas list = pre-P6.3 record; default to ISR for
+        // backward compatibility (same replica set either way).
+        var replicas = p.getReplicasList().isEmpty() ? p.getIsrList() : p.getReplicasList();
         topicManager.onPartitionChange(
-                p.getTopic(), p.getPartition(), p.getLeader(), p.getIsrList(), p.getLeaderEpoch());
+                p.getTopic(), p.getPartition(), p.getLeader(), p.getIsrList(), replicas, p.getLeaderEpoch());
     }
 
-    // Snapshot format version. v1 = topics only (pre-P6.1). v2 adds the
-    // partition-state section — topics carry leader/ISR/epoch now, which
-    // would otherwise silently vanish across an InstallSnapshot round-trip
-    // and cause every subsequent produce to return NOT_LEADER.
-    private static final byte SNAPSHOT_VERSION = 2;
+    // Snapshot format versions.
+    //  v1 (pre-P6.1): topics only.
+    //  v2 (P6.1):     adds partition-state section (leader, ISR, epoch).
+    //  v3 (P6.3):     adds replica set alongside ISR.
+    private static final byte SNAPSHOT_VERSION = 3;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
@@ -87,6 +90,11 @@ public final class MetadataStateMachine implements StateMachine {
                 dout.writeInt(b);
             }
             dout.writeInt(a.state().leaderEpoch());
+            var replicas = a.state().replicas();
+            dout.writeInt(replicas.size());
+            for (int b : replicas) {
+                dout.writeInt(b);
+            }
         }
         dout.flush();
     }
@@ -118,7 +126,18 @@ public final class MetadataStateMachine implements StateMachine {
                     isr.add(din.readInt());
                 }
                 var epoch = din.readInt();
-                topicManager.onPartitionChange(topic, partition, leader, isr, epoch);
+                java.util.List<Integer> replicas;
+                if (version >= 3) {
+                    int replicasSize = din.readInt();
+                    var r = new java.util.ArrayList<Integer>(replicasSize);
+                    for (int j = 0; j < replicasSize; j++) {
+                        r.add(din.readInt());
+                    }
+                    replicas = r;
+                } else {
+                    replicas = isr;
+                }
+                topicManager.onPartitionChange(topic, partition, leader, isr, replicas, epoch);
             }
         }
     }

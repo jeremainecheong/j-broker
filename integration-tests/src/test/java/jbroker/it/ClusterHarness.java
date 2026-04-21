@@ -50,12 +50,16 @@ public final class ClusterHarness implements AutoCloseable {
             var config = new RaftConfig(
                     self,
                     ids,
-                    TimeUnit.MILLISECONDS.toNanos(800),
-                    TimeUnit.MILLISECONDS.toNanos(400),
+                    TimeUnit.MILLISECONDS.toNanos(300),
                     TimeUnit.MILLISECONDS.toNanos(150),
+                    TimeUnit.MILLISECONDS.toNanos(100),
                     100);
 
-            RaftCore core = new DefaultRaftCore(config, log, state, System.nanoTime());
+            // Pass Long.MAX_VALUE so the election deadline is deferred: the first
+            // real Tick resets it to (real_now + randomised_timeout).  This means
+            // elections cannot fire before every gRPC server is bound and accepting
+            // connections, avoiding split-vote storms during startup.
+            RaftCore core = new DefaultRaftCore(config, log, state, Long.MAX_VALUE);
             var sm = new RecordingStateMachine();
 
             Map<NodeId, RaftPeerClient> peers = new HashMap<>();

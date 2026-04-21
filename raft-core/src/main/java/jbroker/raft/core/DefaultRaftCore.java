@@ -128,11 +128,68 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void onVoteReq(RaftEvent.VoteReq req, List<RaftEffect> effects) {
-        // Task 26
+        var currentTerm = persistentState.currentTerm();
+        if (req.term().compareTo(currentTerm) < 0) {
+            effects.add(new RaftEffect.SendVoteResp(req.candidateId(), currentTerm, false));
+            return;
+        }
+        if (req.term().compareTo(currentTerm) > 0) {
+            becomeFollower(req.term(), Optional.empty(), effects);
+            currentTerm = req.term();
+        }
+
+        var votedFor = persistentState.votedFor();
+        boolean alreadyVotedForSomeoneElse =
+                votedFor.isPresent() && !votedFor.get().equals(req.candidateId());
+        boolean logUpToDate = candidateLogUpToDate(req.lastLogIndex(), req.lastLogTerm());
+
+        if (!alreadyVotedForSomeoneElse && logUpToDate) {
+            persistentState.update(currentTerm, Optional.of(req.candidateId()));
+            effects.add(new RaftEffect.PersistState(currentTerm, Optional.of(req.candidateId())));
+            effects.add(new RaftEffect.SendVoteResp(req.candidateId(), currentTerm, true));
+            electionDeadlineNanos = Long.MAX_VALUE;
+        } else {
+            effects.add(new RaftEffect.SendVoteResp(req.candidateId(), currentTerm, false));
+        }
+    }
+
+    private boolean candidateLogUpToDate(long candidateLastIdx, Term candidateLastTerm) {
+        long localLast = log.lastIndex();
+        Term localLastTerm = log.termAt(localLast).orElse(Term.ZERO);
+        int cmp = candidateLastTerm.compareTo(localLastTerm);
+        if (cmp != 0) {
+            return cmp > 0;
+        }
+        return candidateLastIdx >= localLast;
     }
 
     private void onVoteResp(RaftEvent.VoteResp resp, List<RaftEffect> effects) {
-        // Task 26
+        if (role != Role.CANDIDATE) {
+            return;
+        }
+        var currentTerm = persistentState.currentTerm();
+        if (resp.term().compareTo(currentTerm) > 0) {
+            becomeFollower(resp.term(), Optional.empty(), effects);
+            return;
+        }
+        if (!resp.term().equals(currentTerm)) {
+            return;
+        }
+        if (resp.granted()) {
+            votesReceived.add(resp.from());
+            maybeFinishElection(effects);
+        }
+    }
+
+    private void becomeFollower(Term newTerm, Optional<NodeId> newVote, List<RaftEffect> effects) {
+        role = Role.FOLLOWER;
+        leaderId = Optional.empty();
+        votesReceived.clear();
+        nextIndex.clear();
+        matchIndex.clear();
+        persistentState.update(newTerm, newVote);
+        effects.add(new RaftEffect.PersistState(newTerm, newVote));
+        electionDeadlineNanos = Long.MAX_VALUE;
     }
 
     private long randomisedElectionTimeout() {

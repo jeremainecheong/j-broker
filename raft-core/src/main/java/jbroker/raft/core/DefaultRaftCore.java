@@ -98,7 +98,11 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void sendHeartbeats(List<RaftEffect> effects) {
-        // Task 28/29
+        for (var peer : config.voters()) {
+            if (!peer.equals(config.selfId())) {
+                sendAppendEntriesTo(peer, effects);
+            }
+        }
     }
 
     private void maybeFinishElection(List<RaftEffect> effects) {
@@ -116,7 +120,20 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void onClientPropose(RaftEvent.ClientPropose event, List<RaftEffect> effects) {
-        // Tasks 28/30
+        if (role != Role.LEADER) {
+            effects.add(new RaftEffect.RejectClientPropose(leaderId));
+            return;
+        }
+        long nextIdx = log.lastIndex() + 1;
+        var entry = new LogEntry(nextIdx, persistentState.currentTerm(), LogEntry.Type.NORMAL, event.payload());
+        log.append(List.of(entry));
+        effects.add(new RaftEffect.PersistLog(List.of(entry)));
+        matchIndex.put(config.selfId(), nextIdx);
+        for (var peer : config.voters()) {
+            if (!peer.equals(config.selfId())) {
+                sendAppendEntriesTo(peer, effects);
+            }
+        }
     }
 
     private void onAppendEntriesReq(RaftEvent.AppendEntriesReq req, List<RaftEffect> effects) {
@@ -203,7 +220,58 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void onAppendEntriesResp(RaftEvent.AppendEntriesResp resp, List<RaftEffect> effects) {
-        // Task 28
+        if (role != Role.LEADER) {
+            return;
+        }
+        var currentTerm = persistentState.currentTerm();
+        if (resp.term().compareTo(currentTerm) > 0) {
+            becomeFollower(resp.term(), Optional.empty(), effects);
+            return;
+        }
+        if (!resp.term().equals(currentTerm)) {
+            return;
+        }
+
+        if (resp.success()) {
+            matchIndex.put(resp.from(), resp.matchIndex());
+            nextIndex.put(resp.from(), resp.matchIndex() + 1);
+            maybeAdvanceLeaderCommit(effects);
+        } else {
+            long newNext = Math.max(1, resp.conflictIndex());
+            nextIndex.put(resp.from(), newNext);
+            sendAppendEntriesTo(resp.from(), effects);
+        }
+    }
+
+    private void maybeAdvanceLeaderCommit(List<RaftEffect> effects) {
+        var currentTerm = persistentState.currentTerm();
+        long lastIdx = log.lastIndex();
+        for (long n = lastIdx; n > commitIndex; n--) {
+            Term entryTerm = log.termAt(n).orElse(Term.ZERO);
+            if (!entryTerm.equals(currentTerm)) {
+                continue;
+            }
+            int count = 1; // leader
+            for (var peer : config.voters()) {
+                if (peer.equals(config.selfId())) continue;
+                if (matchIndex.getOrDefault(peer, 0L) >= n) {
+                    count++;
+                }
+            }
+            if (count >= config.quorum()) {
+                advanceCommit(n, effects);
+                break;
+            }
+        }
+    }
+
+    private void sendAppendEntriesTo(NodeId peer, List<RaftEffect> effects) {
+        long next = nextIndex.getOrDefault(peer, log.lastIndex() + 1);
+        long prevIndex = next - 1;
+        Term prevTerm = prevIndex == 0 ? Term.ZERO : log.termAt(prevIndex).orElse(Term.ZERO);
+        var batch = log.read(next, config.maxEntriesPerAppend());
+        effects.add(new RaftEffect.SendAppendEntries(
+                peer, persistentState.currentTerm(), config.selfId(), prevIndex, prevTerm, batch, commitIndex));
     }
 
     private void onVoteReq(RaftEvent.VoteReq req, List<RaftEffect> effects) {

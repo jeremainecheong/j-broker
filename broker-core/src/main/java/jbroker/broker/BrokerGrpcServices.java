@@ -9,6 +9,8 @@ import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.DescribeTopicResponse;
 import jbroker.proto.broker.FetchRequest;
 import jbroker.proto.broker.FetchResponse;
+import jbroker.proto.broker.InitProducerIdRequest;
+import jbroker.proto.broker.InitProducerIdResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
 import jbroker.proto.broker.ProduceRequest;
@@ -28,11 +30,17 @@ public final class BrokerGrpcServices {
 
     private BrokerGrpcServices() {}
 
-    public static ProducerGrpc.ProducerImplBase producer(ProduceHandler handler) {
+    public static ProducerGrpc.ProducerImplBase producer(ProduceHandler handler, InitProducerIdHandler initProducerId) {
         return new ProducerGrpc.ProducerImplBase() {
             @Override
             public void produce(ProduceRequest req, StreamObserver<ProduceResponse> out) {
                 out.onNext(handler.handle(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void initProducerId(InitProducerIdRequest req, StreamObserver<InitProducerIdResponse> out) {
+                out.onNext(initProducerId.initProducerId(req));
                 out.onCompleted();
             }
         };

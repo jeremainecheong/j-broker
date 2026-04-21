@@ -85,6 +85,11 @@ public final class BrokerClient implements AutoCloseable {
                         .setTopic(topic)
                         .setPartition(partition)
                         .setBatch(ByteString.copyFrom(bytes))
+                        // Explicit legacy sentinel — proto3 int64 defaults to
+                        // 0, which would otherwise trip the broker's
+                        // idempotent-producer dedup.
+                        .setProducerId(-1L)
+                        .setBaseSequence(-1)
                         .build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("produce failed: " + resp.getError().getMessage());

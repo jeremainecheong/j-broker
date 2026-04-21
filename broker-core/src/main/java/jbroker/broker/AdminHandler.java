@@ -65,6 +65,7 @@ public final class AdminHandler {
                     .setPartition(p)
                     .setLeader(selfBrokerId)
                     .addIsr(selfBrokerId)
+                    .addReplicas(selfBrokerId)
                     .setLeaderEpoch(0)
                     .build());
         }

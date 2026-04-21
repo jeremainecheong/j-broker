@@ -147,6 +147,17 @@ message CreateTopicRecord {
   repeated PartitionChangeRecord partition_changes = 2;
 }
 
+// Emitted by the active controller when a client calls InitProducerId.
+// Each record allocates exactly one producer_id; next_producer_id is the
+// monotonic counter after this allocation (i.e. the id this record just
+// assigned plus one). Applied by every broker's MetadataStateMachine so
+// the counter survives restart and leader change.
+message ProducerIdAssignmentRecord {
+  int64 producer_id = 1;
+  int32 producer_epoch = 2;
+  int64 next_producer_id = 3;
+}
+
 // Tagged union of metadata records; the Raft state machine tags payloads
 // with this wrapper so it can dispatch.
 message MetadataRecord {
@@ -156,5 +167,6 @@ message MetadataRecord {
     BrokerRegistrationRecord broker = 3;
     PartitionChangeRecord partition_change = 4;
     CreateTopicRecord create_topic = 5;
+    ProducerIdAssignmentRecord producer_id_assignment = 6;
   }
 }

@@ -12,6 +12,7 @@ import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.CreateTopicRequest;
 import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.FetchRequest;
+import jbroker.proto.broker.InitProducerIdRequest;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ProduceRequest;
 import jbroker.proto.broker.ProducerGrpc;
@@ -69,6 +70,22 @@ public final class BrokerClient implements AutoCloseable {
         return resp.getTopic();
     }
 
+    /**
+     * Allocate a fresh idempotent-producer id (). Returns the assigned
+     * {@code producer_id}; epoch is always 0 on initial allocation. Feed
+     * the returned id to {@link #idempotentProduce} together with a
+     * client-tracked {@code base_sequence} per {@code (topic, partition)}.
+     */
+    public long initProducerId() {
+        var resp = producer.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .initProducerId(InitProducerIdRequest.newBuilder().build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException(
+                    "initProducerId failed: " + resp.getError().getMessage());
+        }
+        return resp.getProducerId();
+    }
+
     // ---- Produce ----
 
     /** Produce a single record to a specific partition; returns the assigned offset. */
@@ -85,6 +102,41 @@ public final class BrokerClient implements AutoCloseable {
                         .setTopic(topic)
                         .setPartition(partition)
                         .setBatch(ByteString.copyFrom(bytes))
+                        // Explicit legacy sentinel — proto3 int64 defaults to
+                        // 0, which would otherwise trip the broker's
+                        // idempotent-producer dedup.
+                        .setProducerId(-1L)
+                        .setBaseSequence(-1)
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("produce failed: " + resp.getError().getMessage());
+        }
+        return resp.getLastOffset();
+    }
+
+    /**
+     * Idempotent variant (): carries the producer id + epoch + base
+     * sequence the caller obtained from {@link #initProducerId}. The broker
+     * de-duplicates retries with the same sequence within a
+     * {@code (topic, partition, producer_id, producer_epoch)} scope.
+     */
+    public long idempotentProduce(
+            String topic, int partition, byte[] value, long producerId, int epoch, int baseSequence) {
+        var records = List.of(new Record(0, 0L, null, value));
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        long now = System.currentTimeMillis();
+        RecordBatch.encode(buf, 0L, 0, now, now, producerId, (short) epoch, baseSequence, records);
+        buf.flip();
+        byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+        var resp = producer.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .produce(ProduceRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .setBatch(ByteString.copyFrom(bytes))
+                        .setProducerId(producerId)
+                        .setProducerEpoch(epoch)
+                        .setBaseSequence(baseSequence)
                         .build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("produce failed: " + resp.getError().getMessage());

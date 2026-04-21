@@ -54,4 +54,26 @@ class ThreeNodeRaftIT {
             throw new AssertionError("no new leader emerged within 5s");
         }
     }
+
+    @Test
+    void replicatesThousandEntriesAndAllNodesConverge(@TempDir Path dir) throws Exception {
+        try (var cluster = ClusterHarness.start(dir, 3)) {
+            var leader = cluster.waitForLeader(1_000);
+            for (int i = 0; i < 1000; i++) {
+                leader.driver().propose(new byte[] {(byte) i, (byte) (i >>> 8)});
+            }
+
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (System.currentTimeMillis() < deadline) {
+                boolean allThere =
+                        cluster.nodes().stream().allMatch(n -> n.sm().applied.size() >= 1000);
+                if (allThere) break;
+                Thread.sleep(100);
+            }
+
+            for (var n : cluster.nodes()) {
+                assertThat(n.sm().applied.size()).isGreaterThanOrEqualTo(1000);
+            }
+        }
+    }
 }

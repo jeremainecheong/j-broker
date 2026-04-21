@@ -120,7 +120,86 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void onAppendEntriesReq(RaftEvent.AppendEntriesReq req, List<RaftEffect> effects) {
-        // Task 27
+        var currentTerm = persistentState.currentTerm();
+
+        if (req.term().compareTo(currentTerm) < 0) {
+            effects.add(new RaftEffect.SendAppendEntriesResp(req.leaderId(), currentTerm, false, 0L, Term.ZERO, 0L));
+            return;
+        }
+
+        if (req.term().compareTo(currentTerm) > 0) {
+            becomeFollower(req.term(), Optional.empty(), effects);
+            currentTerm = req.term();
+        } else if (role != Role.FOLLOWER) {
+            role = Role.FOLLOWER;
+            votesReceived.clear();
+            nextIndex.clear();
+            matchIndex.clear();
+        }
+
+        leaderId = Optional.of(req.leaderId());
+        electionDeadlineNanos = Long.MAX_VALUE;
+
+        if (req.prevLogIndex() > 0) {
+            var localTerm = log.termAt(req.prevLogIndex());
+            if (localTerm.isEmpty()) {
+                effects.add(new RaftEffect.SendAppendEntriesResp(
+                        req.leaderId(), currentTerm, false, log.lastIndex() + 1, Term.ZERO, 0L));
+                return;
+            }
+            if (!localTerm.get().equals(req.prevLogTerm())) {
+                Term conflictTerm = localTerm.get();
+                long firstIdx = firstIndexOfTerm(conflictTerm, req.prevLogIndex());
+                effects.add(new RaftEffect.SendAppendEntriesResp(
+                        req.leaderId(), currentTerm, false, firstIdx, conflictTerm, 0L));
+                return;
+            }
+        }
+
+        if (!req.entries().isEmpty()) {
+            for (var entry : req.entries()) {
+                var existingTerm = log.termAt(entry.index());
+                if (existingTerm.isPresent() && !existingTerm.get().equals(entry.term())) {
+                    log.truncateFrom(entry.index());
+                    effects.add(new RaftEffect.TruncateLog(entry.index()));
+                    break;
+                }
+            }
+            var toAppend = req.entries().stream()
+                    .filter(e -> e.index() > log.lastIndex())
+                    .toList();
+            if (!toAppend.isEmpty()) {
+                log.append(toAppend);
+                effects.add(new RaftEffect.PersistLog(toAppend));
+            }
+        }
+
+        long matchIdx = req.prevLogIndex() + req.entries().size();
+
+        if (req.leaderCommit() > commitIndex) {
+            long newCommit = Math.min(req.leaderCommit(), matchIdx);
+            advanceCommit(newCommit, effects);
+        }
+
+        effects.add(new RaftEffect.SendAppendEntriesResp(req.leaderId(), currentTerm, true, 0L, Term.ZERO, matchIdx));
+    }
+
+    private long firstIndexOfTerm(Term term, long upperBound) {
+        for (long i = 1; i <= upperBound; i++) {
+            if (log.termAt(i).map(t -> t.equals(term)).orElse(false)) {
+                return i;
+            }
+        }
+        return 1L;
+    }
+
+    private void advanceCommit(long newCommit, List<RaftEffect> effects) {
+        while (lastApplied < newCommit) {
+            lastApplied++;
+            var entry = log.read(lastApplied, 1).get(0);
+            effects.add(new RaftEffect.ApplyCommitted(entry));
+        }
+        commitIndex = newCommit;
     }
 
     private void onAppendEntriesResp(RaftEvent.AppendEntriesResp resp, List<RaftEffect> effects) {

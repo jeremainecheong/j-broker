@@ -47,8 +47,8 @@ class RaftTermAwareBackoffTest {
             // Naive backoff would set nextIndex = conflictIndex = 1 → next AE has
             // prevLogIndex=0. Term-aware backoff jumps past leader's last t1 entry
             // (index 1), so nextIndex = 2 and prevLogIndex = 1 with prevLogTerm = t1.
-            var effects = core.step(
-                    new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(3), false, 1L, new Term(1), 0L));
+            var effects =
+                    core.step(new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(3), false, 1L, new Term(1), 0L));
 
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendAppendEntries)
@@ -81,8 +81,8 @@ class RaftTermAwareBackoffTest {
             core.step(new RaftEvent.VoteResp(new NodeId(2), new Term(4), true));
             assertThat(core.role()).isEqualTo(Role.LEADER);
 
-            var effects = core.step(
-                    new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(4), false, 2L, new Term(2), 0L));
+            var effects =
+                    core.step(new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(4), false, 2L, new Term(2), 0L));
 
             assertThat(effects)
                     .filteredOn(e -> e instanceof RaftEffect.SendAppendEntries)

@@ -8,7 +8,8 @@ import org.junit.jupiter.api.Test;
 class RaftConfigTest {
 
     private static RaftConfig build(long electionTimeout, long jitter, long heartbeat, int maxEntries) {
-        return new RaftConfig(new NodeId(1), List.of(new NodeId(1), new NodeId(2)), electionTimeout, jitter, heartbeat, maxEntries);
+        return new RaftConfig(
+                new NodeId(1), List.of(new NodeId(1), new NodeId(2)), electionTimeout, jitter, heartbeat, maxEntries);
     }
 
     @Test

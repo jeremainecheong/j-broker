@@ -106,9 +106,12 @@ public final class ClusterHarness implements AutoCloseable {
     }
 
     public void killNode(NodeId id) {
-        for (var n : nodes) {
+        var it = nodes.iterator();
+        while (it.hasNext()) {
+            var n = it.next();
             if (n.id().equals(id)) {
                 n.driver().close();
+                it.remove();
                 return;
             }
         }

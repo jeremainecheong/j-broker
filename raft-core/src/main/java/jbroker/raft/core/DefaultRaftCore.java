@@ -130,6 +130,11 @@ public final class DefaultRaftCore implements RaftCore {
                     matchIndex.put(peer, 0L);
                 }
             }
+            // Force an immediate heartbeat from the next Tick: we don't have
+            // 'now' here, so park lastHeartbeatNanos far enough in the past
+            // that (now - lastHeartbeatNanos) >= heartbeatInterval regardless
+            // of the nowNanos the Tick carries. Using MIN_VALUE/2 keeps the
+            // delta from overflowing if now is itself negative.
             lastHeartbeatNanos = Long.MIN_VALUE / 2;
         }
     }
@@ -282,6 +287,9 @@ public final class DefaultRaftCore implements RaftCore {
     private void maybeAdvanceLeaderCommit(List<RaftEffect> effects) {
         var currentTerm = persistentState.currentTerm();
         long lastIdx = log.lastIndex();
+        // Iterate from highest index downward; the first index at which a
+        // majority has matched is necessarily the largest such index, so we
+        // can stop the scan immediately after advancing commitIndex.
         for (long n = lastIdx; n > commitIndex; n--) {
             Term entryTerm = log.termAt(n).orElse(Term.ZERO);
             if (!entryTerm.equals(currentTerm)) {

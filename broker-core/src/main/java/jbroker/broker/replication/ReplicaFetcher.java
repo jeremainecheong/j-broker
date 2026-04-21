@@ -45,10 +45,23 @@ public final class ReplicaFetcher {
     }
 
     /**
+     * Outcome of a single {@code pollOnce}. The driver uses this to decide
+     * whether to immediately schedule the next poll ({@code ADVANCED}) or to
+     * back off ({@code EMPTY} / {@code FENCED} / {@code ERROR}) to avoid
+     * hammering the leader.
+     */
+    public enum PollResult {
+        ADVANCED,
+        EMPTY,
+        FENCED,
+        ERROR
+    }
+
+    /**
      * Issue a single {@code ReplicaFetch} to the leader and append anything
      * returned. Called repeatedly by a driver thread (or by tests).
      */
-    public void pollOnce(int expectedLeaderEpoch) throws IOException {
+    public PollResult pollOnce(int expectedLeaderEpoch) throws IOException {
         var local = logManager.logFor(topic, partition);
         long fetchOffset = local.nextOffset();
         var req = ReplicaFetchRequest.newBuilder()
@@ -69,18 +82,21 @@ public final class ReplicaFetcher {
                         partition,
                         resp.getCurrentLeaderEpoch(),
                         expectedLeaderEpoch);
-                // P6.4 will truncate and reconcile; P6.2 just waits.
-                return;
+                // P6.4 will truncate and reconcile; drivers should back off.
+                return PollResult.FENCED;
             }
             log.warn(
                     "replica fetch error for {}-{}: {}",
                     topic,
                     partition,
                     resp.getError().getMessage());
-            return;
+            return PollResult.ERROR;
         }
         var records = resp.getRecords();
-        if (records.isEmpty()) return;
+        if (records.isEmpty()) {
+            highWatermark.set(resp.getHighWatermark());
+            return PollResult.EMPTY;
+        }
         var buf = ByteBuffer.wrap(records.toByteArray());
         while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
             int mark = buf.position();
@@ -108,6 +124,7 @@ public final class ReplicaFetcher {
             local.append(decoded.records(), decoded.firstTimestamp());
         }
         highWatermark.set(resp.getHighWatermark());
+        return PollResult.ADVANCED;
     }
 
     public long highWatermark() {

@@ -28,9 +28,13 @@ public final class ClusterHarness implements AutoCloseable {
     public record Node(NodeId id, int port, RaftDriver driver, RecordingStateMachine sm) {}
 
     private final List<Node> nodes;
+    private final Path tempDir;
+    private final int size;
 
-    private ClusterHarness(List<Node> nodes) {
+    private ClusterHarness(List<Node> nodes, Path tempDir, int size) {
         this.nodes = nodes;
+        this.tempDir = tempDir;
+        this.size = size;
     }
 
     public static ClusterHarness start(Path tempDir, int size) throws IOException {
@@ -87,7 +91,95 @@ public final class ClusterHarness implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        return new ClusterHarness(nodes);
+        return new ClusterHarness(nodes, tempDir, size);
+    }
+
+    /**
+     * Rebuild each cluster peer's view of {@code target} so its existing
+     * {@link RaftPeerClient} channel (which may be wedged from the old
+     * instance) is replaced. Used by {@link #restartAsFresh} after swapping a
+     * node's server-side identity.
+     */
+    private static RaftPeerClient freshPeerClient(NodeId target, int port) {
+        return new RaftPeerClient(target, "127.0.0.1", port);
+    }
+
+    /**
+     * Kill the node with {@code id} and start a brand-new instance on the
+     * same port, using a fresh data directory so it has empty log/state. The
+     * leader's existing peer map pointed at the same host:port continues to
+     * work once the new gRPC server binds — exercising the
+     * {@code InstallSnapshot} catch-up path when the leader has already
+     * compacted past the new node's empty log.
+     */
+    public Node restartAsFresh(NodeId id) throws IOException {
+        var old = nodes.stream().filter(n -> n.id().equals(id)).findFirst().orElseThrow();
+        int port = old.port();
+        old.driver().close();
+        nodes.remove(old);
+
+        // Free the old port briefly so bind() on the same port succeeds — the
+        // old driver's grpcServer.shutdown() is best-effort; poll briefly.
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        var self = id;
+        var ids = IntStream.range(1, size + 1).mapToObj(NodeId::new).toList();
+        var dataDir = tempDir.resolve("node-" + self.value() + "-fresh-" + System.nanoTime());
+        Files.createDirectories(dataDir);
+
+        var log = FileRaftLog.open(dataDir.resolve("log.bin"));
+        var state = FilePersistentState.open(dataDir.resolve("state.bin"));
+        var config = new RaftConfig(
+                self,
+                ids,
+                TimeUnit.MILLISECONDS.toNanos(250),
+                TimeUnit.MILLISECONDS.toNanos(150),
+                TimeUnit.MILLISECONDS.toNanos(75),
+                100);
+        RaftCore core = new DefaultRaftCore(config, log, state, Long.MAX_VALUE);
+        var sm = new RecordingStateMachine();
+        Map<NodeId, RaftPeerClient> peers = new HashMap<>();
+        for (var n : nodes) {
+            peers.put(n.id(), freshPeerClient(n.id(), n.port()));
+        }
+        var driver = new RaftDriver(self, core, sm, peers, TimeUnit.MILLISECONDS.toNanos(30));
+        driver.start(port);
+        var node = new Node(self, port, driver, sm);
+        nodes.add(node);
+
+        try {
+            for (var peer : driver.peers()) {
+                peer.waitForReady(2_000);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return node;
+    }
+
+    public void waitForAllApplied(int atLeast, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (nodes.stream().allMatch(n -> n.sm().applied.size() >= atLeast)) return;
+            Thread.sleep(50);
+        }
+        throw new AssertionError("not all nodes applied >= " + atLeast + " within " + timeoutMs + "ms: "
+                + nodes.stream().map(n -> n.id() + "=" + n.sm().applied.size()).toList());
+    }
+
+    public void waitForNodeApplied(NodeId id, int atLeast, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            var n = nodes.stream().filter(x -> x.id().equals(id)).findFirst().orElseThrow();
+            if (n.sm().applied.size() >= atLeast) return;
+            Thread.sleep(50);
+        }
+        var n = nodes.stream().filter(x -> x.id().equals(id)).findFirst().orElseThrow();
+        throw new AssertionError("node " + id + " applied=" + n.sm().applied.size() + " <" + atLeast);
     }
 
     public List<Node> nodes() {
@@ -138,6 +230,34 @@ public final class ClusterHarness implements AutoCloseable {
         @Override
         public void apply(LogEntry entry) {
             applied.add(entry.payload());
+        }
+
+        @Override
+        public void snapshot(java.io.OutputStream out) throws java.io.IOException {
+            var dout = new java.io.DataOutputStream(out);
+            synchronized (applied) {
+                dout.writeInt(applied.size());
+                for (byte[] p : applied) {
+                    dout.writeInt(p.length);
+                    dout.write(p);
+                }
+            }
+            dout.flush();
+        }
+
+        @Override
+        public void restore(java.io.InputStream in) throws java.io.IOException {
+            var din = new java.io.DataInputStream(in);
+            synchronized (applied) {
+                applied.clear();
+                int n = din.readInt();
+                for (int i = 0; i < n; i++) {
+                    int len = din.readInt();
+                    var bytes = new byte[len];
+                    din.readFully(bytes);
+                    applied.add(bytes);
+                }
+            }
         }
     }
 }

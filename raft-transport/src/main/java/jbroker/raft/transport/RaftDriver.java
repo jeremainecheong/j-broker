@@ -172,6 +172,39 @@ public final class RaftDriver implements AutoCloseable {
                 .build();
     }
 
+    public jbroker.proto.raft.InstallSnapshotResponse handleInstallSnapshot(
+            jbroker.proto.raft.InstallSnapshotRequest req) throws InterruptedException {
+        var event = new RaftEvent.InstallSnapshotReq(
+                new Term(req.getTerm()),
+                new NodeId(req.getLeaderId()),
+                req.getLastIncludedIndex(),
+                new Term(req.getLastIncludedTerm()),
+                req.getData().toByteArray(),
+                clock.nanoTime());
+        var future = new CompletableFuture<RaftEffect.SendInstallSnapshotResp>();
+        queue.put(new PendingEvent(event, future));
+        try {
+            var resp = future.get(30, TimeUnit.SECONDS);
+            return jbroker.proto.raft.InstallSnapshotResponse.newBuilder()
+                    .setTerm(resp.term().value())
+                    .build();
+        } catch (ExecutionException | TimeoutException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Trigger a snapshot: captures the state-machine bytes, hands them to
+     * the core, and compacts the log up to the current commitIndex. The core
+     * handles this on its pump thread so we don't race with step() calls.
+     */
+    public void snapshotNow() throws InterruptedException, IOException {
+        var baos = new java.io.ByteArrayOutputStream();
+        stateMachine.snapshot(baos);
+        byte[] bytes = baos.toByteArray();
+        queue.put(new PendingEvent(new RaftEvent.TakeSnapshot(bytes), null));
+    }
+
     public Term currentTerm() {
         return core.currentTerm();
     }
@@ -261,13 +294,12 @@ public final class RaftDriver implements AutoCloseable {
                         r.requestId());
                 case RaftEffect.RejectConfigChange r -> LOG.warn(
                         "RejectConfigChange dropped — admin RPC not wired (reason={})", r.reason());
-                case RaftEffect.SendInstallSnapshot s -> LOG.warn(
-                        "SendInstallSnapshot dropped — gRPC codec for InstallSnapshot not wired yet (to={}, lastIncludedIndex={})",
-                        s.to(),
-                        s.lastIncludedIndex());
-                case RaftEffect.SendInstallSnapshotResp r -> LOG.warn(
-                        "SendInstallSnapshotResp dropped — gRPC codec for InstallSnapshot not wired yet (to={})",
-                        r.to());
+                case RaftEffect.SendInstallSnapshot s -> dispatchInstallSnapshot(s);
+                case RaftEffect.SendInstallSnapshotResp r -> {
+                    if (pending.future != null) {
+                        ((CompletableFuture<RaftEffect.SendInstallSnapshotResp>) pending.future).complete(r);
+                    }
+                }
                 case RaftEffect.ApplySnapshot a -> {
                     try {
                         stateMachine.restore(new java.io.ByteArrayInputStream(a.snapshot()));
@@ -277,6 +309,31 @@ public final class RaftDriver implements AutoCloseable {
                 }
             }
         }
+    }
+
+    private void dispatchInstallSnapshot(RaftEffect.SendInstallSnapshot eff) {
+        var peer = peers.get(eff.to());
+        if (peer == null) return;
+        Thread.ofVirtual()
+                .name("raft-installsnapshot-" + selfId.value() + "->" + eff.to().value())
+                .start(() -> {
+                    try {
+                        var proto = jbroker.proto.raft.InstallSnapshotRequest.newBuilder()
+                                .setTerm(eff.term().value())
+                                .setLeaderId(eff.leaderId().value())
+                                .setLastIncludedIndex(eff.lastIncludedIndex())
+                                .setLastIncludedTerm(eff.lastIncludedTerm().value())
+                                .setOffset(0)
+                                .setData(ByteString.copyFrom(eff.snapshot()))
+                                .setDone(true)
+                                .build();
+                        var resp = peer.installSnapshot(proto);
+                        queue.put(new PendingEvent(
+                                new RaftEvent.InstallSnapshotResp(eff.to(), new Term(resp.getTerm())), null));
+                    } catch (Exception e) {
+                        LOG.debug("installSnapshot to {} failed: {}", eff.to(), e.getMessage());
+                    }
+                });
     }
 
     private void dispatchTimeoutNow(RaftEffect.SendTimeoutNow eff) {
@@ -311,7 +368,8 @@ public final class RaftDriver implements AutoCloseable {
                                 .setLeaderId(eff.leaderId().value())
                                 .setPrevLogIndex(eff.prevLogIndex())
                                 .setPrevLogTerm(eff.prevLogTerm().value())
-                                .setLeaderCommit(eff.leaderCommit());
+                                .setLeaderCommit(eff.leaderCommit())
+                                .setHeartbeatSeq(eff.heartbeatSeq());
                         for (var e : eff.entries()) {
                             proto.addEntries(jbroker.proto.raft.LogEntry.newBuilder()
                                     .setIndex(e.index())

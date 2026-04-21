@@ -45,9 +45,9 @@ class RaftElectionDeadlineTest {
             core.step(new RaftEvent.Tick(ms(1499)));
             assertThat(core.role()).isEqualTo(Role.FOLLOWER);
 
-            // Tick at 1501ms must trigger election exactly on schedule.
+            // Tick at 1501ms must trigger election-start (pre-vote) exactly on schedule.
             core.step(new RaftEvent.Tick(ms(1501)));
-            assertThat(core.role()).isEqualTo(Role.CANDIDATE);
+            assertThat(core.role()).isEqualTo(Role.PRE_CANDIDATE);
         }
     }
 
@@ -65,7 +65,7 @@ class RaftElectionDeadlineTest {
             assertThat(core.role()).isEqualTo(Role.FOLLOWER);
 
             core.step(new RaftEvent.Tick(ms(1501)));
-            assertThat(core.role()).isEqualTo(Role.CANDIDATE);
+            assertThat(core.role()).isEqualTo(Role.PRE_CANDIDATE);
         }
     }
 }

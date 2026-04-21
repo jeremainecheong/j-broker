@@ -55,4 +55,9 @@ public sealed interface RaftEffect {
 
     /** Inform the driver the proposal cannot be accepted (not leader). */
     record RejectClientPropose(Optional<NodeId> knownLeader) implements RaftEffect {}
+
+    record SendPreVoteReq(NodeId to, Term hypotheticalTerm, NodeId candidateId, long lastLogIndex, Term lastLogTerm)
+            implements RaftEffect {}
+
+    record SendPreVoteResp(NodeId to, Term term, boolean granted) implements RaftEffect {}
 }

@@ -26,7 +26,9 @@ class RaftPersistenceTest {
         try (var log = FileRaftLog.open(logPath);
                 var state = FilePersistentState.open(statePath)) {
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
+            // Drive the pre-vote then promote to real candidate so the term actually bumps.
             core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+            core.step(new RaftEvent.PreVoteResp(new NodeId(2), Term.ZERO, true));
             assertThat(core.currentTerm()).isEqualTo(new Term(1));
         }
 

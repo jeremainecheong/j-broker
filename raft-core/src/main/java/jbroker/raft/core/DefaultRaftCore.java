@@ -24,8 +24,11 @@ public final class DefaultRaftCore implements RaftCore {
     private long lastHeartbeatNanos;
 
     private final Set<NodeId> votesReceived = new HashSet<>();
+    private final Set<NodeId> preVotesReceived = new HashSet<>();
     private final Map<NodeId, Long> nextIndex = new HashMap<>();
     private final Map<NodeId, Long> matchIndex = new HashMap<>();
+    /** Last observed timestamp from any timestamp-bearing event (Tick / AE / VoteReq / PreVoteReq). */
+    private long lastKnownNowNanos;
 
     /**
      * Constructs a new {@code DefaultRaftCore}.
@@ -47,6 +50,7 @@ public final class DefaultRaftCore implements RaftCore {
         // first real Tick arrives" (the onTick sentinel path handles this).
         this.electionDeadlineNanos =
                 (nowNanos == Long.MAX_VALUE) ? Long.MAX_VALUE : nowNanos + randomisedElectionTimeout();
+        this.lastKnownNowNanos = (nowNanos == Long.MAX_VALUE) ? 0L : nowNanos;
     }
 
     @Override
@@ -69,12 +73,15 @@ public final class DefaultRaftCore implements RaftCore {
             case RaftEvent.AppendEntriesResp resp -> onAppendEntriesResp(resp, effects);
             case RaftEvent.VoteReq req -> onVoteReq(req, effects);
             case RaftEvent.VoteResp resp -> onVoteResp(resp, effects);
+            case RaftEvent.PreVoteReq req -> onPreVoteReq(req, effects);
+            case RaftEvent.PreVoteResp resp -> onPreVoteResp(resp, effects);
         }
         return effects;
     }
 
     private void onTick(RaftEvent.Tick tick, List<RaftEffect> effects) {
         long now = tick.nowNanos();
+        lastKnownNowNanos = now;
         if (role == Role.LEADER) {
             if (now - lastHeartbeatNanos >= config.heartbeatIntervalNanos()) {
                 sendHeartbeats(effects);
@@ -87,6 +94,31 @@ public final class DefaultRaftCore implements RaftCore {
             return;
         }
         if (now >= electionDeadlineNanos) {
+            startPreVote(now, effects);
+        }
+    }
+
+    private void startPreVote(long now, List<RaftEffect> effects) {
+        role = Role.PRE_CANDIDATE;
+        leaderId = Optional.empty();
+        preVotesReceived.clear();
+        preVotesReceived.add(config.selfId());
+        electionDeadlineNanos = now + randomisedElectionTimeout();
+
+        long lastIdx = log.lastIndex();
+        Term lastTerm = log.termAt(lastIdx).orElse(Term.ZERO);
+        Term hypotheticalTerm = persistentState.currentTerm().next();
+        for (var peer : config.voters()) {
+            if (!peer.equals(config.selfId())) {
+                effects.add(new RaftEffect.SendPreVoteReq(peer, hypotheticalTerm, config.selfId(), lastIdx, lastTerm));
+            }
+        }
+        maybeFinishPreVote(now, effects);
+    }
+
+    private void maybeFinishPreVote(long now, List<RaftEffect> effects) {
+        if (preVotesReceived.size() >= config.quorum() && role == Role.PRE_CANDIDATE) {
+            // Pre-vote succeeded — now do the real election at term+1.
             startElection(now, effects);
         }
     }
@@ -157,6 +189,7 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void onAppendEntriesReq(RaftEvent.AppendEntriesReq req, List<RaftEffect> effects) {
+        lastKnownNowNanos = req.nowNanos();
         var currentTerm = persistentState.currentTerm();
 
         if (req.term().compareTo(currentTerm) < 0) {
@@ -170,6 +203,7 @@ public final class DefaultRaftCore implements RaftCore {
         } else if (role != Role.FOLLOWER) {
             role = Role.FOLLOWER;
             votesReceived.clear();
+            preVotesReceived.clear();
             nextIndex.clear();
             matchIndex.clear();
         }
@@ -319,6 +353,7 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void onVoteReq(RaftEvent.VoteReq req, List<RaftEffect> effects) {
+        lastKnownNowNanos = req.nowNanos();
         var currentTerm = persistentState.currentTerm();
         if (req.term().compareTo(currentTerm) < 0) {
             effects.add(new RaftEffect.SendVoteResp(req.candidateId(), currentTerm, false));
@@ -327,6 +362,10 @@ public final class DefaultRaftCore implements RaftCore {
         if (req.term().compareTo(currentTerm) > 0) {
             becomeFollower(req.term(), Optional.empty(), effects);
             currentTerm = req.term();
+        } else if (role == Role.PRE_CANDIDATE) {
+            // Same-term real vote arriving — abandon pre-vote attempt.
+            role = Role.FOLLOWER;
+            preVotesReceived.clear();
         }
 
         var votedFor = persistentState.votedFor();
@@ -354,6 +393,40 @@ public final class DefaultRaftCore implements RaftCore {
         return candidateLastIdx >= localLast;
     }
 
+    private void onPreVoteReq(RaftEvent.PreVoteReq req, List<RaftEffect> effects) {
+        lastKnownNowNanos = req.nowNanos();
+        var currentTerm = persistentState.currentTerm();
+
+        // Deny if we are the leader (we clearly have a current leader — ourselves).
+        // Deny if the hypothetical term is not newer than what we've already seen.
+        // Deny if we've heard from a leader recently (our election deadline hasn't elapsed).
+        // Deny if the candidate's log is not at least as up-to-date as ours.
+        boolean termOk = req.term().compareTo(currentTerm) > 0;
+        boolean deadlineElapsed = electionDeadlineNanos != Long.MAX_VALUE && req.nowNanos() >= electionDeadlineNanos;
+        boolean logUpToDate = candidateLogUpToDate(req.lastLogIndex(), req.lastLogTerm());
+        boolean grant = role != Role.LEADER && termOk && deadlineElapsed && logUpToDate;
+        effects.add(new RaftEffect.SendPreVoteResp(req.candidateId(), currentTerm, grant));
+        // Critically, no state mutation — no term bump, no votedFor write. That's the
+        // whole point of pre-vote: a disruptive node that fails pre-vote has not
+        // perturbed the cluster.
+    }
+
+    private void onPreVoteResp(RaftEvent.PreVoteResp resp, List<RaftEffect> effects) {
+        if (role != Role.PRE_CANDIDATE) {
+            return;
+        }
+        var currentTerm = persistentState.currentTerm();
+        if (resp.term().compareTo(currentTerm) > 0) {
+            // Peer is ahead; give up pre-vote and step down to catch up.
+            becomeFollower(resp.term(), Optional.empty(), effects);
+            return;
+        }
+        if (resp.granted()) {
+            preVotesReceived.add(resp.from());
+            maybeFinishPreVote(lastKnownNowNanos, effects);
+        }
+    }
+
     private void onVoteResp(RaftEvent.VoteResp resp, List<RaftEffect> effects) {
         if (role != Role.CANDIDATE) {
             return;
@@ -376,6 +449,7 @@ public final class DefaultRaftCore implements RaftCore {
         role = Role.FOLLOWER;
         leaderId = Optional.empty();
         votesReceived.clear();
+        preVotesReceived.clear();
         nextIndex.clear();
         matchIndex.clear();
         persistentState.update(newTerm, newVote);

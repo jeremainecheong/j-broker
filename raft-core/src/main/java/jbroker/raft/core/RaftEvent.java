@@ -59,4 +59,20 @@ public sealed interface RaftEvent {
             Objects.requireNonNull(term, "term");
         }
     }
+
+    record PreVoteReq(Term term, NodeId candidateId, long lastLogIndex, Term lastLogTerm, long nowNanos)
+            implements RaftEvent {
+        public PreVoteReq {
+            Objects.requireNonNull(term, "term");
+            Objects.requireNonNull(candidateId, "candidateId");
+            Objects.requireNonNull(lastLogTerm, "lastLogTerm");
+        }
+    }
+
+    record PreVoteResp(NodeId from, Term term, boolean granted) implements RaftEvent {
+        public PreVoteResp {
+            Objects.requireNonNull(from, "from");
+            Objects.requireNonNull(term, "term");
+        }
+    }
 }

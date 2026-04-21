@@ -311,7 +311,8 @@ public final class RaftDriver implements AutoCloseable {
                                 .setLeaderId(eff.leaderId().value())
                                 .setPrevLogIndex(eff.prevLogIndex())
                                 .setPrevLogTerm(eff.prevLogTerm().value())
-                                .setLeaderCommit(eff.leaderCommit());
+                                .setLeaderCommit(eff.leaderCommit())
+                                .setHeartbeatSeq(eff.heartbeatSeq());
                         for (var e : eff.entries()) {
                             proto.addEntries(jbroker.proto.raft.LogEntry.newBuilder()
                                     .setIndex(e.index())

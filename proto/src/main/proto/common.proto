@@ -1,0 +1,19 @@
+syntax = "proto3";
+package jbroker.common;
+option java_multiple_files = true;
+option java_package = "jbroker.proto.common";
+
+enum ErrorCode {
+  OK = 0;
+  UNKNOWN = 1;
+  UNSUPPORTED_VERSION = 50;
+  STALE_LEADER_EPOCH = 70;
+  FENCED_LEADER_EPOCH = 71;
+}
+
+message BrokerEndpoint {
+  int32 node_id = 1;
+  string host = 2;
+  int32 port = 3;
+  string directory_id = 4;
+}

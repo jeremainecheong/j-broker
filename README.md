@@ -1,1 +1,46 @@
 # j-broker
+
+Learning project: a log-structured distributed message broker with a hand-rolled Raft implementation, targeting a 3-node combined-mode cluster. See `j-broker-prd.md` (not tracked in git) for the full PRD.
+
+## Status
+
+- [x] **Phase 0** — Gradle multi-module scaffolding, ArchUnit module boundaries, CI
+- [x] **Phase 1** — Raft core: election, log replication, fsync'd persistent state, conflict-index backoff. Unit tests + 4 integration tests + 100-run election stress all green.
+- [ ] Phase 2 — Raft snapshots, membership changes, leadership transfer, pre-vote, read-index
+- [ ] Phase 3–10 — see PRD §10
+
+## Build
+
+```
+./gradlew build                             # all modules + unit/integration tests
+./gradlew :integration-tests:stressTest     # 100-run election stress
+./gradlew spotlessApply                     # reformat
+```
+
+Requires Java 21 (Temurin). The Gradle wrapper is pinned to 8.7 and verifies the distribution SHA-256.
+
+## Architecture
+
+Modules that exist today:
+
+- `proto/` — shared `.proto` + generated gRPC stubs
+- `raft-core/` — pure Java, zero IO/threads/Spring/gRPC. Step-function Raft state machine over sealed `RaftEvent` → `List<RaftEffect>`. Any dependency on Spring/gRPC/Jakarta from this module is blocked by ArchUnit.
+- `raft-transport/` — gRPC server, outbound peer client, and the driver loop that runs the core on a virtual thread, fans out AppendEntries / vote RPCs on structured virtual threads, and translates between proto messages and core events
+- `integration-tests/` — real 3-node loopback cluster tests
+
+**Phase 1 design decision: pure step-function core + driver loop.** `RaftCore.step(event)` is deterministic and produces a list of effects (send-this-RPC, persist-this-log, apply-this-entry). A separate `RaftDriver` owns the event loop, runs one event at a time on a virtual thread, and executes effects via IO workers. This is the pattern used by etcd/raft, TiKV/raft-rs, and TigerBeetle's VSR. It keeps the core deterministic (Phase 3's simulator becomes trivial), sidesteps virtual-thread pinning (no `synchronized` on hot paths), and exercises Java 21 sealed types + pattern matching organically.
+
+## Testing
+
+- **Unit tests:** ~50 across `raft-core` and `raft-transport`, covering log append/read/fsync/recovery, persistent state, election safety, vote acceptance with log-completeness check, AppendEntries log-matching + truncation + commit advance, leader matchIndex majority commit (§5.4.2), conflict-index fast backoff, client proposal rejection on non-leader, and persistence round-trips.
+- **Integration tests:** 4 tests in `integration-tests/src/test/java/jbroker/it/ThreeNodeRaftIT.java` — leader election within 1 s, kill-non-leader non-disruption, kill-leader failover within 5 s, replicate 1000 entries. `ClusterHarness.start()` blocks until every outbound gRPC channel reaches `ConnectivityState.READY`, so the first election's vote RPCs are delivered immediately rather than queued behind an HTTP/2 handshake — this eliminated the back-to-back rerun flakiness that affected earlier builds.
+- **Stress:** `ElectionStressIT` runs 100 randomized election cycles; `./gradlew :integration-tests:stressTest` completes 100/100 in ~60 s.
+
+## Notable Raft correctness invariants covered
+
+- **Election safety** via `currentTerm`/`votedFor` fsynced before any RequestVote response.
+- **Log matching** via `prevLogIndex`/`prevLogTerm` check on every AppendEntries.
+- **Commit rule §5.4.2** — leader only advances commitIndex by majority match on entries of its own term.
+- **Conflict-index fast backoff** — follower returns the first index of its conflicting term on AppendEntries failure; leader jumps `nextIndex[peer]` directly there.
+- **Torn-write recovery** — `FileRaftLog` rehydrates by skipping incomplete trailing frames and hard-caps per-frame payloads at 64 MiB against corrupted length prefixes.
+- **Defensive immutability** — `LogEntry.payload()` returns a defensive copy; equality and hash are content-based via `Arrays.equals`/`Arrays.hashCode`.

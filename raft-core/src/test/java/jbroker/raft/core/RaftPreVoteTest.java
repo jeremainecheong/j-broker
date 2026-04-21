@@ -100,11 +100,16 @@ class RaftPreVoteTest {
     }
 
     @Test
-    void deniesPreVoteWhenDeadlineNotElapsed(@TempDir Path dir) throws Exception {
+    void deniesPreVoteWhenLeaderIsKnownAndDeadlineNotElapsed(@TempDir Path dir) throws Exception {
         try (var log = FileRaftLog.open(dir.resolve("log.bin"));
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
-            // t=500ms < deadline=1000ms; we believe we have a recent leader.
+            // Establish a leader via a heartbeat at t=100ms; sets leaderId and
+            // re-arms deadline to 100 + 1000 = 1100ms.
+            core.step(
+                    new RaftEvent.AppendEntriesReq(new Term(1), new NodeId(3), 0L, Term.ZERO, List.of(), 0L, ms(100)));
+            // Pre-vote request arrives at t=500ms — we still have an active leader
+            // (leaderId set AND deadline not yet elapsed).
             var effects = core.step(new RaftEvent.PreVoteReq(new Term(2), new NodeId(2), 0L, Term.ZERO, ms(500)));
 
             assertThat(effects)

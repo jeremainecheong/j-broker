@@ -399,12 +399,18 @@ public final class DefaultRaftCore implements RaftCore {
 
         // Deny if we are the leader (we clearly have a current leader — ourselves).
         // Deny if the hypothetical term is not newer than what we've already seen.
-        // Deny if we've heard from a leader recently (our election deadline hasn't elapsed).
         // Deny if the candidate's log is not at least as up-to-date as ours.
+        // "No current leader" check: either we've never heard of one (leaderId
+        // empty at startup, or after becomeFollower), or we have but our election
+        // deadline has elapsed since the last heartbeat (so we'd time out
+        // ourselves soon anyway). The initial cluster bring-up case — all nodes
+        // start with non-elapsed deadlines but leaderId.isEmpty() — falls into
+        // the first branch so the first pre-vote isn't denied purely on timing.
         boolean termOk = req.term().compareTo(currentTerm) > 0;
-        boolean deadlineElapsed = electionDeadlineNanos != Long.MAX_VALUE && req.nowNanos() >= electionDeadlineNanos;
+        boolean noCurrentLeader = leaderId.isEmpty()
+                || (electionDeadlineNanos != Long.MAX_VALUE && req.nowNanos() >= electionDeadlineNanos);
         boolean logUpToDate = candidateLogUpToDate(req.lastLogIndex(), req.lastLogTerm());
-        boolean grant = role != Role.LEADER && termOk && deadlineElapsed && logUpToDate;
+        boolean grant = role != Role.LEADER && termOk && noCurrentLeader && logUpToDate;
         effects.add(new RaftEffect.SendPreVoteResp(req.candidateId(), currentTerm, grant));
         // Critically, no state mutation — no term bump, no votedFor write. That's the
         // whole point of pre-vote: a disruptive node that fails pre-vote has not

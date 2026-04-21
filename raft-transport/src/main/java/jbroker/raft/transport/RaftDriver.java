@@ -132,6 +132,16 @@ public final class RaftDriver implements AutoCloseable {
     }
 
     public RequestVoteResponse handleRequestVote(RequestVoteRequest req) throws InterruptedException {
+        if (req.getPreVote()) {
+            var event = RaftMessageCodec.preVoteFromProto(req, clock.nanoTime());
+            var future = new CompletableFuture<RaftEffect.SendPreVoteResp>();
+            queue.put(new PendingEvent(event, future));
+            try {
+                return RaftMessageCodec.toProto(future.get(3, TimeUnit.SECONDS));
+            } catch (ExecutionException | TimeoutException e) {
+                throw new RuntimeException(e);
+            }
+        }
         var event = RaftMessageCodec.fromProto(req, clock.nanoTime());
         var future = new CompletableFuture<RaftEffect.SendVoteResp>();
         queue.put(new PendingEvent(event, future));
@@ -201,8 +211,14 @@ public final class RaftDriver implements AutoCloseable {
                         ((CompletableFuture<RaftEffect.SendVoteResp>) pending.future).complete(r);
                     }
                 }
+                case RaftEffect.SendPreVoteResp r -> {
+                    if (pending.future != null) {
+                        ((CompletableFuture<RaftEffect.SendPreVoteResp>) pending.future).complete(r);
+                    }
+                }
                 case RaftEffect.SendAppendEntries s -> dispatchAppend(s);
                 case RaftEffect.SendVoteReq v -> dispatchVote(v);
+                case RaftEffect.SendPreVoteReq v -> dispatchPreVote(v);
                 case RaftEffect.ApplyCommitted a -> stateMachine.apply(a.entry());
                 case RaftEffect.PersistLog ignored -> {
                     /* FileRaftLog already fsynced */
@@ -266,11 +282,34 @@ public final class RaftDriver implements AutoCloseable {
                                 .setCandidateId(eff.candidateId().value())
                                 .setLastLogIndex(eff.lastLogIndex())
                                 .setLastLogTerm(eff.lastLogTerm().value())
+                                .setPreVote(false)
                                 .build();
                         var resp = peer.requestVote(proto);
                         queue.put(new PendingEvent(RaftMessageCodec.fromProto(resp, eff.to()), null));
                     } catch (Exception e) {
                         LOG.debug("vote to {} failed: {}", eff.to(), e.getMessage());
+                    }
+                });
+    }
+
+    private void dispatchPreVote(RaftEffect.SendPreVoteReq eff) {
+        var peer = peers.get(eff.to());
+        if (peer == null) return;
+        Thread.ofVirtual()
+                .name("raft-prevote-" + selfId.value() + "->" + eff.to().value())
+                .start(() -> {
+                    try {
+                        var proto = RequestVoteRequest.newBuilder()
+                                .setTerm(eff.hypotheticalTerm().value())
+                                .setCandidateId(eff.candidateId().value())
+                                .setLastLogIndex(eff.lastLogIndex())
+                                .setLastLogTerm(eff.lastLogTerm().value())
+                                .setPreVote(true)
+                                .build();
+                        var resp = peer.requestVote(proto);
+                        queue.put(new PendingEvent(RaftMessageCodec.preVoteRespFromProto(resp, eff.to()), null));
+                    } catch (Exception e) {
+                        LOG.debug("prevote to {} failed: {}", eff.to(), e.getMessage());
                     }
                 });
     }

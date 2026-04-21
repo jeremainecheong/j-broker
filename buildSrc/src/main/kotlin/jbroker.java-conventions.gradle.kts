@@ -30,7 +30,7 @@ dependencies {
     "testImplementation"("org.junit.jupiter:junit-jupiter")
     "testImplementation"("org.assertj:assertj-core:3.26.3")
     "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
-    "testRuntimeOnly"("ch.qos.logback:logback-classic:1.5.6")
+    "testRuntimeOnly"("ch.qos.logback:logback-classic:1.5.18")
 }
 
 spotless {

@@ -42,6 +42,11 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
     public static FileRaftLog open(Path path) throws IOException {
         var channel =
                 FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        return openWithChannel(channel);
+    }
+
+    /** Test-only seam: allows injecting a fault-injecting {@link FileChannel}. */
+    static FileRaftLog openWithChannel(FileChannel channel) throws IOException {
         var index = rehydrate(channel);
         return new FileRaftLog(channel, index);
     }
@@ -112,14 +117,32 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
             }
             expected++;
         }
+        int indexSizeBefore = index.size();
+        long channelSizeBefore = -1L;
         try {
-            channel.position(channel.size());
+            channelSizeBefore = channel.size();
+            channel.position(channelSizeBefore);
             for (var entry : entries) {
                 writeFrame(entry);
                 index.add(entry);
             }
             channel.force(true);
         } catch (IOException e) {
+            // Roll back: keep the in-memory index consistent with what's on
+            // disk so subsequent operations don't observe entries whose bytes
+            // were never durably written.  Best-effort truncate back to the
+            // pre-append length; if the channel itself is dead, we can't do
+            // better than leaving rehydrate to clean up on reopen.
+            while (index.size() > indexSizeBefore) {
+                index.remove(index.size() - 1);
+            }
+            if (channelSizeBefore >= 0) {
+                try {
+                    channel.truncate(channelSizeBefore);
+                } catch (IOException ignored) {
+                    // channel likely unusable; rehydrate will truncate torn frames on reopen
+                }
+            }
             throw new IllegalStateException("failed to append", e);
         }
     }

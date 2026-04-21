@@ -13,6 +13,7 @@ import jbroker.broker.BrokerGrpcServices;
 import jbroker.broker.FetchHandler;
 import jbroker.broker.MetadataStateMachine;
 import jbroker.broker.ProduceHandler;
+import jbroker.broker.ReplicaFetchHandler;
 import jbroker.broker.TopicManager;
 import jbroker.broker.WaitingStateMachine;
 import jbroker.raft.core.DefaultRaftCore;
@@ -107,6 +108,8 @@ public final class Broker implements AutoCloseable {
         var produce =
                 new ProduceHandler(logManager, topicManager, config.selfId().value());
         var fetch = new FetchHandler(logManager, topicManager);
+        var replicaFetch = new ReplicaFetchHandler(
+                logManager, topicManager, config.selfId().value());
         var admin = new AdminHandler(
                 topicManager,
                 (payload, timeoutMs) -> {
@@ -119,6 +122,7 @@ public final class Broker implements AutoCloseable {
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce))
                 .addService(BrokerGrpcServices.consumer(fetch))
+                .addService(BrokerGrpcServices.replicaConsumer(replicaFetch))
                 .addService(BrokerGrpcServices.admin(admin))
                 .build()
                 .start();

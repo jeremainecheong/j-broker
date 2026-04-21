@@ -8,6 +8,7 @@ public final class ErrorCodes {
     public static final int TOPIC_ALREADY_EXISTS = 4;
     public static final int NOT_LEADER = 5;
     public static final int IO_ERROR = 6;
+    public static final int FENCED_EPOCH = 7;
 
     private ErrorCodes() {}
 }

@@ -58,8 +58,13 @@ class ReplicaFetchEndToEndIT {
                                     TimeUnit.MINUTES.toMillis(5)));
                     var peer = new ReplicaPeerClient("127.0.0.1", brokerPort)) {
 
+                // Use broker-id 1 so the ISR check on the leader accepts us —
+                // in single-broker mode the only member of the ISR is broker 1.
+                // This IT exercises the replication RPC end-to-end; the full
+                // multi-broker ISR story lands in P6.5 where a real controller
+                // will propose PartitionChangeRecords adding follower broker ids.
                 var fetcher = new ReplicaFetcher(
-                        followerLm, "replicated", 0, /* followerBrokerId */ 2, req -> peer.fetch(req, 5_000L));
+                        followerLm, "replicated", 0, /* followerBrokerId */ 1, req -> peer.fetch(req, 5_000L));
 
                 long deadline = System.currentTimeMillis() + 30_000;
                 while (System.currentTimeMillis() < deadline

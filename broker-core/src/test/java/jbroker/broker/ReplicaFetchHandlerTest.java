@@ -73,6 +73,21 @@ class ReplicaFetchHandlerTest {
     }
 
     @Test
+    void rejectsFetchFromBrokerNotInIsr(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        // ISR is [LEADER, FOLLOWER]; an impostor broker id 99 is not a replica.
+        tm.onPartitionChange("orders", 0, LEADER, List.of(LEADER, FOLLOWER), 0);
+
+        try (var lm = lm(dir)) {
+            var handler = new ReplicaFetchHandler(lm, tm, LEADER);
+            var resp = handler.handle(request(/* impostor */ 99, 0, 0L));
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NOT_LEADER);
+            assertThat(resp.getError().getMessage()).contains("not a replica");
+        }
+    }
+
+    @Test
     void returnsEmptyRecordsWhenFollowerIsAtLogEnd(@TempDir Path dir) throws Exception {
         var tm = new TopicManager();
         tm.onTopicCommitted("orders", 1, 3, 0L);

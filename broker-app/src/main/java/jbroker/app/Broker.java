@@ -16,6 +16,7 @@ import jbroker.broker.ProduceHandler;
 import jbroker.broker.ReplicaFetchHandler;
 import jbroker.broker.TopicManager;
 import jbroker.broker.WaitingStateMachine;
+import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.raft.core.DefaultRaftCore;
 import jbroker.raft.core.FilePersistentState;
 import jbroker.raft.core.FileRaftLog;
@@ -108,8 +109,9 @@ public final class Broker implements AutoCloseable {
         var produce =
                 new ProduceHandler(logManager, topicManager, config.selfId().value());
         var fetch = new FetchHandler(logManager, topicManager);
+        var followerTracker = new FollowerStateTracker();
         var replicaFetch = new ReplicaFetchHandler(
-                logManager, topicManager, config.selfId().value());
+                logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var admin = new AdminHandler(
                 topicManager,
                 (payload, timeoutMs) -> {

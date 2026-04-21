@@ -3,27 +3,41 @@ package jbroker.broker;
 import com.google.protobuf.ByteString;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.function.LongSupplier;
+import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
 import jbroker.storage.LogManager;
 
 /**
  * Serves the broker-internal {@code ReplicaFetch} RPC: a follower pulls
- * record batches from the partition leader. Analogous to {@link FetchHandler}
- * but additionally validates the requester's {@code leader_epoch} against
- * the leader's current view, returning {@link ErrorCodes#FENCED_EPOCH} on
- * mismatch so the follower can reconcile before retrying.
+ * record batches from the partition leader. Validates {@code leader_epoch}
+ * and ISR membership, records the follower's LEO in the shared
+ * {@link FollowerStateTracker}, then returns records + advanced HWM.
+ *
+ * <p>HWM is computed as {@code min(LEO across ISR)}; the follower uses it
+ * to know what's safe for consumers (Phase 6.6 enforces this on the
+ * Consumer.Fetch path).
  */
 public final class ReplicaFetchHandler {
 
     private final LogManager logManager;
     private final TopicManager topicManager;
     private final int selfBrokerId;
+    private final FollowerStateTracker tracker;
+    private final LongSupplier clock;
 
-    public ReplicaFetchHandler(LogManager logManager, TopicManager topicManager, int selfBrokerId) {
+    public ReplicaFetchHandler(
+            LogManager logManager,
+            TopicManager topicManager,
+            int selfBrokerId,
+            FollowerStateTracker tracker,
+            LongSupplier clock) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
+        this.tracker = tracker;
+        this.clock = clock;
     }
 
     public ReplicaFetchResponse handle(ReplicaFetchRequest req) {
@@ -39,9 +53,6 @@ public final class ReplicaFetchHandler {
                     .build();
         }
         // Reject impostor brokers not in the replica set for this partition.
-        // P6.2 tracks only ISR (shrink/expand lands in P6.3); until a replica
-        // set separate from ISR exists, out-of-ISR brokers can't catch up.
-        // That's fine for the P6.2 tests (ISR=full replica set at topic create).
         if (!state.get().isr().contains(req.getFollowerBrokerId())) {
             return ReplicaFetchResponse.newBuilder()
                     .setCurrentLeaderEpoch(state.get().leaderEpoch())
@@ -62,20 +73,24 @@ public final class ReplicaFetchHandler {
                             .build())
                     .build();
         }
+        // Record the follower's LEO — the fetch_offset is the first offset
+        // it still needs, which equals its local LEO. Only recorded for
+        // accepted fetches so a fenced / impostor peer can't drag HWM down.
+        tracker.record(
+                req.getTopic(), req.getPartition(), req.getFollowerBrokerId(), req.getFetchOffset(), clock.getAsLong());
         try {
             var log = logManager.logFor(req.getTopic(), req.getPartition());
-            long logEnd = log.nextOffset();
+            long leaderLeo = log.nextOffset();
             var baos = new ByteArrayOutputStream();
-            // Skip the transferTo call when the follower is caught up; avoids
-            // an unnecessary index lookup and IO syscall, and keeps the
-            // response deterministically empty-bytes.
-            if (req.getFetchOffset() < logEnd) {
+            if (req.getFetchOffset() < leaderLeo) {
                 int maxBytes = req.getMaxBytes() > 0 ? req.getMaxBytes() : 1024 * 1024;
                 log.transferTo(req.getFetchOffset(), maxBytes, baos);
             }
+            long hwm = tracker.computeHwm(
+                    req.getTopic(), req.getPartition(), state.get().isr(), selfBrokerId, leaderLeo);
             return ReplicaFetchResponse.newBuilder()
                     .setRecords(ByteString.copyFrom(baos.toByteArray()))
-                    .setHighWatermark(logEnd)
+                    .setHighWatermark(hwm)
                     .setCurrentLeaderEpoch(currentEpoch)
                     .build();
         } catch (IOException e) {

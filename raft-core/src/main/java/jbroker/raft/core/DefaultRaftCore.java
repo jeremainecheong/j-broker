@@ -115,7 +115,7 @@ public final class DefaultRaftCore implements RaftCore {
                     matchIndex.put(peer, 0L);
                 }
             }
-            lastHeartbeatNanos = Long.MIN_VALUE;
+            lastHeartbeatNanos = Long.MIN_VALUE / 2;
         }
     }
 

@@ -50,4 +50,19 @@ class DefaultRaftCoreTest {
                     .containsExactlyInAnyOrder(new NodeId(2), new NodeId(3));
         }
     }
+
+    @Test
+    void leaderSendsHeartbeatAfterBecomingLeader(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+            var core = new DefaultRaftCore(CONFIG, log, state, 0L);
+            core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+            core.step(new RaftEvent.VoteResp(new NodeId(2), new Term(1), true));
+            var effects = core.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_001)));
+            assertThat(effects)
+                    .filteredOn(e -> e instanceof RaftEffect.SendAppendEntries)
+                    .extracting(e -> ((RaftEffect.SendAppendEntries) e).to())
+                    .containsExactlyInAnyOrder(new NodeId(2), new NodeId(3));
+        }
+    }
 }

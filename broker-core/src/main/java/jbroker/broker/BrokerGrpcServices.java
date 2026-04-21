@@ -14,6 +14,9 @@ import jbroker.proto.broker.ListTopicsResponse;
 import jbroker.proto.broker.ProduceRequest;
 import jbroker.proto.broker.ProduceResponse;
 import jbroker.proto.broker.ProducerGrpc;
+import jbroker.proto.broker.ReplicaConsumerGrpc;
+import jbroker.proto.broker.ReplicaFetchRequest;
+import jbroker.proto.broker.ReplicaFetchResponse;
 
 /**
  * Thin wrappers that turn {@link ProduceHandler} / {@link FetchHandler} /
@@ -39,6 +42,16 @@ public final class BrokerGrpcServices {
         return new ConsumerGrpc.ConsumerImplBase() {
             @Override
             public void fetch(FetchRequest req, StreamObserver<FetchResponse> out) {
+                out.onNext(handler.handle(req));
+                out.onCompleted();
+            }
+        };
+    }
+
+    public static ReplicaConsumerGrpc.ReplicaConsumerImplBase replicaConsumer(ReplicaFetchHandler handler) {
+        return new ReplicaConsumerGrpc.ReplicaConsumerImplBase() {
+            @Override
+            public void replicaFetch(ReplicaFetchRequest req, StreamObserver<ReplicaFetchResponse> out) {
                 out.onNext(handler.handle(req));
                 out.onCompleted();
             }

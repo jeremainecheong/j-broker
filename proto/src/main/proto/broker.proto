@@ -11,6 +11,12 @@ service Consumer {
   rpc Fetch(FetchRequest) returns (FetchResponse);
 }
 
+// Broker-internal RPC used by followers to pull committed record batches
+// from the partition leader. Distinct from Consumer.Fetch (client-facing).
+service ReplicaConsumer {
+  rpc ReplicaFetch(ReplicaFetchRequest) returns (ReplicaFetchResponse);
+}
+
 service Admin {
   rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
   rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
@@ -47,6 +53,29 @@ message FetchResponse {
   bytes records = 1;
   int64 high_watermark = 2;
   Error error = 3;
+}
+
+// ===== ReplicaFetch (follower -> leader) =====
+
+message ReplicaFetchRequest {
+  string topic = 1;
+  int32 partition = 2;
+  int32 follower_broker_id = 3;
+  // Epoch the follower believes to be current. The leader rejects with
+  // FENCED_EPOCH if it doesn't match so the follower can reconcile via
+  // OffsetsForLeaderEpoch () before retrying.
+  int32 leader_epoch = 4;
+  int64 fetch_offset = 5;
+  int32 max_bytes = 6;
+}
+
+message ReplicaFetchResponse {
+  bytes records = 1;
+  int64 high_watermark = 2;
+  // The leader's current view of the partition's leader_epoch so the
+  // follower can detect its own staleness.
+  int32 current_leader_epoch = 3;
+  Error error = 4;
 }
 
 // ===== Admin =====

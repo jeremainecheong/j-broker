@@ -62,14 +62,25 @@ class RaftReadIndexTest {
         }
     }
 
+    /** Pull the heartbeatSeq the leader stamped on the AE it just sent to {@code to}. */
+    private static long heartbeatSeqSentTo(java.util.List<RaftEffect> effects, NodeId to) {
+        return effects.stream()
+                .filter(e -> e instanceof RaftEffect.SendAppendEntries s && s.to().equals(to))
+                .map(e -> ((RaftEffect.SendAppendEntries) e).heartbeatSeq())
+                .findFirst()
+                .orElseThrow();
+    }
+
     @Test
     void leaderServesReadAfterQuorumHeartbeatAck(@TempDir Path dir) throws Exception {
         var core = becomeLeader(dir);
 
         // Propose + fully commit a write so lastApplied > 0.
-        core.step(new RaftEvent.ClientPropose(new byte[] {42}));
-        core.step(new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(1), true, 0L, Term.ZERO, 1L));
-        core.step(new RaftEvent.AppendEntriesResp(new NodeId(3), new Term(1), true, 0L, Term.ZERO, 1L));
+        var proposeEffects = core.step(new RaftEvent.ClientPropose(new byte[] {42}));
+        long proposeSeqP2 = heartbeatSeqSentTo(proposeEffects, new NodeId(2));
+        long proposeSeqP3 = heartbeatSeqSentTo(proposeEffects, new NodeId(3));
+        core.step(new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(1), true, 0L, Term.ZERO, 1L, proposeSeqP2));
+        core.step(new RaftEvent.AppendEntriesResp(new NodeId(3), new Term(1), true, 0L, Term.ZERO, 1L, proposeSeqP3));
         assertThat(core.commitIndex()).isEqualTo(1L);
         assertThat(core.lastApplied()).isEqualTo(1L);
 
@@ -79,10 +90,11 @@ class RaftReadIndexTest {
                 .filteredOn(e -> e instanceof RaftEffect.SendAppendEntries)
                 .hasSize(2);
         assertThat(readEffects).noneMatch(e -> e instanceof RaftEffect.ServeClientRead);
+        long readSeqP2 = heartbeatSeqSentTo(readEffects, new NodeId(2));
 
-        // One peer acks the heartbeat → quorum (leader + peer2) reached → serve.
-        var ackEffects =
-                core.step(new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(1), true, 0L, Term.ZERO, 1L));
+        // One peer acks the fresh heartbeat → quorum reached → serve.
+        var ackEffects = core.step(
+                new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(1), true, 0L, Term.ZERO, 1L, readSeqP2));
         assertThat(ackEffects)
                 .filteredOn(e -> e instanceof RaftEffect.ServeClientRead)
                 .hasSize(1)
@@ -93,6 +105,29 @@ class RaftReadIndexTest {
                     assertThat(s.requestId()).isEqualTo(200L);
                     assertThat(s.readIndex()).isEqualTo(1L);
                 });
+    }
+
+    @Test
+    void staleInFlightAckDoesNotConfirmRead(@TempDir Path dir) throws Exception {
+        // Regression for the "simplified read-index is unsafe" finding.
+        // Scenario: a peer's AE response for a heartbeat sent BEFORE the
+        // ClientRead arrives AFTER the ClientRead registers. Without the
+        // barrier-seq gate, it would falsely confirm quorum — even though
+        // that peer may have seen a higher-term leader in the meantime.
+        var core = becomeLeader(dir);
+
+        // Send some AE, but don't deliver responses yet; they're "in flight".
+        var priorEffects = core.step(new RaftEvent.ClientPropose(new byte[] {1}));
+        long priorSeqP2 = heartbeatSeqSentTo(priorEffects, new NodeId(2));
+
+        // ClientRead arrives NOW, registering its barrier at the current seq.
+        core.step(new RaftEvent.ClientRead(99L, 500L));
+
+        // The in-flight response for the PRIOR heartbeat lands. It must not
+        // count toward the read's quorum.
+        var lateEffects = core.step(
+                new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(1), true, 0L, Term.ZERO, 1L, priorSeqP2));
+        assertThat(lateEffects).noneMatch(e -> e instanceof RaftEffect.ServeClientRead);
     }
 
     @Test
@@ -131,8 +166,10 @@ class RaftReadIndexTest {
 
         // ClientRead sees commitIndex==0, snapshots readIndex=0. Heartbeat
         // quorum lands quickly; read should serve at readIndex=0 immediately.
-        core.step(new RaftEvent.ClientRead(13L, 400L));
-        var effects = core.step(new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(1), true, 0L, Term.ZERO, 1L));
+        var readEffects = core.step(new RaftEvent.ClientRead(13L, 400L));
+        long readSeq = heartbeatSeqSentTo(readEffects, new NodeId(2));
+        var effects = core.step(
+                new RaftEvent.AppendEntriesResp(new NodeId(2), new Term(1), true, 0L, Term.ZERO, 1L, readSeq));
         assertThat(effects)
                 .filteredOn(e -> e instanceof RaftEffect.ServeClientRead)
                 .hasSize(1)

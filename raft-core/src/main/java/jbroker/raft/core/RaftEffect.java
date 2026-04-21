@@ -17,7 +17,8 @@ public sealed interface RaftEffect {
             long prevLogIndex,
             Term prevLogTerm,
             List<LogEntry> entries,
-            long leaderCommit)
+            long leaderCommit,
+            long heartbeatSeq)
             implements RaftEffect {
         public SendAppendEntries {
             Objects.requireNonNull(to);
@@ -26,11 +27,36 @@ public sealed interface RaftEffect {
             Objects.requireNonNull(prevLogTerm);
             entries = List.copyOf(entries);
         }
+
+        /** Backward-compatible constructor: {@code heartbeatSeq} defaults to 0. */
+        public SendAppendEntries(
+                NodeId to,
+                Term term,
+                NodeId leaderId,
+                long prevLogIndex,
+                Term prevLogTerm,
+                List<LogEntry> entries,
+                long leaderCommit) {
+            this(to, term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit, 0L);
+        }
     }
 
     record SendAppendEntriesResp(
-            NodeId to, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex)
-            implements RaftEffect {}
+            NodeId to,
+            Term term,
+            boolean success,
+            long conflictIndex,
+            Term conflictTerm,
+            long matchIndex,
+            long heartbeatSeq)
+            implements RaftEffect {
+
+        /** Backward-compatible constructor: {@code heartbeatSeq} defaults to 0. */
+        public SendAppendEntriesResp(
+                NodeId to, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex) {
+            this(to, term, success, conflictIndex, conflictTerm, matchIndex, 0L);
+        }
+    }
 
     record SendVoteReq(NodeId to, Term term, NodeId candidateId, long lastLogIndex, Term lastLogTerm)
             implements RaftEffect {}

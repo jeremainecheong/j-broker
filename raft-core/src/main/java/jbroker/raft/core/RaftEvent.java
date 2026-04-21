@@ -29,7 +29,8 @@ public sealed interface RaftEvent {
             Term prevLogTerm,
             List<LogEntry> entries,
             long leaderCommit,
-            long nowNanos)
+            long nowNanos,
+            long heartbeatSeq)
             implements RaftEvent {
         public AppendEntriesReq {
             Objects.requireNonNull(term, "term");
@@ -37,15 +38,45 @@ public sealed interface RaftEvent {
             Objects.requireNonNull(prevLogTerm, "prevLogTerm");
             entries = List.copyOf(entries);
         }
+
+        /**
+         * Backward-compatible constructor: {@code heartbeatSeq} defaults to 0.
+         * Used by transport callers that haven't been wired up for read-index
+         * barrier propagation yet. With seq=0, responses to the resulting AE
+         * will never satisfy a read-index barrier, so ClientRead times out
+         * rather than being served on stale evidence.
+         */
+        public AppendEntriesReq(
+                Term term,
+                NodeId leaderId,
+                long prevLogIndex,
+                Term prevLogTerm,
+                List<LogEntry> entries,
+                long leaderCommit,
+                long nowNanos) {
+            this(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit, nowNanos, 0L);
+        }
     }
 
     record AppendEntriesResp(
-            NodeId from, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex)
+            NodeId from,
+            Term term,
+            boolean success,
+            long conflictIndex,
+            Term conflictTerm,
+            long matchIndex,
+            long heartbeatSeq)
             implements RaftEvent {
         public AppendEntriesResp {
             Objects.requireNonNull(from, "from");
             Objects.requireNonNull(term, "term");
             Objects.requireNonNull(conflictTerm, "conflictTerm");
+        }
+
+        /** Backward-compatible constructor: {@code heartbeatSeq} defaults to 0. */
+        public AppendEntriesResp(
+                NodeId from, Term term, boolean success, long conflictIndex, Term conflictTerm, long matchIndex) {
+            this(from, term, success, conflictIndex, conflictTerm, matchIndex, 0L);
         }
     }
 

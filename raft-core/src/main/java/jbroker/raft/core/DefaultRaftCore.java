@@ -48,12 +48,16 @@ public final class DefaultRaftCore implements RaftCore {
         final long clientId;
         final long requestId;
         final long readIndex;
+        /** Leader heartbeat seq at registration; only responses with seq > this count. */
+        final long barrierSeq;
+
         final Set<NodeId> ackSet = new HashSet<>();
 
-        PendingRead(long clientId, long requestId, long readIndex) {
+        PendingRead(long clientId, long requestId, long readIndex, long barrierSeq) {
             this.clientId = clientId;
             this.requestId = requestId;
             this.readIndex = readIndex;
+            this.barrierSeq = barrierSeq;
         }
     }
 
@@ -76,8 +80,24 @@ public final class DefaultRaftCore implements RaftCore {
      * us. Used when a peer lags past the compaction point and must be caught
      * up via {@link RaftEffect.SendInstallSnapshot}. {@code null} until the
      * driver (or a test) calls {@link #installSnapshotBytesForTesting}.
+     *
+     * <p><b>Caller responsibility:</b> the bytes must correspond to the
+     * state machine as of {@code log.lastIncludedIndex()} / {@code
+     * lastIncludedTerm()} at the time of use. If the driver seeds stale bytes
+     * the lagging peer will install inconsistent state. A hardening TODO is
+     * to pair the bytes with the index/term they were produced for and
+     * refuse to emit {@code SendInstallSnapshot} when they disagree.
      */
     private byte[] currentSnapshotBytes;
+
+    /**
+     * Monotonic counter incremented each time the leader sends an AE. Echoed
+     * back in {@link RaftEvent.AppendEntriesResp#heartbeatSeq()} so a
+     * {@link PendingRead} can distinguish responses to heartbeats sent after
+     * the read arrived from in-flight responses to earlier heartbeats —
+     * critical for read-index linearizability (Raft §6.4).
+     */
+    private long leaderHeartbeatSeq;
 
     /**
      * Constructs a new {@code DefaultRaftCore}.
@@ -101,18 +121,30 @@ public final class DefaultRaftCore implements RaftCore {
                 (nowNanos == Long.MAX_VALUE) ? Long.MAX_VALUE : nowNanos + randomisedElectionTimeout();
         this.lastKnownNowNanos = (nowNanos == Long.MAX_VALUE) ? 0L : nowNanos;
         this.activeVoters = List.copyOf(config.voters());
-        // Rebuild voter set from any CONFIG_CHANGE entries already on disk
-        // (restart path). Each CONFIG_CHANGE replaces the prior set, so the
-        // last one wins.
+        reloadActiveVotersFromLog();
+    }
+
+    /**
+     * Recompute {@code activeVoters} from the log. The latest CONFIG_CHANGE
+     * entry present in the log wins; if none exist, fall back to the static
+     * bootstrap {@code config.voters()}. Invoked from the constructor (restart
+     * recovery) and after {@link RaftLog#truncateFrom} in
+     * {@link #onAppendEntriesReq} to roll back a membership change whose
+     * entry was truncated by a new leader.
+     */
+    private void reloadActiveVotersFromLog() {
+        var rebuilt = List.copyOf(config.voters());
+        long first = log.firstIndex();
         long last = log.lastIndex();
-        for (long i = 1; i <= last; i++) {
+        for (long i = first; i <= last; i++) {
             var existing = log.read(i, 1);
             if (existing.isEmpty()) break;
             var entry = existing.get(0);
             if (entry.type() == LogEntry.Type.CONFIG_CHANGE) {
-                this.activeVoters = MembershipCodec.decode(entry.payload());
+                rebuilt = MembershipCodec.decode(entry.payload());
             }
         }
+        this.activeVoters = rebuilt;
     }
 
     public List<NodeId> activeVoters() {
@@ -220,15 +252,14 @@ public final class DefaultRaftCore implements RaftCore {
             effects.add(new RaftEffect.RejectClientRead(ev.clientId(), ev.requestId(), leaderId));
             return;
         }
-        var pending = new PendingRead(ev.clientId(), ev.requestId(), commitIndex);
+        // Snapshot the heartbeat-seq barrier BEFORE sending fresh heartbeats.
+        // Subsequent sends bump leaderHeartbeatSeq above this value, so only
+        // responses to heartbeats sent after the read arrived can satisfy the
+        // barrier — ruling out stale in-flight acks (Raft §6.4).
+        long barrier = leaderHeartbeatSeq;
+        var pending = new PendingRead(ev.clientId(), ev.requestId(), commitIndex, barrier);
         pending.ackSet.add(config.selfId());
         pendingReads.add(pending);
-        // Fresh heartbeat round confirms we are still leader at currentTerm.
-        // Peer AE successes at currentTerm add to every pending read's ackSet.
-        // Note: this counts any in-flight AE response that lands after the
-        // read arrives, not strictly responses to *this* heartbeat round — a
-        // simplification relative to etcd-raft's per-read context. Adequate
-        // for Phase 2; tighten with a read-context nonce if we see skew.
         sendHeartbeats(effects);
         maybeServePendingReads(effects);
     }
@@ -370,7 +401,8 @@ public final class DefaultRaftCore implements RaftCore {
         var currentTerm = persistentState.currentTerm();
 
         if (req.term().compareTo(currentTerm) < 0) {
-            effects.add(new RaftEffect.SendAppendEntriesResp(req.leaderId(), currentTerm, false, 0L, Term.ZERO, 0L));
+            effects.add(new RaftEffect.SendAppendEntriesResp(
+                    req.leaderId(), currentTerm, false, 0L, Term.ZERO, 0L, req.heartbeatSeq()));
             return;
         }
 
@@ -392,26 +424,35 @@ public final class DefaultRaftCore implements RaftCore {
             var localTerm = log.termAt(req.prevLogIndex());
             if (localTerm.isEmpty()) {
                 effects.add(new RaftEffect.SendAppendEntriesResp(
-                        req.leaderId(), currentTerm, false, log.lastIndex() + 1, Term.ZERO, 0L));
+                        req.leaderId(), currentTerm, false, log.lastIndex() + 1, Term.ZERO, 0L, req.heartbeatSeq()));
                 return;
             }
             if (!localTerm.get().equals(req.prevLogTerm())) {
                 Term conflictTerm = localTerm.get();
                 long firstIdx = firstIndexOfTerm(conflictTerm, req.prevLogIndex());
                 effects.add(new RaftEffect.SendAppendEntriesResp(
-                        req.leaderId(), currentTerm, false, firstIdx, conflictTerm, 0L));
+                        req.leaderId(), currentTerm, false, firstIdx, conflictTerm, 0L, req.heartbeatSeq()));
                 return;
             }
         }
 
         if (!req.entries().isEmpty()) {
+            boolean truncated = false;
             for (var entry : req.entries()) {
                 var existingTerm = log.termAt(entry.index());
                 if (existingTerm.isPresent() && !existingTerm.get().equals(entry.term())) {
                     log.truncateFrom(entry.index());
                     effects.add(new RaftEffect.TruncateLog(entry.index()));
+                    truncated = true;
                     break;
                 }
+            }
+            // If the truncated suffix contained an active CONFIG_CHANGE, our
+            // in-memory activeVoters / inflightConfigChangeIndex now lie about
+            // what the log says. Rebuild from whatever survived the truncate.
+            if (truncated) {
+                reloadActiveVotersFromLog();
+                inflightConfigChangeIndex = 0L;
             }
             var toAppend = req.entries().stream()
                     .filter(e -> e.index() > log.lastIndex())
@@ -436,7 +477,8 @@ public final class DefaultRaftCore implements RaftCore {
             advanceCommit(newCommit, effects);
         }
 
-        effects.add(new RaftEffect.SendAppendEntriesResp(req.leaderId(), currentTerm, true, 0L, Term.ZERO, matchIdx));
+        effects.add(new RaftEffect.SendAppendEntriesResp(
+                req.leaderId(), currentTerm, true, 0L, Term.ZERO, matchIdx, req.heartbeatSeq()));
     }
 
     private long firstIndexOfTerm(Term term, long upperBound) {
@@ -501,8 +543,15 @@ public final class DefaultRaftCore implements RaftCore {
         if (resp.success()) {
             matchIndex.put(resp.from(), resp.matchIndex());
             nextIndex.put(resp.from(), resp.matchIndex() + 1);
+            // Only responses to heartbeats sent AFTER a pending read was
+            // registered count toward its quorum. Without this, a stale
+            // in-flight AE response predating the ClientRead could falsely
+            // confirm leadership while a new leader has already taken over —
+            // breaking linearizability (Raft §6.4).
             for (var pr : pendingReads) {
-                pr.ackSet.add(resp.from());
+                if (resp.heartbeatSeq() > pr.barrierSeq) {
+                    pr.ackSet.add(resp.from());
+                }
             }
             maybeAdvanceLeaderCommit(effects);
             maybeServePendingReads(effects);
@@ -577,8 +626,9 @@ public final class DefaultRaftCore implements RaftCore {
         long prevIndex = next - 1;
         Term prevTerm = prevIndex == 0 ? Term.ZERO : log.termAt(prevIndex).orElse(Term.ZERO);
         var batch = log.read(next, config.maxEntriesPerAppend());
+        long seq = ++leaderHeartbeatSeq;
         effects.add(new RaftEffect.SendAppendEntries(
-                peer, persistentState.currentTerm(), config.selfId(), prevIndex, prevTerm, batch, commitIndex));
+                peer, persistentState.currentTerm(), config.selfId(), prevIndex, prevTerm, batch, commitIndex, seq));
     }
 
     /**

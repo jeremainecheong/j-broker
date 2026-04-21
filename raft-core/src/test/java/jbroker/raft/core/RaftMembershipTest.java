@@ -111,6 +111,34 @@ class RaftMembershipTest {
     }
 
     @Test
+    void activeVotersRollBackWhenAppendEntriesTruncatesAConfigChange(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+            var follower = new DefaultRaftCore(FOLLOWER_CONFIG, log, state, 0L);
+
+            // Step 1: an AE from term-2 leader brings CONFIG_CHANGE at idx 1
+            // adding N4. The follower activates {N1,N2,N3,N4}.
+            byte[] addN4 = MembershipCodec.encode(List.of(N1, N2, N3, N4));
+            var addEntry = new LogEntry(1L, new Term(2), LogEntry.Type.CONFIG_CHANGE, addN4);
+            follower.step(new RaftEvent.AppendEntriesReq(
+                    new Term(2), N1, 0L, Term.ZERO, List.of(addEntry), 0L, TimeUnit.MILLISECONDS.toNanos(100)));
+            assertThat(follower.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3, N4);
+
+            // Step 2: a new term-3 leader wins an election where N1's entry
+            // never propagated elsewhere, and replicates a different entry at
+            // idx 1. AE carries a NORMAL entry at idx 1 in term 3.
+            var conflictEntry = new LogEntry(1L, new Term(3), LogEntry.Type.NORMAL, new byte[] {0x42});
+            follower.step(new RaftEvent.AppendEntriesReq(
+                    new Term(3), N3, 0L, Term.ZERO, List.of(conflictEntry), 0L, TimeUnit.MILLISECONDS.toNanos(200)));
+
+            // Without rollback, activeVoters would still be {N1..N4} — making
+            // quorum=3 against a cluster that is back to {N1,N2,N3}. After the
+            // fix, it's back to the bootstrap set.
+            assertThat(follower.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3);
+        }
+    }
+
+    @Test
     void leaderRemovedFromVotersStepsDownAfterCommit(@TempDir Path dir) throws Exception {
         var core = becomeLeader(dir);
         // Leader (N1) proposes its own removal — new voter set is {N2, N3}.

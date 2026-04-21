@@ -7,6 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import jbroker.broker.AdminHandler;
 import jbroker.broker.BrokerGrpcServices;
@@ -16,6 +18,8 @@ import jbroker.broker.ProduceHandler;
 import jbroker.broker.ReplicaFetchHandler;
 import jbroker.broker.TopicManager;
 import jbroker.broker.WaitingStateMachine;
+import jbroker.broker.replication.FollowerStateTracker;
+import jbroker.broker.replication.IsrManager;
 import jbroker.raft.core.DefaultRaftCore;
 import jbroker.raft.core.FilePersistentState;
 import jbroker.raft.core.FileRaftLog;
@@ -25,6 +29,8 @@ import jbroker.raft.core.Role;
 import jbroker.raft.transport.RaftDriver;
 import jbroker.raft.transport.RaftPeerClient;
 import jbroker.storage.LogManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Single-node broker. Wires together:
@@ -43,6 +49,8 @@ import jbroker.storage.LogManager;
  */
 public final class Broker implements AutoCloseable {
 
+    private static final Logger log = LoggerFactory.getLogger(Broker.class);
+
     public record Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {}
 
     private final TopicManager topicManager;
@@ -51,6 +59,7 @@ public final class Broker implements AutoCloseable {
     private final RaftDriver raftDriver;
     private final Server brokerServer;
     private final int brokerPort;
+    private final ScheduledExecutorService isrTicker;
 
     private Broker(
             TopicManager tm,
@@ -58,13 +67,15 @@ public final class Broker implements AutoCloseable {
             WaitingStateMachine wsm,
             RaftDriver raftDriver,
             Server brokerServer,
-            int brokerPort) {
+            int brokerPort,
+            ScheduledExecutorService isrTicker) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
         this.raftDriver = raftDriver;
         this.brokerServer = brokerServer;
         this.brokerPort = brokerPort;
+        this.isrTicker = isrTicker;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -75,7 +86,7 @@ public final class Broker implements AutoCloseable {
         Files.createDirectories(topicsDir);
 
         // --- Raft layer (metadata log) ---
-        var log = FileRaftLog.open(raftDir.resolve("log.bin"));
+        var raftLog = FileRaftLog.open(raftDir.resolve("log.bin"));
         var state = FilePersistentState.open(raftDir.resolve("state.bin"));
         var raftConfig = new RaftConfig(
                 config.selfId(),
@@ -84,7 +95,7 @@ public final class Broker implements AutoCloseable {
                 TimeUnit.MILLISECONDS.toNanos(250),
                 TimeUnit.MILLISECONDS.toNanos(100),
                 100);
-        var core = new DefaultRaftCore(raftConfig, log, state, Long.MAX_VALUE);
+        var core = new DefaultRaftCore(raftConfig, raftLog, state, Long.MAX_VALUE);
 
         var topicManager = new TopicManager();
         var metadataSm = new MetadataStateMachine(topicManager);
@@ -108,8 +119,9 @@ public final class Broker implements AutoCloseable {
         var produce =
                 new ProduceHandler(logManager, topicManager, config.selfId().value());
         var fetch = new FetchHandler(logManager, topicManager);
+        var followerTracker = new FollowerStateTracker();
         var replicaFetch = new ReplicaFetchHandler(
-                logManager, topicManager, config.selfId().value());
+                logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var admin = new AdminHandler(
                 topicManager,
                 (payload, timeoutMs) -> {
@@ -141,7 +153,38 @@ public final class Broker implements AutoCloseable {
             }
         }
 
-        return new Broker(topicManager, logManager, waitingSm, raftDriver, server, server.getPort());
+        // ISR housekeeping ticker: every 2s, ask IsrManager for any
+        // (leader, ISR) flips and propose them through Raft. 10s lag
+        // timeout matches Kafka's default replica.lag.time.max.ms.
+        var isr = new IsrManager(
+                config.selfId().value(), topicManager, logManager, followerTracker, TimeUnit.SECONDS.toMillis(10));
+        var isrTicker = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "isr-manager");
+            t.setDaemon(true);
+            return t;
+        });
+        isrTicker.scheduleWithFixedDelay(
+                () -> {
+                    try {
+                        for (var proposal : isr.decideChanges(System.currentTimeMillis())) {
+                            var fut = waitingSm.awaitApply(proposal);
+                            raftDriver.propose(proposal);
+                            fut.get(3, TimeUnit.SECONDS);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
+                        // Election windows + shutdown races are expected; log
+                        // at debug so real bugs (NPE/CCE/logic errors) are
+                        // still surfaced on any appender set above debug.
+                        log.debug("ISR tick failed, retrying on next tick", e);
+                    }
+                },
+                2,
+                2,
+                TimeUnit.SECONDS);
+
+        return new Broker(topicManager, logManager, waitingSm, raftDriver, server, server.getPort(), isrTicker);
     }
 
     public int brokerPort() {
@@ -154,6 +197,14 @@ public final class Broker implements AutoCloseable {
 
     @Override
     public void close() {
+        // Shut the ticker down first and wait briefly so an in-flight
+        // propose()/fut.get() chain can't race against raftDriver.close().
+        isrTicker.shutdownNow();
+        try {
+            isrTicker.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         brokerServer.shutdown();
         try {
             brokerServer.awaitTermination(5, TimeUnit.SECONDS);

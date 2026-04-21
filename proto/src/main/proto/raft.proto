@@ -118,10 +118,23 @@ message PartitionChangeRecord {
   int32 partition = 2;
   int32 leader = 3;
   repeated int32 isr = 4;
+  // Bumps only on leader change. Followers use it to trigger log
+  // truncation via OffsetsForLeaderEpoch (P6.4).
   int32 leader_epoch = 5;
 
   // 6: reserved for controller_epoch (Phase 6.5+).
   reserved 6;
+
+  // Full replica set for this partition — superset of isr. An out-of-ISR
+  // replica still fetches so it can catch up and rejoin the ISR. Added in
+  // P6.3; pre-P6.3 records leave this empty and the state machine defaults
+  // replicas = isr for backward compatibility.
+  repeated int32 replicas = 7;
+
+  // Bumps on every ISR or replica-set change under the same leader_epoch;
+  // resets to 0 on leader change. Added in P6.3 so ISR flips don't look
+  // like leadership changes to the P6.4 reconciliation path.
+  int32 partition_epoch = 8;
 }
 
 // Atomic create-topic bundle: TopicRecord + the initial PartitionChangeRecord

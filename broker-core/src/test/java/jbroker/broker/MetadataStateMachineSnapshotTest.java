@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.util.List;
 import jbroker.proto.raft.MetadataRecord;
 import jbroker.proto.raft.ProducerIdAssignmentRecord;
@@ -72,6 +73,46 @@ class MetadataStateMachineSnapshotTest {
         assertThat(dstTopics.describe("t")).isPresent();
         // v2 stream carries no producer-id trailer — registry stays at its
         // fresh-boot starting value (1 since P6.7's legacy-sentinel fix).
+        assertThat(dstReg.peekNextProducerId()).isEqualTo(1L);
+    }
+
+    @Test
+    void restoreAcceptsV4SnapshotFromBeforeP67() throws Exception {
+        // v4 stream = P6.3's format: topics + assignments(with replicas +
+        // partitionEpoch) but no producer-id trailer. A broker upgraded
+        // from P6.3 → P6.7 must read its existing snapshot without the
+        // counter and boot with a fresh registry.
+        var baos = new ByteArrayOutputStream();
+        var dout = new DataOutputStream(baos);
+        dout.writeByte(4);
+        // 1 topic
+        dout.writeInt(1);
+        dout.writeUTF("t");
+        dout.writeInt(1);
+        dout.writeInt(1);
+        dout.writeLong(0L);
+        // 1 partition assignment with replicas + partitionEpoch
+        dout.writeInt(1);
+        dout.writeUTF("t");
+        dout.writeInt(0);
+        dout.writeInt(1); // leader
+        dout.writeInt(1); // isr size
+        dout.writeInt(1); // isr[0]
+        dout.writeInt(2); // leaderEpoch
+        dout.writeInt(1); // replicas size
+        dout.writeInt(1); // replicas[0]
+        dout.writeInt(3); // partitionEpoch
+        dout.flush();
+
+        var dstTopics = new TopicManager();
+        var dstReg = new ProducerIdRegistry();
+        var dstSm = new MetadataStateMachine(dstTopics, dstReg);
+        dstSm.restore(new ByteArrayInputStream(baos.toByteArray()));
+
+        var state = dstTopics.partitionState("t", 0).orElseThrow();
+        assertThat(state.leaderEpoch()).isEqualTo(2);
+        assertThat(state.partitionEpoch()).isEqualTo(3);
+        // No producer-id trailer in v4 — registry stays at fresh-boot 1.
         assertThat(dstReg.peekNextProducerId()).isEqualTo(1L);
     }
 

@@ -167,6 +167,6 @@ message MetadataRecord {
     BrokerRegistrationRecord broker = 3;
     PartitionChangeRecord partition_change = 4;
     CreateTopicRecord create_topic = 5;
-    ProducerIdAssignmentRecord producer_id_assignment = 7;
+    ProducerIdAssignmentRecord producer_id_assignment = 6;
   }
 }

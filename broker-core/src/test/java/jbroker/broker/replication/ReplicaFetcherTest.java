@@ -48,6 +48,33 @@ class ReplicaFetcherTest {
     }
 
     @Test
+    void multiPollCatchupDoesNotDoubleAppendStaleBatches(@TempDir Path dir) throws Exception {
+        // Repro for reviewer's issue #1: the leader's transferTo streams from
+        // the sparse-index floor, so a follower whose fetchOffset lands *after*
+        // an index entry will receive batches that straddle or precede it.
+        // The fetcher must skip any batch whose last offset is below fetchOffset.
+        try (var lm = lm(dir)) {
+            var peer = new StubPeer();
+            // Poll 1: leader sends a batch covering offsets 0..2.
+            peer.enqueue(encodedBatch(0L, List.of(valueOf("a"), valueOf("b"), valueOf("c"))), 5L, 0);
+            // Poll 2: follower's fetchOffset is now 3, but the leader's sparse
+            // index re-sends the 0..2 batch (simulating the floor-lookup
+            // behaviour) followed by the 3..4 batch. The fetcher must skip the
+            // first and only append the second.
+            var combined = concat(
+                    encodedBatch(0L, List.of(valueOf("a"), valueOf("b"), valueOf("c"))),
+                    encodedBatch(3L, List.of(valueOf("d"), valueOf("e"))));
+            peer.enqueue(combined, 5L, 0);
+
+            var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
+            fetcher.pollOnce(0);
+            assertThat(lm.logFor("orders", 0).nextOffset()).isEqualTo(3L);
+            fetcher.pollOnce(0);
+            assertThat(lm.logFor("orders", 0).nextOffset()).isEqualTo(5L);
+        }
+    }
+
+    @Test
     void pollOnFencedEpochLeavesLogUnchanged(@TempDir Path dir) throws Exception {
         try (var lm = lm(dir)) {
             var peer = new StubPeer();
@@ -78,6 +105,12 @@ class ReplicaFetcherTest {
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
         return ByteString.copyFrom(bytes);
+    }
+
+    private static ByteString concat(ByteString... parts) {
+        var out = ByteString.EMPTY;
+        for (var p : parts) out = out.concat(p);
+        return out;
     }
 
     private static LogManager lm(Path dir) throws Exception {

@@ -91,8 +91,21 @@ public final class ReplicaFetcher {
                 buf.position(mark);
                 break;
             }
-            long batchTs = decoded.records().isEmpty() ? System.currentTimeMillis() : 1L;
-            local.append(decoded.records(), batchTs);
+            // Leader's LogSegment.transferTo streams from the sparse-index floor
+            // entry for fetchOffset, so batches whose lastOffset < fetchOffset
+            // can end up in the response. Skip them. Also skip empty-record
+            // batches — Log.append rejects them — so a future peer can't
+            // wedge this loop.
+            if (decoded.records().isEmpty() || decoded.lastOffset() < fetchOffset) {
+                continue;
+            }
+            // P6.2 renumbers offsets via Log.append; offsets converge only
+            // because the follower starts at 0 and receives batches in order.
+            // Timestamps, producer_id/epoch, base_sequence, and
+            // partition_leader_epoch from the leader's batch are lost here;
+            // P6.4 will replace this with a raw-batch append that preserves
+            // all metadata byte-for-byte.
+            local.append(decoded.records(), decoded.firstTimestamp());
         }
         highWatermark.set(resp.getHighWatermark());
     }

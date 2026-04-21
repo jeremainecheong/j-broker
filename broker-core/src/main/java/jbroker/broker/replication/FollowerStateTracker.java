@@ -49,6 +49,12 @@ public final class FollowerStateTracker {
      * <p>Also guarantees monotonicity across ISR expansion: when a just-
      * caught-up broker is added to ISR, its stale tracker LEO can't regress
      * the committed HWM.
+     *
+     * <p>TODO(P6.6): at steady state after a broker restart, the
+     * never-fetched case means consumers see HWM=0 for up to
+     * {@code lagTimeoutMs} (default 10s) until the lag timeout kicks that
+     * broker out of the ISR. The acks=all produce path will need a
+     * shorter "initial stabilisation" window to avoid blocking.
      */
     public long computeHwm(String topic, int partition, List<Integer> isr, int leaderBrokerId, long leaderLeo) {
         long min = leaderLeo;

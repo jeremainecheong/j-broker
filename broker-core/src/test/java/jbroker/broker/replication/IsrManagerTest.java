@@ -85,6 +85,24 @@ class IsrManagerTest {
     }
 
     @Test
+    void decideDoesNotExpandWhenCandidateLeoBelowHwm(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, SELF, List.of(SELF, 2), List.of(SELF, 2, 3), 5, 0);
+        var tracker = new FollowerStateTracker();
+        try (var lm = lm(dir)) {
+            lm.logFor("orders", 0).append(List.of(new Record(0, 0L, null, new byte[] {1})), 1_000L);
+            // HWM will be 1 (leader + broker 2 both at LEO=1).
+            tracker.record("orders", 0, 2, 1L, 100_000L);
+            // Broker 3 only caught up to LEO=0 — still behind.
+            tracker.record("orders", 0, 3, 0L, 100_000L);
+
+            var isr = new IsrManager(SELF, tm, lm, tracker, LAG_TIMEOUT_MS);
+            assertThat(isr.decideChanges(105_000L)).isEmpty();
+        }
+    }
+
+    @Test
     void decideSkipsPartitionsWhereSelfIsNotLeader(@TempDir Path dir) throws Exception {
         var tm = new TopicManager();
         tm.onTopicCommitted("orders", 1, 3, 0L);

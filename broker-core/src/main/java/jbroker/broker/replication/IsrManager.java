@@ -114,6 +114,15 @@ public final class IsrManager {
                 .setLeaderEpoch(state.leaderEpoch())
                 .setPartitionEpoch(state.partitionEpoch() + 1)
                 .build();
+        log.debug(
+                "ISR flip proposed for {}-{}: shrink={}, expand={}, new isr={}, partition_epoch {}->{}",
+                topic,
+                partition,
+                laggards,
+                catchupCandidates,
+                nextIsr,
+                state.partitionEpoch(),
+                state.partitionEpoch() + 1);
         return MetadataRecord.newBuilder().setPartitionChange(change).build().toByteArray();
     }
 }

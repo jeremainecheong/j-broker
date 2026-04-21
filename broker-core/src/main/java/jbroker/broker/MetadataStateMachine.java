@@ -37,10 +37,13 @@ public final class MetadataStateMachine implements StateMachine {
             var t = record.getTopic();
             topicManager.onTopicCommitted(
                     t.getTopic(), t.getPartitions(), t.getReplicationFactor(), t.getCreatedMillis());
+        } else if (record.hasPartitionChange()) {
+            var p = record.getPartitionChange();
+            topicManager.onPartitionChange(
+                    p.getTopic(), p.getPartition(), p.getLeader(), p.getIsrList(), p.getLeaderEpoch());
         }
-        // Partition / broker records: recorded on the log but no action
-        // needed in Phase 5's single-node broker (no replication, self is
-        // always the sole replica). Phase 6 will dispatch them.
+        // PartitionRecord / BrokerRegistrationRecord: not yet dispatched;
+        // Phase 6 later steps will consume them.
     }
 
     @Override

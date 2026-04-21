@@ -1,0 +1,30 @@
+package jbroker.raft.core;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+class DefaultRaftCoreTest {
+
+    private static final RaftConfig CONFIG = new RaftConfig(
+            new NodeId(1),
+            List.of(new NodeId(1), new NodeId(2), new NodeId(3)),
+            TimeUnit.MILLISECONDS.toNanos(1000),
+            TimeUnit.MILLISECONDS.toNanos(500),
+            TimeUnit.MILLISECONDS.toNanos(100),
+            100);
+
+    @Test
+    void startsAsFollowerAtTermZero(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+            var core = new DefaultRaftCore(CONFIG, log, state, 0L);
+            assertThat(core.role()).isEqualTo(Role.FOLLOWER);
+            assertThat(core.currentTerm()).isEqualTo(Term.ZERO);
+        }
+    }
+}

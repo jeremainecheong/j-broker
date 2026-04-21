@@ -69,6 +69,11 @@ public final class RaftPeerClient implements AutoCloseable {
         return stub.withDeadlineAfter(2, TimeUnit.SECONDS).timeoutNow(req);
     }
 
+    public jbroker.proto.raft.InstallSnapshotResponse installSnapshot(jbroker.proto.raft.InstallSnapshotRequest req) {
+        // Snapshots can be large; allow 30s for the single-shot transfer.
+        return stub.withDeadlineAfter(30, TimeUnit.SECONDS).installSnapshot(req);
+    }
+
     @Override
     public void close() {
         channel.shutdown();

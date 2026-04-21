@@ -22,7 +22,8 @@ public final class RaftMessageCodec {
                 .setLeaderId(req.leaderId().value())
                 .setPrevLogIndex(req.prevLogIndex())
                 .setPrevLogTerm(req.prevLogTerm().value())
-                .setLeaderCommit(req.leaderCommit());
+                .setLeaderCommit(req.leaderCommit())
+                .setHeartbeatSeq(req.heartbeatSeq());
         for (var e : req.entries()) {
             b.addEntries(toProto(e));
         }
@@ -37,7 +38,8 @@ public final class RaftMessageCodec {
                 new Term(p.getPrevLogTerm()),
                 p.getEntriesList().stream().map(RaftMessageCodec::fromProto).toList(),
                 p.getLeaderCommit(),
-                nowNanos);
+                nowNanos,
+                p.getHeartbeatSeq());
     }
 
     public static AppendEntriesResponse toProto(RaftEffect.SendAppendEntriesResp eff) {
@@ -46,6 +48,7 @@ public final class RaftMessageCodec {
                 .setSuccess(eff.success())
                 .setConflictIndex(eff.conflictIndex())
                 .setConflictTerm(eff.conflictTerm().value())
+                .setHeartbeatSeq(eff.heartbeatSeq())
                 .build();
     }
 
@@ -56,7 +59,8 @@ public final class RaftMessageCodec {
                 p.getSuccess(),
                 p.getConflictIndex(),
                 new Term(p.getConflictTerm()),
-                matchIndexHint);
+                matchIndexHint,
+                p.getHeartbeatSeq());
     }
 
     public static RequestVoteRequest toProto(RaftEffect.SendVoteReq eff) {

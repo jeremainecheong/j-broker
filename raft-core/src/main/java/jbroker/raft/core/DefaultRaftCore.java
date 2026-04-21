@@ -183,6 +183,7 @@ public final class DefaultRaftCore implements RaftCore {
             case RaftEvent.ProposeConfigChange c -> onProposeConfigChange(c, effects);
             case RaftEvent.InstallSnapshotReq r -> onInstallSnapshotReq(r, effects);
             case RaftEvent.InstallSnapshotResp r -> onInstallSnapshotResp(r, effects);
+            case RaftEvent.TakeSnapshot t -> onTakeSnapshot(t, effects);
         }
         return effects;
     }
@@ -690,6 +691,23 @@ public final class DefaultRaftCore implements RaftCore {
 
         effects.add(new RaftEffect.ApplySnapshot(snapIdx, snapTerm, req.snapshot()));
         effects.add(new RaftEffect.SendInstallSnapshotResp(req.leaderId(), currentTerm));
+    }
+
+    private void onTakeSnapshot(RaftEvent.TakeSnapshot ev, List<RaftEffect> effects) {
+        // No-op if nothing is committed yet; there's nothing to compact.
+        if (commitIndex <= 0) {
+            this.currentSnapshotBytes = ev.bytes();
+            return;
+        }
+        var termAtCommit = log.termAt(commitIndex);
+        if (termAtCommit.isEmpty()) {
+            // The commitIndex has already been compacted by an earlier
+            // snapshot; just refresh the bytes.
+            this.currentSnapshotBytes = ev.bytes();
+            return;
+        }
+        log.truncatePrefix(commitIndex + 1, termAtCommit.get());
+        this.currentSnapshotBytes = ev.bytes();
     }
 
     private void onInstallSnapshotResp(RaftEvent.InstallSnapshotResp resp, List<RaftEffect> effects) {

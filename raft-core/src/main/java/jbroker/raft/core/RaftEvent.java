@@ -166,4 +166,16 @@ public sealed interface RaftEvent {
             Objects.requireNonNull(term, "term");
         }
     }
+
+    /**
+     * Admin-/driver-initiated: take a snapshot of the state machine at the
+     * current {@code commitIndex}. The core stores {@code bytes} for
+     * subsequent {@link #SendInstallSnapshot} effects and compacts the log
+     * prefix up to {@code commitIndex}.
+     */
+    record TakeSnapshot(byte[] bytes) implements RaftEvent {
+        public TakeSnapshot {
+            Objects.requireNonNull(bytes, "bytes");
+        }
+    }
 }

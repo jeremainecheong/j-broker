@@ -250,21 +250,24 @@ public final class RaftDriver implements AutoCloseable {
                     /* Phase 5 wires the cached-response path to the client */
                 }
                 case RaftEffect.SendTimeoutNow t -> dispatchTimeoutNow(t);
-                case RaftEffect.ServeClientRead ignored -> {
-                    /* Phase 5 wires the state-machine read response to the client */
-                }
-                case RaftEffect.RejectClientRead ignored -> {
-                    /* Phase 5 wires the redirect response to the client */
-                }
-                case RaftEffect.RejectConfigChange ignored -> {
-                    /* Admin tool surfaces this reason via RPC in a later phase */
-                }
-                case RaftEffect.SendInstallSnapshot ignored -> {
-                    /* Phase F wire-up: streaming gRPC call pending */
-                }
-                case RaftEffect.SendInstallSnapshotResp ignored -> {
-                    /* Phase F wire-up */
-                }
+                case RaftEffect.ServeClientRead s -> LOG.warn(
+                        "ServeClientRead dropped — client RPC not wired (clientId={}, requestId={}, readIndex={})",
+                        s.clientId(),
+                        s.requestId(),
+                        s.readIndex());
+                case RaftEffect.RejectClientRead r -> LOG.warn(
+                        "RejectClientRead dropped — client RPC not wired (clientId={}, requestId={})",
+                        r.clientId(),
+                        r.requestId());
+                case RaftEffect.RejectConfigChange r -> LOG.warn(
+                        "RejectConfigChange dropped — admin RPC not wired (reason={})", r.reason());
+                case RaftEffect.SendInstallSnapshot s -> LOG.warn(
+                        "SendInstallSnapshot dropped — gRPC codec for InstallSnapshot not wired yet (to={}, lastIncludedIndex={})",
+                        s.to(),
+                        s.lastIncludedIndex());
+                case RaftEffect.SendInstallSnapshotResp r -> LOG.warn(
+                        "SendInstallSnapshotResp dropped — gRPC codec for InstallSnapshot not wired yet (to={})",
+                        r.to());
                 case RaftEffect.ApplySnapshot a -> {
                     try {
                         stateMachine.restore(new java.io.ByteArrayInputStream(a.snapshot()));

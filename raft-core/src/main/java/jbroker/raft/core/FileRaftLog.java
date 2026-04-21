@@ -252,6 +252,15 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
         }
     }
 
+    /**
+     * Drop the log prefix. <b>Known crash-safety limitation:</b> this rewrites
+     * the log file in place with {@code truncate(0)} + sequential writes, then
+     * persists a sidecar {@code .meta} file with the new {@code
+     * lastIncludedIndex}/{@code Term}. A crash between the log rewrite and the
+     * meta persist leaves the log on disk with entries whose indices are
+     * inconsistent with {@code firstIndex()}. Full crash-safety needs a
+     * temp-file + atomic-rename strategy; tracked as Phase 3 hardening.
+     */
     @Override
     public synchronized void truncatePrefix(long firstIndex, Term firstTerm) {
         if (firstIndex <= firstIndex()) {

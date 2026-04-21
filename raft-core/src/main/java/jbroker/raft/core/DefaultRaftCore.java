@@ -662,8 +662,13 @@ public final class DefaultRaftCore implements RaftCore {
 
         long snapIdx = req.lastIncludedIndex();
         Term snapTerm = req.lastIncludedTerm();
-        // If we already have this entry committed and applied, the snapshot is
-        // stale relative to our own progress — just ack.
+        // Protective guard: if we've already applied past the snapshot, it's
+        // stale relative to our progress — ack but don't rewind state. The
+        // guard here is what makes the "drop the entire log" branch below
+        // safe: by the time we reach the drop, snapIdx > lastApplied, so any
+        // entries we throw away at indices in (snapIdx, lastIndex] were only
+        // ever locally appended, never committed cluster-wide (otherwise the
+        // new leader's election would have required those entries too).
         if (snapIdx <= lastApplied) {
             effects.add(new RaftEffect.SendInstallSnapshotResp(req.leaderId(), currentTerm));
             return;

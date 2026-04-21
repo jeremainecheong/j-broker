@@ -79,6 +79,31 @@ class RaftInstallSnapshotTest {
     }
 
     @Test
+    void staleSnapshotWhereSnapIdxAlreadyAppliedIsAckedWithoutRewinding(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+            var core = new DefaultRaftCore(FOLLOWER_CONFIG, log, state, 0L);
+
+            // First snapshot advances us to idx 10.
+            core.step(new RaftEvent.InstallSnapshotReq(
+                    new Term(5), N1, 10L, new Term(3), new byte[] {1, 2, 3}, TimeUnit.MILLISECONDS.toNanos(100)));
+            assertThat(core.lastApplied()).isEqualTo(10L);
+
+            // A second, stale snapshot at idx 5 from the same term must not
+            // rewind commit/applied and must not emit ApplySnapshot.
+            var effects = core.step(new RaftEvent.InstallSnapshotReq(
+                    new Term(5), N1, 5L, new Term(2), new byte[] {9, 9, 9}, TimeUnit.MILLISECONDS.toNanos(200)));
+
+            assertThat(core.lastApplied()).isEqualTo(10L);
+            assertThat(core.commitIndex()).isEqualTo(10L);
+            assertThat(effects).noneMatch(e -> e instanceof RaftEffect.ApplySnapshot);
+            assertThat(effects)
+                    .filteredOn(e -> e instanceof RaftEffect.SendInstallSnapshotResp)
+                    .hasSize(1);
+        }
+    }
+
+    @Test
     void leaderEmitsInstallSnapshotWhenPeerNextIndexBehindCompaction(@TempDir Path dir) throws Exception {
         try (var log = FileRaftLog.open(dir.resolve("log.bin"));
                 var state = FilePersistentState.open(dir.resolve("state.bin"))) {

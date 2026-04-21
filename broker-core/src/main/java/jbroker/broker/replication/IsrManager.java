@@ -102,13 +102,17 @@ public final class IsrManager {
         // controller-driven failover (P6.5) will resolve.
         if (!nextIsr.contains(selfBrokerId) || nextIsr.isEmpty()) return null;
 
+        // ISR-only flip: keep leader_epoch so followers don't trigger
+        // P6.4's OffsetsForLeaderEpoch reconciliation cycle; bump
+        // partition_epoch so every follower sees it as newer metadata.
         var change = PartitionChangeRecord.newBuilder()
                 .setTopic(topic)
                 .setPartition(partition)
                 .setLeader(selfBrokerId)
                 .addAllIsr(nextIsr)
                 .addAllReplicas(state.replicas())
-                .setLeaderEpoch(state.leaderEpoch() + 1)
+                .setLeaderEpoch(state.leaderEpoch())
+                .setPartitionEpoch(state.partitionEpoch() + 1)
                 .build();
         return MetadataRecord.newBuilder().setPartitionChange(change).build().toByteArray();
     }

@@ -57,14 +57,21 @@ public final class MetadataStateMachine implements StateMachine {
         // backward compatibility (same replica set either way).
         var replicas = p.getReplicasList().isEmpty() ? p.getIsrList() : p.getReplicasList();
         topicManager.onPartitionChange(
-                p.getTopic(), p.getPartition(), p.getLeader(), p.getIsrList(), replicas, p.getLeaderEpoch());
+                p.getTopic(),
+                p.getPartition(),
+                p.getLeader(),
+                p.getIsrList(),
+                replicas,
+                p.getLeaderEpoch(),
+                p.getPartitionEpoch());
     }
 
     // Snapshot format versions.
     //  v1 (pre-P6.1): topics only.
     //  v2 (P6.1):     adds partition-state section (leader, ISR, epoch).
     //  v3 (P6.3):     adds replica set alongside ISR.
-    private static final byte SNAPSHOT_VERSION = 3;
+    //  v4 (P6.3):     splits leader_epoch from partition_epoch.
+    private static final byte SNAPSHOT_VERSION = 4;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
@@ -95,6 +102,7 @@ public final class MetadataStateMachine implements StateMachine {
             for (int b : replicas) {
                 dout.writeInt(b);
             }
+            dout.writeInt(a.state().partitionEpoch());
         }
         dout.flush();
     }
@@ -137,7 +145,8 @@ public final class MetadataStateMachine implements StateMachine {
                 } else {
                     replicas = isr;
                 }
-                topicManager.onPartitionChange(topic, partition, leader, isr, replicas, epoch);
+                int partitionEpoch = version >= 4 ? din.readInt() : 0;
+                topicManager.onPartitionChange(topic, partition, leader, isr, replicas, epoch, partitionEpoch);
             }
         }
     }

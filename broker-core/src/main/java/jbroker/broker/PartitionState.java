@@ -11,11 +11,21 @@ import java.util.List;
  * the leader's LEO to vote for commits). An out-of-ISR replica still
  * receives fetches so it can catch up and rejoin.
  *
- * <p>{@code leaderEpoch} increases strictly on every leader transition;
- * older records arriving out of order are ignored by
- * {@link TopicManager#onPartitionChange}.
+ * <p>Two epochs are tracked separately:
+ * <ul>
+ *   <li>{@code leaderEpoch} — increases only on leader change; followers
+ *       use it to trigger log truncation via {@code OffsetsForLeaderEpoch}
+ *       (P6.4).</li>
+ *   <li>{@code partitionEpoch} — increases on any metadata change (ISR
+ *       flip, replica reassignment). Resets to 0 on leader change.
+ *       Followers can treat a partition-epoch-only bump as "refresh
+ *       metadata" rather than "truncate and reconcile."</li>
+ * </ul>
+ * Conflating the two would cause every ISR shrink/expand to trigger a
+ * P6.4 truncation cycle that isn't actually needed.
  */
-public record PartitionState(int leader, List<Integer> isr, List<Integer> replicas, int leaderEpoch) {
+public record PartitionState(
+        int leader, List<Integer> isr, List<Integer> replicas, int leaderEpoch, int partitionEpoch) {
     public PartitionState {
         isr = List.copyOf(isr);
         replicas = List.copyOf(replicas);

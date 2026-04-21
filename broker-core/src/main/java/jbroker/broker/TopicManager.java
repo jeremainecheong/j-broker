@@ -25,27 +25,43 @@ public final class TopicManager {
 
     /**
      * Called by the state machine when a {@code PartitionChangeRecord} commits.
-     * Epoch-guarded: a record with an epoch not strictly greater than the
-     * currently-applied epoch is ignored, so out-of-order delivery during
-     * recovery cannot regress partition state.
+     * Accept-if-newer ordering:
+     * <ul>
+     *   <li>Strictly higher {@code leaderEpoch} always wins (leader change).</li>
+     *   <li>Same {@code leaderEpoch} with strictly higher {@code partitionEpoch}
+     *       wins (ISR flip or replica reassignment under the same leader).</li>
+     *   <li>Otherwise the existing state is kept.</li>
+     * </ul>
      */
     public void onPartitionChange(
-            String topic, int partition, int leader, List<Integer> isr, List<Integer> replicas, int leaderEpoch) {
+            String topic,
+            int partition,
+            int leader,
+            List<Integer> isr,
+            List<Integer> replicas,
+            int leaderEpoch,
+            int partitionEpoch) {
         var key = new PartitionKey(topic, partition);
-        var next = new PartitionState(leader, isr, replicas, leaderEpoch);
-        partitions.merge(
-                key,
-                next,
-                (existing, proposed) -> proposed.leaderEpoch() > existing.leaderEpoch() ? proposed : existing);
+        var next = new PartitionState(leader, isr, replicas, leaderEpoch, partitionEpoch);
+        partitions.merge(key, next, (existing, proposed) -> {
+            if (proposed.leaderEpoch() > existing.leaderEpoch()) return proposed;
+            if (proposed.leaderEpoch() == existing.leaderEpoch()
+                    && proposed.partitionEpoch() > existing.partitionEpoch()) {
+                return proposed;
+            }
+            return existing;
+        });
     }
 
-    /**
-     * Back-compat overload: defaults {@code replicas} to {@code isr}. Used by
-     * pre-P6.3 call sites (snapshot v2 restore, tests that haven't migrated)
-     * until the replica set is plumbed all the way through.
-     */
+    /** Back-compat overload: defaults replicas to isr, partitionEpoch to 0. */
     public void onPartitionChange(String topic, int partition, int leader, List<Integer> isr, int leaderEpoch) {
-        onPartitionChange(topic, partition, leader, isr, isr, leaderEpoch);
+        onPartitionChange(topic, partition, leader, isr, isr, leaderEpoch, 0);
+    }
+
+    /** Back-compat overload: accepts explicit replicas, defaults partitionEpoch to 0. */
+    public void onPartitionChange(
+            String topic, int partition, int leader, List<Integer> isr, List<Integer> replicas, int leaderEpoch) {
+        onPartitionChange(topic, partition, leader, isr, replicas, leaderEpoch, 0);
     }
 
     public Optional<TopicDescription> describe(String topic) {

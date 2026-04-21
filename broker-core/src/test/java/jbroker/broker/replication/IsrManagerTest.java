@@ -55,7 +55,9 @@ class IsrManagerTest {
             assertThat(change.getPartition()).isEqualTo(0);
             assertThat(change.getIsrList()).containsExactly(SELF, 2);
             assertThat(change.getReplicasList()).containsExactly(SELF, 2, 3); // unchanged
-            assertThat(change.getLeaderEpoch()).isEqualTo(6); // epoch bumps on ISR change
+            // ISR flip is a partition-epoch event, not a leader-epoch event.
+            assertThat(change.getLeaderEpoch()).isEqualTo(5);
+            assertThat(change.getPartitionEpoch()).isEqualTo(1);
         }
     }
 
@@ -77,7 +79,8 @@ class IsrManagerTest {
             assertThat(proposals).hasSize(1);
             var change = MetadataRecord.parseFrom(proposals.get(0)).getPartitionChange();
             assertThat(change.getIsrList()).containsExactly(SELF, 2, 3);
-            assertThat(change.getLeaderEpoch()).isEqualTo(6);
+            assertThat(change.getLeaderEpoch()).isEqualTo(5);
+            assertThat(change.getPartitionEpoch()).isEqualTo(1);
         }
     }
 

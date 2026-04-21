@@ -6,4 +6,5 @@ include(
     "raft-transport",
     "integration-tests",
     "simulator",
+    "broker-storage",
 )

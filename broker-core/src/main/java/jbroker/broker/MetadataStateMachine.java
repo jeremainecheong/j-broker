@@ -16,9 +16,15 @@ import jbroker.raft.core.StateMachine;
 public final class MetadataStateMachine implements StateMachine {
 
     private final TopicManager topicManager;
+    private final ProducerIdRegistry producerIdRegistry;
 
     public MetadataStateMachine(TopicManager topicManager) {
+        this(topicManager, new ProducerIdRegistry());
+    }
+
+    public MetadataStateMachine(TopicManager topicManager, ProducerIdRegistry producerIdRegistry) {
         this.topicManager = topicManager;
+        this.producerIdRegistry = producerIdRegistry;
     }
 
     @Override
@@ -47,6 +53,11 @@ public final class MetadataStateMachine implements StateMachine {
             for (var p : ct.getPartitionChangesList()) {
                 applyPartitionChange(p);
             }
+        } else if (record.hasProducerIdAssignment()) {
+            // P6.7: advance the producer-id counter. ProducerIdRegistry is
+            // idempotent under replay — a duplicate or out-of-order apply
+            // cannot regress the counter.
+            producerIdRegistry.applyAssignment(record.getProducerIdAssignment().getNextProducerId());
         }
         // PartitionRecord / BrokerRegistrationRecord: not yet dispatched;
         // Phase 6 later steps will consume them.
@@ -71,7 +82,8 @@ public final class MetadataStateMachine implements StateMachine {
     //  v2 (P6.1):     adds partition-state section (leader, ISR, epoch).
     //  v3 (P6.3):     adds replica set alongside ISR.
     //  v4 (P6.3):     splits leader_epoch from partition_epoch.
-    private static final byte SNAPSHOT_VERSION = 4;
+    //  v5 (P6.7):     appends producer-id counter.
+    private static final byte SNAPSHOT_VERSION = 5;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
@@ -104,6 +116,8 @@ public final class MetadataStateMachine implements StateMachine {
             }
             dout.writeInt(a.state().partitionEpoch());
         }
+        // v5: producer-id counter.
+        dout.writeLong(producerIdRegistry.peekNextProducerId());
         dout.flush();
     }
 
@@ -148,6 +162,9 @@ public final class MetadataStateMachine implements StateMachine {
                 int partitionEpoch = version >= 4 ? din.readInt() : 0;
                 topicManager.onPartitionChange(topic, partition, leader, isr, replicas, epoch, partitionEpoch);
             }
+        }
+        if (version >= 5) {
+            producerIdRegistry.applyAssignment(din.readLong());
         }
     }
 }

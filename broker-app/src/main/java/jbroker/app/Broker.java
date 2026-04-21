@@ -13,8 +13,10 @@ import java.util.concurrent.TimeUnit;
 import jbroker.broker.AdminHandler;
 import jbroker.broker.BrokerGrpcServices;
 import jbroker.broker.FetchHandler;
+import jbroker.broker.InitProducerIdHandler;
 import jbroker.broker.MetadataStateMachine;
 import jbroker.broker.ProduceHandler;
+import jbroker.broker.ProducerIdRegistry;
 import jbroker.broker.ReplicaFetchHandler;
 import jbroker.broker.TopicManager;
 import jbroker.broker.WaitingStateMachine;
@@ -98,7 +100,8 @@ public final class Broker implements AutoCloseable {
         var core = new DefaultRaftCore(raftConfig, raftLog, state, Long.MAX_VALUE);
 
         var topicManager = new TopicManager();
-        var metadataSm = new MetadataStateMachine(topicManager);
+        var producerIdRegistry = new ProducerIdRegistry();
+        var metadataSm = new MetadataStateMachine(topicManager, producerIdRegistry);
         var waitingSm = new WaitingStateMachine(metadataSm);
 
         // --- LogManager (partition data logs) ---
@@ -122,17 +125,16 @@ public final class Broker implements AutoCloseable {
         var followerTracker = new FollowerStateTracker();
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
-        var admin = new AdminHandler(
-                topicManager,
-                (payload, timeoutMs) -> {
-                    var fut = waitingSm.awaitApply(payload);
-                    raftDriver.propose(payload);
-                    fut.get(timeoutMs, TimeUnit.MILLISECONDS);
-                },
-                config.selfId().value());
+        AdminHandler.MetadataProposer proposer = (payload, timeoutMs) -> {
+            var fut = waitingSm.awaitApply(payload);
+            raftDriver.propose(payload);
+            fut.get(timeoutMs, TimeUnit.MILLISECONDS);
+        };
+        var admin = new AdminHandler(topicManager, proposer, config.selfId().value());
+        var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var server = NettyServerBuilder.forPort(config.brokerPort())
-                .addService(BrokerGrpcServices.producer(produce))
+                .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch))
                 .addService(BrokerGrpcServices.admin(admin))

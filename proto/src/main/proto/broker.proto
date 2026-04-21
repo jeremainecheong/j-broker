@@ -5,6 +5,10 @@ option java_package = "jbroker.proto.broker";
 
 service Producer {
   rpc Produce(ProduceRequest) returns (ProduceResponse);
+  // Assigns a unique (producer_id, producer_epoch) pair to a client. The
+  // controller persists the next-id counter through Raft so it survives a
+  // restart. Added in Phase 6.7 (idempotent producer).
+  rpc InitProducerId(InitProducerIdRequest) returns (InitProducerIdResponse);
 }
 
 service Consumer {
@@ -30,6 +34,12 @@ message ProduceRequest {
   int32 partition = 2;
   // Raw Kafka v2 record-batch bytes, prepared by the client.
   bytes batch = 3;
+  // Phase 6.7 idempotent-producer fields. Clients that haven't called
+  // InitProducerId leave these at their defaults (producer_id = -1,
+  // producer_epoch = 0, base_sequence = -1) and the leader skips dedup.
+  int64 producer_id = 4;
+  int32 producer_epoch = 5;
+  int32 base_sequence = 6;
 }
 
 message ProduceResponse {
@@ -76,6 +86,24 @@ message ReplicaFetchResponse {
   // follower can detect its own staleness.
   int32 current_leader_epoch = 3;
   Error error = 4;
+}
+
+// ===== InitProducerId =====
+
+message InitProducerIdRequest {
+  // Reserved for future transactional-id use; empty in Phase 6.7 (plain
+  // idempotent producer only). Field left in place so the wire shape
+  // matches the PRD §8.4 sketch from day one.
+  string transactional_id = 1;
+}
+
+message InitProducerIdResponse {
+  Error error = 1;
+  int64 producer_id = 2;
+  // Producer epoch is an int32 on the wire (proto3 lacks int16). Valid
+  // range is [0, 65535]; consumers that need to feed this to the v2 batch
+  // header cast it to int16.
+  int32 producer_epoch = 3;
 }
 
 // ===== Admin =====

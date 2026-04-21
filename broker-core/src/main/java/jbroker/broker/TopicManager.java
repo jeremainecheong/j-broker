@@ -65,5 +65,16 @@ public final class TopicManager {
                 .map(PartitionState::leaderEpoch);
     }
 
+    /**
+     * Snapshot of every known partition's (leader, ISR, epoch), in no
+     * particular order. Used by {@link MetadataStateMachine#snapshot} to
+     * persist partition state alongside the topic catalogue.
+     */
+    public List<PartitionAssignment> allPartitionAssignments() {
+        var out = new java.util.ArrayList<PartitionAssignment>(partitions.size());
+        partitions.forEach((k, v) -> out.add(new PartitionAssignment(k.topic(), k.partition(), v)));
+        return List.copyOf(out);
+    }
+
     private record PartitionKey(String topic, int partition) {}
 }

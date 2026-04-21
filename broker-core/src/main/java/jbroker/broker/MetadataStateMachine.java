@@ -57,9 +57,16 @@ public final class MetadataStateMachine implements StateMachine {
                 p.getTopic(), p.getPartition(), p.getLeader(), p.getIsrList(), p.getLeaderEpoch());
     }
 
+    // Snapshot format version. v1 = topics only (pre-P6.1). v2 adds the
+    // partition-state section — topics carry leader/ISR/epoch now, which
+    // would otherwise silently vanish across an InstallSnapshot round-trip
+    // and cause every subsequent produce to return NOT_LEADER.
+    private static final byte SNAPSHOT_VERSION = 2;
+
     @Override
     public void snapshot(OutputStream out) throws IOException {
         var dout = new java.io.DataOutputStream(out);
+        dout.writeByte(SNAPSHOT_VERSION);
         var list = topicManager.list();
         dout.writeInt(list.size());
         for (var t : list) {
@@ -68,12 +75,29 @@ public final class MetadataStateMachine implements StateMachine {
             dout.writeInt(t.replicationFactor());
             dout.writeLong(t.createdMillis());
         }
+        var assignments = topicManager.allPartitionAssignments();
+        dout.writeInt(assignments.size());
+        for (var a : assignments) {
+            dout.writeUTF(a.topic());
+            dout.writeInt(a.partition());
+            dout.writeInt(a.state().leader());
+            var isr = a.state().isr();
+            dout.writeInt(isr.size());
+            for (int b : isr) {
+                dout.writeInt(b);
+            }
+            dout.writeInt(a.state().leaderEpoch());
+        }
         dout.flush();
     }
 
     @Override
     public void restore(InputStream in) throws IOException {
         var din = new java.io.DataInputStream(in);
+        int version = din.readByte() & 0xff;
+        if (version < 1 || version > SNAPSHOT_VERSION) {
+            throw new IOException("unsupported metadata snapshot version: " + version);
+        }
         int n = din.readInt();
         for (int i = 0; i < n; i++) {
             var topic = din.readUTF();
@@ -81,6 +105,21 @@ public final class MetadataStateMachine implements StateMachine {
             var rf = din.readInt();
             var created = din.readLong();
             topicManager.onTopicCommitted(topic, partitions, rf, created);
+        }
+        if (version >= 2) {
+            int m = din.readInt();
+            for (int i = 0; i < m; i++) {
+                var topic = din.readUTF();
+                var partition = din.readInt();
+                var leader = din.readInt();
+                int isrSize = din.readInt();
+                var isr = new java.util.ArrayList<Integer>(isrSize);
+                for (int j = 0; j < isrSize; j++) {
+                    isr.add(din.readInt());
+                }
+                var epoch = din.readInt();
+                topicManager.onPartitionChange(topic, partition, leader, isr, epoch);
+            }
         }
     }
 }

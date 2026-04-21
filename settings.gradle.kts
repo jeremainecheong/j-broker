@@ -5,4 +5,5 @@ include(
     "raft-core",
     "raft-transport",
     "integration-tests",
+    "simulator",
 )

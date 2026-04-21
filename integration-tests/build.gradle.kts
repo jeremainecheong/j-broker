@@ -8,4 +8,16 @@ dependencies {
     testImplementation(project(":proto"))
 }
 
-// Integration tests run slower; isolate in their own task later if needed.
+tasks.test {
+    useJUnitPlatform {
+        excludeTags("stress")
+    }
+}
+
+tasks.register<Test>("stressTest") {
+    useJUnitPlatform {
+        includeTags("stress")
+    }
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+}

@@ -52,8 +52,10 @@ public final class ReplicaFetchHandler {
                             .build())
                     .build();
         }
-        // Reject impostor brokers not in the replica set for this partition.
-        if (!state.get().isr().contains(req.getFollowerBrokerId())) {
+        // Reject impostor brokers not in the replica set. Out-of-ISR
+        // replicas still pass — they need to fetch in order to catch up
+        // and have the IsrManager expand ISR back to them.
+        if (!state.get().replicas().contains(req.getFollowerBrokerId())) {
             return ReplicaFetchResponse.newBuilder()
                     .setCurrentLeaderEpoch(state.get().leaderEpoch())
                     .setError(jbroker.proto.broker.Error.newBuilder()

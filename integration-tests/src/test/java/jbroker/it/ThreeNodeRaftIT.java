@@ -63,10 +63,11 @@ class ThreeNodeRaftIT {
                 leader.driver().propose(new byte[] {(byte) i, (byte) (i >>> 8)});
             }
 
-            // 30s budget: local hardware converges in ~2–3s, but GitHub Actions
-            // runners under load need significantly more; 10s was too tight and
-            // caused spurious CI flakes.
-            long deadline = System.currentTimeMillis() + 30_000;
+            // 60s budget: local hardware converges in ~2–3s, but a GitHub Actions
+            // runner exercising 1000 fsyncs on each of 3 nodes + full network
+            // replication actually hit 30 s+. 60 s comfortably covers the CI
+            // slow path while still catching a real wedge.
+            long deadline = System.currentTimeMillis() + 60_000;
             while (System.currentTimeMillis() < deadline) {
                 boolean allThere =
                         cluster.nodes().stream().allMatch(n -> n.sm().applied.size() >= 1000);

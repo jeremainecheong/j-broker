@@ -26,6 +26,15 @@ public final class RaftPeerClient implements AutoCloseable {
         return peerId;
     }
 
+    /**
+     * Requests a connection to the peer eagerly so the first real RPC does not
+     * pay the connection-establishment latency.  Safe to call before the peer's
+     * server is up; the channel will retry in the background.
+     */
+    public void warmUp() {
+        channel.getState(true); // requestConnection=true triggers IDLE→CONNECTING
+    }
+
     public AppendEntriesResponse appendEntries(AppendEntriesRequest req) {
         return stub.withDeadlineAfter(2, TimeUnit.SECONDS).appendEntries(req);
     }

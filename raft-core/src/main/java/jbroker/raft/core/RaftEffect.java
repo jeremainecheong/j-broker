@@ -86,4 +86,10 @@ public sealed interface RaftEffect {
      * redirect the client to {@code knownLeader} if present.
      */
     record RejectClientRead(long clientId, long requestId, Optional<NodeId> knownLeader) implements RaftEffect {}
+
+    /**
+     * Admin-initiated config change was refused — typically because another
+     * config change is still in flight, or this node is not the leader.
+     */
+    record RejectConfigChange(String reason) implements RaftEffect {}
 }

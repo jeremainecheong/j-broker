@@ -256,6 +256,9 @@ public final class RaftDriver implements AutoCloseable {
                 case RaftEffect.RejectClientRead ignored -> {
                     /* Phase 5 wires the redirect response to the client */
                 }
+                case RaftEffect.RejectConfigChange ignored -> {
+                    /* Admin tool surfaces this reason via RPC in a later phase */
+                }
             }
         }
     }

@@ -102,4 +102,18 @@ public sealed interface RaftEvent {
      * raft state. {@code clientId==0} is allowed (legacy / unauthenticated).
      */
     record ClientRead(long clientId, long requestId) implements RaftEvent {}
+
+    /**
+     * Admin-initiated single-server membership change: replace the active voter
+     * list with {@code newVoters}. Takes effect on append (Raft §4.2). Rejected
+     * by the leader if another config change is still in flight.
+     */
+    record ProposeConfigChange(List<NodeId> newVoters) implements RaftEvent {
+        public ProposeConfigChange {
+            newVoters = List.copyOf(newVoters);
+            if (newVoters.isEmpty()) {
+                throw new IllegalArgumentException("newVoters must be non-empty");
+            }
+        }
+    }
 }

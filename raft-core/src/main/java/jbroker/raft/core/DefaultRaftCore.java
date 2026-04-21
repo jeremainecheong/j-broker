@@ -58,6 +58,20 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     /**
+     * Active voter set. Begins as {@code activeVoters}; replaced when a
+     * {@link LogEntry.Type#CONFIG_CHANGE} entry is appended (Raft §4.2). The
+     * change takes effect on append, not on commit.
+     */
+    private List<NodeId> activeVoters;
+
+    /**
+     * Index of the most recently appended {@code CONFIG_CHANGE} that has not
+     * yet been committed. {@code 0} means none in flight. Leader rejects new
+     * config changes while non-zero.
+     */
+    private long inflightConfigChangeIndex;
+
+    /**
      * Constructs a new {@code DefaultRaftCore}.
      *
      * @param nowNanos the current monotonic timestamp in nanoseconds, used to
@@ -78,6 +92,27 @@ public final class DefaultRaftCore implements RaftCore {
         this.electionDeadlineNanos =
                 (nowNanos == Long.MAX_VALUE) ? Long.MAX_VALUE : nowNanos + randomisedElectionTimeout();
         this.lastKnownNowNanos = (nowNanos == Long.MAX_VALUE) ? 0L : nowNanos;
+        this.activeVoters = List.copyOf(config.voters());
+        // Rebuild voter set from any CONFIG_CHANGE entries already on disk
+        // (restart path). Each CONFIG_CHANGE replaces the prior set, so the
+        // last one wins.
+        long last = log.lastIndex();
+        for (long i = 1; i <= last; i++) {
+            var existing = log.read(i, 1);
+            if (existing.isEmpty()) break;
+            var entry = existing.get(0);
+            if (entry.type() == LogEntry.Type.CONFIG_CHANGE) {
+                this.activeVoters = MembershipCodec.decode(entry.payload());
+            }
+        }
+    }
+
+    public List<NodeId> activeVoters() {
+        return activeVoters;
+    }
+
+    private int quorum() {
+        return activeVoters.size() / 2 + 1;
     }
 
     @Override
@@ -105,6 +140,7 @@ public final class DefaultRaftCore implements RaftCore {
             case RaftEvent.TransferLeadership t -> onTransferLeadership(t, effects);
             case RaftEvent.TimeoutNow t -> onTimeoutNow(t, effects);
             case RaftEvent.ClientRead r -> onClientRead(r, effects);
+            case RaftEvent.ProposeConfigChange c -> onProposeConfigChange(c, effects);
         }
         return effects;
     }
@@ -134,6 +170,41 @@ public final class DefaultRaftCore implements RaftCore {
         startElection(ev.nowNanos(), effects);
     }
 
+    private void onProposeConfigChange(RaftEvent.ProposeConfigChange ev, List<RaftEffect> effects) {
+        if (role != Role.LEADER) {
+            effects.add(new RaftEffect.RejectConfigChange("not leader"));
+            return;
+        }
+        if (inflightConfigChangeIndex != 0L) {
+            effects.add(new RaftEffect.RejectConfigChange("another config change is in flight"));
+            return;
+        }
+        long nextIdx = log.lastIndex() + 1;
+        var payload = MembershipCodec.encode(ev.newVoters());
+        var entry = new LogEntry(nextIdx, persistentState.currentTerm(), LogEntry.Type.CONFIG_CHANGE, payload);
+        log.append(List.of(entry));
+        effects.add(new RaftEffect.PersistLog(List.of(entry)));
+        activateVoters(ev.newVoters(), nextIdx);
+        matchIndex.put(config.selfId(), nextIdx);
+        for (var peer : activeVoters) {
+            if (!peer.equals(config.selfId())) {
+                nextIndex.putIfAbsent(peer, nextIdx);
+                matchIndex.putIfAbsent(peer, 0L);
+                sendAppendEntriesTo(peer, effects);
+            }
+        }
+    }
+
+    /**
+     * Apply a CONFIG_CHANGE payload to the active voter set immediately
+     * (append-time semantics). Invoked by the leader on its own propose, and
+     * by every node when an AE batch brings a CONFIG_CHANGE entry in.
+     */
+    private void activateVoters(List<NodeId> newVoters, long entryIndex) {
+        this.activeVoters = List.copyOf(newVoters);
+        this.inflightConfigChangeIndex = entryIndex;
+    }
+
     private void onClientRead(RaftEvent.ClientRead ev, List<RaftEffect> effects) {
         if (role != Role.LEADER) {
             effects.add(new RaftEffect.RejectClientRead(ev.clientId(), ev.requestId(), leaderId));
@@ -156,7 +227,7 @@ public final class DefaultRaftCore implements RaftCore {
         var it = pendingReads.iterator();
         while (it.hasNext()) {
             var pr = it.next();
-            if (pr.ackSet.size() >= config.quorum() && lastApplied >= pr.readIndex) {
+            if (pr.ackSet.size() >= quorum() && lastApplied >= pr.readIndex) {
                 effects.add(new RaftEffect.ServeClientRead(pr.clientId, pr.requestId, pr.readIndex));
                 it.remove();
             }
@@ -192,7 +263,7 @@ public final class DefaultRaftCore implements RaftCore {
         long lastIdx = log.lastIndex();
         Term lastTerm = log.termAt(lastIdx).orElse(Term.ZERO);
         Term hypotheticalTerm = persistentState.currentTerm().next();
-        for (var peer : config.voters()) {
+        for (var peer : activeVoters) {
             if (!peer.equals(config.selfId())) {
                 effects.add(new RaftEffect.SendPreVoteReq(peer, hypotheticalTerm, config.selfId(), lastIdx, lastTerm));
             }
@@ -201,7 +272,7 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void maybeFinishPreVote(long now, List<RaftEffect> effects) {
-        if (preVotesReceived.size() >= config.quorum() && role == Role.PRE_CANDIDATE) {
+        if (preVotesReceived.size() >= quorum() && role == Role.PRE_CANDIDATE) {
             // Pre-vote succeeded — now do the real election at term+1.
             startElection(now, effects);
         }
@@ -220,7 +291,7 @@ public final class DefaultRaftCore implements RaftCore {
 
         long lastIdx = log.lastIndex();
         Term lastTerm = log.termAt(lastIdx).orElse(Term.ZERO);
-        for (var peer : config.voters()) {
+        for (var peer : activeVoters) {
             if (!peer.equals(config.selfId())) {
                 effects.add(new RaftEffect.SendVoteReq(peer, newTerm, config.selfId(), lastIdx, lastTerm));
             }
@@ -229,7 +300,7 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void sendHeartbeats(List<RaftEffect> effects) {
-        for (var peer : config.voters()) {
+        for (var peer : activeVoters) {
             if (!peer.equals(config.selfId())) {
                 sendAppendEntriesTo(peer, effects);
             }
@@ -237,10 +308,10 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void maybeFinishElection(List<RaftEffect> effects) {
-        if (votesReceived.size() >= config.quorum() && role == Role.CANDIDATE) {
+        if (votesReceived.size() >= quorum() && role == Role.CANDIDATE) {
             role = Role.LEADER;
             long lastIdx = log.lastIndex();
-            for (var peer : config.voters()) {
+            for (var peer : activeVoters) {
                 if (!peer.equals(config.selfId())) {
                     nextIndex.put(peer, lastIdx + 1);
                     matchIndex.put(peer, 0L);
@@ -277,7 +348,7 @@ public final class DefaultRaftCore implements RaftCore {
         if (event.clientId() != 0L) {
             highestAcceptedSeq.merge(event.clientId(), event.clientSeq(), Math::max);
         }
-        for (var peer : config.voters()) {
+        for (var peer : activeVoters) {
             if (!peer.equals(config.selfId())) {
                 sendAppendEntriesTo(peer, effects);
             }
@@ -338,6 +409,13 @@ public final class DefaultRaftCore implements RaftCore {
             if (!toAppend.isEmpty()) {
                 log.append(toAppend);
                 effects.add(new RaftEffect.PersistLog(toAppend));
+                // Append-time membership: any CONFIG_CHANGE in this batch
+                // replaces the active voter set immediately. The last one wins.
+                for (var e : toAppend) {
+                    if (e.type() == LogEntry.Type.CONFIG_CHANGE) {
+                        activateVoters(MembershipCodec.decode(e.payload()), e.index());
+                    }
+                }
             }
         }
 
@@ -377,6 +455,24 @@ public final class DefaultRaftCore implements RaftCore {
             effects.add(new RaftEffect.ApplyCommitted(entry));
         }
         commitIndex = newCommit;
+        maybeResolveConfigChange(effects);
+    }
+
+    /**
+     * Called whenever {@code commitIndex} advances. If the in-flight config
+     * change has now committed, clear the marker. If the committed change
+     * removed this node from the voter set, step down — Raft §4.2.2 says a
+     * leader removing itself must wait until the change commits before
+     * relinquishing leadership, but should then step down.
+     */
+    private void maybeResolveConfigChange(List<RaftEffect> effects) {
+        if (inflightConfigChangeIndex == 0L || commitIndex < inflightConfigChangeIndex) {
+            return;
+        }
+        inflightConfigChangeIndex = 0L;
+        if (role == Role.LEADER && !activeVoters.contains(config.selfId())) {
+            becomeFollower(persistentState.currentTerm(), persistentState.votedFor(), effects);
+        }
     }
 
     private void onAppendEntriesResp(RaftEvent.AppendEntriesResp resp, List<RaftEffect> effects) {
@@ -429,14 +525,18 @@ public final class DefaultRaftCore implements RaftCore {
             if (!entryTerm.equals(currentTerm)) {
                 continue;
             }
-            int count = 1; // leader
-            for (var peer : config.voters()) {
+            // Count the leader only if it's still a voter. A leader that has
+            // removed itself from the config (Raft §4.2.2) must not contribute
+            // to its own majority — otherwise self-removal commits prematurely
+            // on one follower ack instead of the new quorum.
+            int count = activeVoters.contains(config.selfId()) ? 1 : 0;
+            for (var peer : activeVoters) {
                 if (peer.equals(config.selfId())) continue;
                 if (matchIndex.getOrDefault(peer, 0L) >= n) {
                     count++;
                 }
             }
-            if (count >= config.quorum()) {
+            if (count >= quorum()) {
                 advanceCommit(n, effects);
                 break;
             }
@@ -558,6 +658,10 @@ public final class DefaultRaftCore implements RaftCore {
         preVotesReceived.clear();
         nextIndex.clear();
         matchIndex.clear();
+        // Leader-side config-change bookkeeping resets; if we become leader
+        // again later we'll rediscover any uncommitted CONFIG_CHANGE from the
+        // log when processing it.
+        inflightConfigChangeIndex = 0L;
         for (var pr : pendingReads) {
             effects.add(new RaftEffect.RejectClientRead(pr.clientId, pr.requestId, Optional.empty()));
         }

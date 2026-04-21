@@ -59,4 +59,23 @@ class TopicManagerPartitionStateTest {
         var tm = new TopicManager();
         assertThat(tm.partitionLeader("ghost", 0)).isEmpty();
     }
+
+    @Test
+    void partitionStateReturnsLeaderIsrEpochAtomically() {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, 7, List.of(7, 8, 9), 4);
+
+        assertThat(tm.partitionState("orders", 0)).hasValueSatisfying(s -> {
+            assertThat(s.leader()).isEqualTo(7);
+            assertThat(s.isr()).containsExactly(7, 8, 9);
+            assertThat(s.leaderEpoch()).isEqualTo(4);
+        });
+    }
+
+    @Test
+    void partitionStateUnknownPartitionIsEmpty() {
+        var tm = new TopicManager();
+        assertThat(tm.partitionState("ghost", 0)).isEmpty();
+    }
 }

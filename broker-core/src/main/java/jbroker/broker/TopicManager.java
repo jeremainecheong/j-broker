@@ -55,6 +55,17 @@ public final class TopicManager {
                 .map(PartitionState::leader);
     }
 
+    /**
+     * Atomic view of a partition's current (leader, ISR, leaderEpoch).
+     * Callers that need both leader and epoch together should use this
+     * accessor instead of combining {@link #partitionLeader} and
+     * {@link #partitionLeaderEpoch} — those two calls could otherwise read
+     * different generations across a leadership change.
+     */
+    public Optional<PartitionState> partitionState(String topic, int partition) {
+        return Optional.ofNullable(partitions.get(new PartitionKey(topic, partition)));
+    }
+
     public List<Integer> partitionIsr(String topic, int partition) {
         var s = partitions.get(new PartitionKey(topic, partition));
         return s == null ? List.of() : s.isr();

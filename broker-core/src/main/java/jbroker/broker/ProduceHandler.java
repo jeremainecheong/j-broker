@@ -47,8 +47,15 @@ public final class ProduceHandler {
                             .build())
                     .build();
         }
-        var leader = topicManager.partitionLeader(req.getTopic(), req.getPartition());
-        if (leader.isEmpty()) {
+        // Read (leader, epoch) atomically via partitionState so the two can't
+        // straddle a concurrent PartitionChangeRecord apply. Note: this check
+        // is still not sufficient on its own — a leadership change can commit
+        // *between* this snapshot and the log.append() below, so a deposed
+        // leader could still write one batch locally. P6.2+ closes that
+        // window by passing the observed leader epoch down to Log.append,
+        // which will reject if the log's recorded epoch has advanced.
+        var state = topicManager.partitionState(req.getTopic(), req.getPartition());
+        if (state.isEmpty()) {
             return ProduceResponse.newBuilder()
                     .setError(jbroker.proto.broker.Error.newBuilder()
                             .setCode(ErrorCodes.NOT_LEADER)
@@ -56,11 +63,12 @@ public final class ProduceHandler {
                             .build())
                     .build();
         }
-        if (leader.get() != selfBrokerId) {
+        if (state.get().leader() != selfBrokerId) {
             return ProduceResponse.newBuilder()
                     .setError(jbroker.proto.broker.Error.newBuilder()
                             .setCode(ErrorCodes.NOT_LEADER)
-                            .setMessage("leader is broker " + leader.get())
+                            .setMessage("leader is broker " + state.get().leader() + " for " + req.getTopic() + "-"
+                                    + req.getPartition())
                             .build())
                     .build();
         }

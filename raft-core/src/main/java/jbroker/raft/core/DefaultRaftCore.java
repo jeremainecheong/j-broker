@@ -37,6 +37,27 @@ public final class DefaultRaftCore implements RaftCore {
     private final Map<Long, Long> highestAcceptedSeq = new HashMap<>();
 
     /**
+     * In-flight read-index requests awaiting heartbeat-quorum confirmation and
+     * {@code lastApplied >= readIndex}. Mutated only while {@code role == LEADER};
+     * entries are drained on serve or aborted with {@link RaftEffect.RejectClientRead}
+     * on step-down.
+     */
+    private final List<PendingRead> pendingReads = new ArrayList<>();
+
+    private static final class PendingRead {
+        final long clientId;
+        final long requestId;
+        final long readIndex;
+        final Set<NodeId> ackSet = new HashSet<>();
+
+        PendingRead(long clientId, long requestId, long readIndex) {
+            this.clientId = clientId;
+            this.requestId = requestId;
+            this.readIndex = readIndex;
+        }
+    }
+
+    /**
      * Constructs a new {@code DefaultRaftCore}.
      *
      * @param nowNanos the current monotonic timestamp in nanoseconds, used to
@@ -83,6 +104,7 @@ public final class DefaultRaftCore implements RaftCore {
             case RaftEvent.PreVoteResp resp -> onPreVoteResp(resp, effects);
             case RaftEvent.TransferLeadership t -> onTransferLeadership(t, effects);
             case RaftEvent.TimeoutNow t -> onTimeoutNow(t, effects);
+            case RaftEvent.ClientRead r -> onClientRead(r, effects);
         }
         return effects;
     }
@@ -110,6 +132,35 @@ public final class DefaultRaftCore implements RaftCore {
         }
         // Skip pre-vote — the incumbent leader has already vouched for us.
         startElection(ev.nowNanos(), effects);
+    }
+
+    private void onClientRead(RaftEvent.ClientRead ev, List<RaftEffect> effects) {
+        if (role != Role.LEADER) {
+            effects.add(new RaftEffect.RejectClientRead(ev.clientId(), ev.requestId(), leaderId));
+            return;
+        }
+        var pending = new PendingRead(ev.clientId(), ev.requestId(), commitIndex);
+        pending.ackSet.add(config.selfId());
+        pendingReads.add(pending);
+        // Fresh heartbeat round confirms we are still leader at currentTerm.
+        // Peer AE successes at currentTerm add to every pending read's ackSet.
+        // Note: this counts any in-flight AE response that lands after the
+        // read arrives, not strictly responses to *this* heartbeat round — a
+        // simplification relative to etcd-raft's per-read context. Adequate
+        // for Phase 2; tighten with a read-context nonce if we see skew.
+        sendHeartbeats(effects);
+        maybeServePendingReads(effects);
+    }
+
+    private void maybeServePendingReads(List<RaftEffect> effects) {
+        var it = pendingReads.iterator();
+        while (it.hasNext()) {
+            var pr = it.next();
+            if (pr.ackSet.size() >= config.quorum() && lastApplied >= pr.readIndex) {
+                effects.add(new RaftEffect.ServeClientRead(pr.clientId, pr.requestId, pr.readIndex));
+                it.remove();
+            }
+        }
     }
 
     private void onTick(RaftEvent.Tick tick, List<RaftEffect> effects) {
@@ -344,7 +395,11 @@ public final class DefaultRaftCore implements RaftCore {
         if (resp.success()) {
             matchIndex.put(resp.from(), resp.matchIndex());
             nextIndex.put(resp.from(), resp.matchIndex() + 1);
+            for (var pr : pendingReads) {
+                pr.ackSet.add(resp.from());
+            }
             maybeAdvanceLeaderCommit(effects);
+            maybeServePendingReads(effects);
         } else {
             long newNext;
             if (resp.conflictTerm().equals(Term.ZERO)) {
@@ -503,6 +558,10 @@ public final class DefaultRaftCore implements RaftCore {
         preVotesReceived.clear();
         nextIndex.clear();
         matchIndex.clear();
+        for (var pr : pendingReads) {
+            effects.add(new RaftEffect.RejectClientRead(pr.clientId, pr.requestId, Optional.empty()));
+        }
+        pendingReads.clear();
         persistentState.update(newTerm, newVote);
         effects.add(new RaftEffect.PersistState(newTerm, newVote));
         electionDeadlineNanos = Long.MAX_VALUE;

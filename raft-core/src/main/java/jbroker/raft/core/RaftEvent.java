@@ -95,4 +95,11 @@ public sealed interface RaftEvent {
             Objects.requireNonNull(term, "term");
         }
     }
+
+    /**
+     * Linearizable read request. {@code clientId} + {@code requestId} are opaque
+     * identifiers the driver uses to correlate the response; they do not affect
+     * raft state. {@code clientId==0} is allowed (legacy / unauthenticated).
+     */
+    record ClientRead(long clientId, long requestId) implements RaftEvent {}
 }

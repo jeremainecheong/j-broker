@@ -71,4 +71,19 @@ public sealed interface RaftEffect {
 
     /** Leader tells {@code to} to start a real election at term+1 immediately. */
     record SendTimeoutNow(NodeId to, Term term) implements RaftEffect {}
+
+    /**
+     * Read-index confirmed: driver may now read the state machine and return
+     * it to the client. {@code readIndex} is the {@code commitIndex} captured
+     * when the read arrived; by the time this effect is emitted,
+     * {@code lastApplied >= readIndex} is guaranteed.
+     */
+    record ServeClientRead(long clientId, long requestId, long readIndex) implements RaftEffect {}
+
+    /**
+     * Read-index aborted: either this node is not the leader, or it stepped
+     * down before the heartbeat-quorum confirmation completed. Driver should
+     * redirect the client to {@code knownLeader} if present.
+     */
+    record RejectClientRead(long clientId, long requestId, Optional<NodeId> knownLeader) implements RaftEffect {}
 }

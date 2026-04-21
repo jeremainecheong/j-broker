@@ -250,6 +250,12 @@ public final class RaftDriver implements AutoCloseable {
                     /* Phase 5 wires the cached-response path to the client */
                 }
                 case RaftEffect.SendTimeoutNow t -> dispatchTimeoutNow(t);
+                case RaftEffect.ServeClientRead ignored -> {
+                    /* Phase 5 wires the state-machine read response to the client */
+                }
+                case RaftEffect.RejectClientRead ignored -> {
+                    /* Phase 5 wires the redirect response to the client */
+                }
             }
         }
     }

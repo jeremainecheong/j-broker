@@ -50,9 +50,9 @@ public final class ClusterHarness implements AutoCloseable {
             var config = new RaftConfig(
                     self,
                     ids,
-                    TimeUnit.MILLISECONDS.toNanos(150),
-                    TimeUnit.MILLISECONDS.toNanos(75),
-                    TimeUnit.MILLISECONDS.toNanos(50),
+                    TimeUnit.MILLISECONDS.toNanos(400),
+                    TimeUnit.MILLISECONDS.toNanos(200),
+                    TimeUnit.MILLISECONDS.toNanos(100),
                     100);
 
             // Pass Long.MAX_VALUE so the election deadline is deferred: the first
@@ -68,7 +68,7 @@ public final class ClusterHarness implements AutoCloseable {
                 peers.put(ids.get(j), new RaftPeerClient(ids.get(j), "127.0.0.1", ports[j]));
             }
 
-            var driver = new RaftDriver(self, core, sm, peers, TimeUnit.MILLISECONDS.toNanos(20));
+            var driver = new RaftDriver(self, core, sm, peers, TimeUnit.MILLISECONDS.toNanos(30));
             driver.start(port);
             // Warm up outbound gRPC connections so the first vote RPC does not
             // pay full connection-establishment latency.

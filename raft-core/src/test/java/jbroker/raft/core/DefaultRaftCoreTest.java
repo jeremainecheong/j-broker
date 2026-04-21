@@ -27,4 +27,27 @@ class DefaultRaftCoreTest {
             assertThat(core.currentTerm()).isEqualTo(Term.ZERO);
         }
     }
+
+    @Test
+    void followerTimingOutBecomesCandidateAndRequestsVotes(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+
+            var core = new DefaultRaftCore(CONFIG, log, state, 0L);
+            long farFuture = TimeUnit.MILLISECONDS.toNanos(5_000);
+            var effects = core.step(new RaftEvent.Tick(farFuture));
+
+            assertThat(core.role()).isEqualTo(Role.CANDIDATE);
+            assertThat(core.currentTerm()).isEqualTo(new Term(1));
+
+            assertThat(effects)
+                    .filteredOn(e -> e instanceof RaftEffect.PersistState)
+                    .hasSize(1);
+
+            assertThat(effects)
+                    .filteredOn(e -> e instanceof RaftEffect.SendVoteReq)
+                    .extracting(e -> ((RaftEffect.SendVoteReq) e).to())
+                    .containsExactlyInAnyOrder(new NodeId(2), new NodeId(3));
+        }
+    }
 }

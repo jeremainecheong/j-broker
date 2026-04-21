@@ -5,7 +5,7 @@ Learning project: a log-structured distributed message broker with a hand-rolled
 ## Status
 
 - [x] **Milestone 0** — Gradle multi-module scaffolding, ArchUnit module boundaries, CI
-- [~] **Milestone 1** — Raft core: election, log replication, fsync'd persistent state, conflict-index backoff. Unit tests green. Integration tests pass cold; rerun flakiness (port/thread cleanup) pending stabilization before 100-run stress gate can be claimed.
+- [x] **Milestone 1** — Raft core: election, log replication, fsync'd persistent state, conflict-index backoff. Unit tests + 4 integration tests + 100-run election stress all green.
 - [ ] Milestone 2 — Raft snapshots, membership changes, leadership transfer, pre-vote, read-index
 - [ ] Milestone 3–10 — see the spec
 
@@ -13,7 +13,7 @@ Learning project: a log-structured distributed message broker with a hand-rolled
 
 ```
 ./gradlew build                             # all modules + unit/integration tests
-./gradlew :integration-tests:stressTest     # 100-run election stress (currently unstable)
+./gradlew :integration-tests:stressTest     # 100-run election stress
 ./gradlew spotlessApply                     # reformat
 ```
 
@@ -33,8 +33,8 @@ Modules that exist today:
 ## Testing
 
 - **Unit tests:** ~50 across `raft-core` and `raft-transport`, covering log append/read/fsync/recovery, persistent state, election safety, vote acceptance with log-completeness check, AppendEntries log-matching + truncation + commit advance, leader matchIndex majority commit (§5.4.2), conflict-index fast backoff, client proposal rejection on non-leader, and persistence round-trips.
-- **Integration tests:** 4 tests in `integration-tests/src/test/java/jbroker/it/ThreeNodeRaftIT.java` — leader election within 1 s, kill-non-leader non-disruption, kill-leader failover within 5 s, replicate 1000 entries. Each passes individually on a cold JVM; known flakiness when run back-to-back is tracked in the project handoff doc.
-- **Stress:** `ElectionStressIT` runs 100 randomized election cycles; expected to be reliable once IT flakiness is resolved.
+- **Integration tests:** 4 tests in `integration-tests/src/test/java/jbroker/it/ThreeNodeRaftIT.java` — leader election within 1 s, kill-non-leader non-disruption, kill-leader failover within 5 s, replicate 1000 entries. `ClusterHarness.start()` blocks until every outbound gRPC channel reaches `ConnectivityState.READY`, so the first election's vote RPCs are delivered immediately rather than queued behind an HTTP/2 handshake — this eliminated the back-to-back rerun flakiness that affected earlier builds.
+- **Stress:** `ElectionStressIT` runs 100 randomized election cycles; `./gradlew :integration-tests:stressTest` completes 100/100 in ~60 s.
 
 ## Notable Raft correctness invariants covered
 

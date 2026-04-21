@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class TopicManager {
 
     private final ConcurrentHashMap<String, TopicDescription> topics = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<PartitionKey, PartitionState> partitions = new ConcurrentHashMap<>();
 
     /**
      * Called by the state machine when a {@code TopicRecord} commits. Idempotent —
@@ -20,6 +21,21 @@ public final class TopicManager {
      */
     public void onTopicCommitted(String topic, int partitions, int replicationFactor, long createdMillis) {
         topics.putIfAbsent(topic, new TopicDescription(topic, partitions, replicationFactor, createdMillis));
+    }
+
+    /**
+     * Called by the state machine when a {@code PartitionChangeRecord} commits.
+     * Epoch-guarded: a record with an epoch not strictly greater than the
+     * currently-applied epoch is ignored, so out-of-order delivery during
+     * recovery cannot regress partition state.
+     */
+    public void onPartitionChange(String topic, int partition, int leader, List<Integer> isr, int leaderEpoch) {
+        var key = new PartitionKey(topic, partition);
+        var next = new PartitionState(leader, isr, leaderEpoch);
+        partitions.merge(
+                key,
+                next,
+                (existing, proposed) -> proposed.leaderEpoch() > existing.leaderEpoch() ? proposed : existing);
     }
 
     public Optional<TopicDescription> describe(String topic) {
@@ -33,4 +49,21 @@ public final class TopicManager {
     public boolean exists(String topic) {
         return topics.containsKey(topic);
     }
+
+    public Optional<Integer> partitionLeader(String topic, int partition) {
+        return Optional.ofNullable(partitions.get(new PartitionKey(topic, partition)))
+                .map(PartitionState::leader);
+    }
+
+    public List<Integer> partitionIsr(String topic, int partition) {
+        var s = partitions.get(new PartitionKey(topic, partition));
+        return s == null ? List.of() : s.isr();
+    }
+
+    public Optional<Integer> partitionLeaderEpoch(String topic, int partition) {
+        return Optional.ofNullable(partitions.get(new PartitionKey(topic, partition)))
+                .map(PartitionState::leaderEpoch);
+    }
+
+    private record PartitionKey(String topic, int partition) {}
 }

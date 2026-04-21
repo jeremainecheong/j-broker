@@ -29,6 +29,9 @@ public final class ReplicaPeerClient implements AutoCloseable {
 
     @Override
     public void close() {
+        // Graceful shutdown only — P6.5 may need shutdownNow() here once
+        // Broker.close owns a fleet of peer clients and we want fast-fail
+        // rather than waiting up to 5s for each.
         channel.shutdown();
         try {
             channel.awaitTermination(5, TimeUnit.SECONDS);

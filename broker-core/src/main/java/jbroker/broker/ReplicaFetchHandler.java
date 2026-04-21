@@ -38,6 +38,20 @@ public final class ReplicaFetchHandler {
                             .build())
                     .build();
         }
+        // Reject impostor brokers not in the replica set for this partition.
+        // P6.2 tracks only ISR (shrink/expand lands in P6.3); until a replica
+        // set separate from ISR exists, out-of-ISR brokers can't catch up.
+        // That's fine for the P6.2 tests (ISR=full replica set at topic create).
+        if (!state.get().isr().contains(req.getFollowerBrokerId())) {
+            return ReplicaFetchResponse.newBuilder()
+                    .setCurrentLeaderEpoch(state.get().leaderEpoch())
+                    .setError(jbroker.proto.broker.Error.newBuilder()
+                            .setCode(ErrorCodes.NOT_LEADER)
+                            .setMessage("broker " + req.getFollowerBrokerId() + " is not a replica of " + req.getTopic()
+                                    + "-" + req.getPartition())
+                            .build())
+                    .build();
+        }
         int currentEpoch = state.get().leaderEpoch();
         if (req.getLeaderEpoch() != currentEpoch) {
             return ReplicaFetchResponse.newBuilder()
@@ -52,6 +66,9 @@ public final class ReplicaFetchHandler {
             var log = logManager.logFor(req.getTopic(), req.getPartition());
             long logEnd = log.nextOffset();
             var baos = new ByteArrayOutputStream();
+            // Skip the transferTo call when the follower is caught up; avoids
+            // an unnecessary index lookup and IO syscall, and keeps the
+            // response deterministically empty-bytes.
             if (req.getFetchOffset() < logEnd) {
                 int maxBytes = req.getMaxBytes() > 0 ? req.getMaxBytes() : 1024 * 1024;
                 log.transferTo(req.getFetchOffset(), maxBytes, baos);
@@ -66,7 +83,7 @@ public final class ReplicaFetchHandler {
                     .setCurrentLeaderEpoch(currentEpoch)
                     .setError(jbroker.proto.broker.Error.newBuilder()
                             .setCode(ErrorCodes.IO_ERROR)
-                            .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
+                            .setMessage(e.toString())
                             .build())
                     .build();
         }

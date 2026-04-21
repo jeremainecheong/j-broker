@@ -32,4 +32,48 @@ class FileRaftLogCrashTest {
             assertThat(reopened.read(1, 10)).hasSize(2);
         }
     }
+
+    @Test
+    void reopenTruncatesFrameWithCorruptLargeLengthPrefix(@TempDir Path dir) throws Exception {
+        var path = dir.resolve("raft.log");
+        try (var log = FileRaftLog.open(path)) {
+            log.append(List.of(new LogEntry(1, new Term(1), LogEntry.Type.NORMAL, new byte[] {1})));
+        }
+
+        // Append a 4-byte length prefix that's absurdly large, followed by some junk.
+        try (var raw = FileChannel.open(path, StandardOpenOption.WRITE)) {
+            raw.position(raw.size());
+            var corrupt = java.nio.ByteBuffer.allocate(4 + 10);
+            corrupt.putInt(Integer.MAX_VALUE);
+            corrupt.put(new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+            corrupt.flip();
+            raw.write(corrupt);
+        }
+
+        try (var reopened = FileRaftLog.open(path)) {
+            assertThat(reopened.lastIndex()).isEqualTo(1L);
+            assertThat(reopened.read(1, 10)).hasSize(1);
+        }
+    }
+
+    @Test
+    void reopenTruncatesFrameWithNegativeLengthPrefix(@TempDir Path dir) throws Exception {
+        var path = dir.resolve("raft.log");
+        try (var log = FileRaftLog.open(path)) {
+            log.append(List.of(new LogEntry(1, new Term(1), LogEntry.Type.NORMAL, new byte[] {1})));
+        }
+
+        try (var raw = FileChannel.open(path, StandardOpenOption.WRITE)) {
+            raw.position(raw.size());
+            var corrupt = java.nio.ByteBuffer.allocate(4);
+            corrupt.putInt(-42);
+            corrupt.flip();
+            raw.write(corrupt);
+        }
+
+        try (var reopened = FileRaftLog.open(path)) {
+            assertThat(reopened.lastIndex()).isEqualTo(1L);
+            assertThat(reopened.read(1, 10)).hasSize(1);
+        }
+    }
 }

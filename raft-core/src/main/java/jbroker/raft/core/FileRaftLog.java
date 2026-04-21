@@ -29,6 +29,8 @@ import java.util.Optional;
  */
 public final class FileRaftLog implements RaftLog, AutoCloseable {
 
+    private static final int MAX_FRAME_PAYLOAD_BYTES = 64 * 1024 * 1024; // 64 MiB sanity cap
+
     private final FileChannel channel;
     private final List<LogEntry> index;
 
@@ -58,6 +60,11 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
             }
             lenBuf.flip();
             int payloadLen = lenBuf.getInt();
+            if (payloadLen < 0 || payloadLen > MAX_FRAME_PAYLOAD_BYTES) {
+                // Corrupt length prefix — treat as torn frame and stop.
+                channel.truncate(frameStart);
+                break;
+            }
             if (channel.position() + payloadLen > size) {
                 // torn frame — truncate at frame start and stop
                 channel.truncate(frameStart);

@@ -28,7 +28,8 @@ class FileRaftLogAppendAtomicityTest {
     @Test
     void rollsBackIndexAndChannelWhenMidListWriteFails(@TempDir Path dir) throws Exception {
         var path = dir.resolve("raft.log");
-        var realChannel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        var realChannel =
+                FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
         // Fail on the 3rd call to write(ByteBuffer) — append() loops with
         // write-until-drained inside writeFrame, but each frame is a single
         // write-ByteBuffer call for small payloads, so entry 0 succeeds,

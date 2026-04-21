@@ -37,8 +37,8 @@ class RaftElectionDeadlineTest {
             var core = new DefaultRaftCore(CONFIG, log, state, 0L);
 
             // Initial deadline was 0 + 1000ms. Arrive an AE at t=500ms.
-            core.step(new RaftEvent.AppendEntriesReq(
-                    new Term(1), new NodeId(2), 0L, Term.ZERO, List.of(), 0L, ms(500)));
+            core.step(
+                    new RaftEvent.AppendEntriesReq(new Term(1), new NodeId(2), 0L, Term.ZERO, List.of(), 0L, ms(500)));
 
             // Deadline should now be 500 + 1000 = 1500ms.
             // Tick at 1499ms must not trigger election.

@@ -13,6 +13,8 @@ import jbroker.proto.broker.InitProducerIdRequest;
 import jbroker.proto.broker.InitProducerIdResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
+import jbroker.proto.broker.OffsetsForLeaderEpochRequest;
+import jbroker.proto.broker.OffsetsForLeaderEpochResponse;
 import jbroker.proto.broker.ProduceRequest;
 import jbroker.proto.broker.ProduceResponse;
 import jbroker.proto.broker.ProducerGrpc;
@@ -56,11 +58,19 @@ public final class BrokerGrpcServices {
         };
     }
 
-    public static ReplicaConsumerGrpc.ReplicaConsumerImplBase replicaConsumer(ReplicaFetchHandler handler) {
+    public static ReplicaConsumerGrpc.ReplicaConsumerImplBase replicaConsumer(
+            ReplicaFetchHandler fetchHandler, OffsetsForLeaderEpochHandler offsetsHandler) {
         return new ReplicaConsumerGrpc.ReplicaConsumerImplBase() {
             @Override
             public void replicaFetch(ReplicaFetchRequest req, StreamObserver<ReplicaFetchResponse> out) {
-                out.onNext(handler.handle(req));
+                out.onNext(fetchHandler.handle(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void offsetsForLeaderEpoch(
+                    OffsetsForLeaderEpochRequest req, StreamObserver<OffsetsForLeaderEpochResponse> out) {
+                out.onNext(offsetsHandler.handle(req));
                 out.onCompleted();
             }
         };

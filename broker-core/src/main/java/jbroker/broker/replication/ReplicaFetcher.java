@@ -13,13 +13,16 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Follower-side pump that pulls committed record batches from the partition
- * leader via {@link Peer} and appends them to the local {@link jbroker.storage.Log}.
+ * leader via {@link Peer} and appends them byte-for-byte to the local
+ * {@link jbroker.storage.Log}.
  *
- * <p>Phase 6.2 is minimal: single partition, happy-path replication only.
- * The follower decodes each received batch and re-appends the constituent
- * records locally so offsets match deterministically as long as the
- * follower starts from offset 0 and receives all batches in order.
- * Truncation on leadership change is P6.4's job (OffsetsForLeaderEpoch).
+ * <p>Phase 6.4: on {@link ErrorCodes#FENCED_EPOCH}, the fetcher calls
+ * {@code OffsetsForLeaderEpoch} with its last-seen leader_epoch, truncates
+ * any divergent suffix returned, and signals {@link PollResult#RECONCILED}
+ * so the driver re-polls with the fresh epoch on the next tick.
+ * Received batches are appended via {@link jbroker.storage.Log#appendRaw}
+ * so producerId, producerEpoch, baseSequence, partitionLeaderEpoch, and
+ * timestamps survive byte-identical.
  */
 public final class ReplicaFetcher {
 
@@ -27,6 +30,8 @@ public final class ReplicaFetcher {
 
     public interface Peer {
         ReplicaFetchResponse fetch(ReplicaFetchRequest req);
+
+        long offsetsForLeaderEpoch(String topic, int partition, int leaderEpoch);
     }
 
     private final LogManager logManager;
@@ -46,14 +51,14 @@ public final class ReplicaFetcher {
 
     /**
      * Outcome of a single {@code pollOnce}. The driver uses this to decide
-     * whether to immediately schedule the next poll ({@code ADVANCED}) or to
-     * back off ({@code EMPTY} / {@code FENCED} / {@code ERROR}) to avoid
-     * hammering the leader.
+     * whether to immediately schedule the next poll ({@code ADVANCED}),
+     * reconcile-then-retry ({@code RECONCILED}), or back off
+     * ({@code EMPTY} / {@code ERROR}).
      */
     public enum PollResult {
         ADVANCED,
         EMPTY,
-        FENCED,
+        RECONCILED,
         ERROR
     }
 
@@ -76,14 +81,7 @@ public final class ReplicaFetcher {
         if (resp.hasError() && resp.getError().getCode() != ErrorCodes.NONE) {
             int code = resp.getError().getCode();
             if (code == ErrorCodes.FENCED_EPOCH) {
-                log.warn(
-                        "replica fetch fenced for {}-{}: leader epoch {}, local {}",
-                        topic,
-                        partition,
-                        resp.getCurrentLeaderEpoch(),
-                        expectedLeaderEpoch);
-                // P6.4 will truncate and reconcile; drivers should back off.
-                return PollResult.FENCED;
+                return reconcileOnFencedEpoch(expectedLeaderEpoch, resp.getCurrentLeaderEpoch());
             }
             log.warn(
                     "replica fetch error for {}-{}: {}",
@@ -97,34 +95,54 @@ public final class ReplicaFetcher {
             highWatermark.set(resp.getHighWatermark());
             return PollResult.EMPTY;
         }
-        var buf = ByteBuffer.wrap(records.toByteArray());
+        byte[] bytes = records.toByteArray();
+        var buf = ByteBuffer.wrap(bytes);
         while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
-            int mark = buf.position();
+            int startPos = buf.position();
             RecordBatch.Parsed decoded;
             try {
                 decoded = RecordBatch.decode(buf);
             } catch (IllegalArgumentException e) {
-                buf.position(mark);
+                buf.position(startPos);
                 break;
             }
-            // Leader's LogSegment.transferTo streams from the sparse-index floor
-            // entry for fetchOffset, so batches whose lastOffset < fetchOffset
-            // can end up in the response. Skip them. Also skip empty-record
-            // batches — Log.append rejects them — so a future peer can't
-            // wedge this loop.
+            int endPos = buf.position();
+            // Leader's LogSegment.transferTo streams from the sparse-index
+            // floor, so batches whose lastOffset < fetchOffset can appear
+            // in the response. Skip them (also skips empty-record batches).
             if (decoded.records().isEmpty() || decoded.lastOffset() < fetchOffset) {
                 continue;
             }
-            // P6.2 renumbers offsets via Log.append; offsets converge only
-            // because the follower starts at 0 and receives batches in order.
-            // Timestamps, producer_id/epoch, base_sequence, and
-            // partition_leader_epoch from the leader's batch are lost here;
-            // P6.4 will replace this with a raw-batch append that preserves
-            // all metadata byte-for-byte.
-            local.append(decoded.records(), decoded.firstTimestamp());
+            // Byte-identical append — preserves every header field the
+            // leader wrote. appendRaw verifies baseOffset matches the
+            // follower's current LEO.
+            byte[] slice = new byte[endPos - startPos];
+            System.arraycopy(bytes, startPos, slice, 0, slice.length);
+            local.appendRaw(slice, decoded.baseOffset());
         }
         highWatermark.set(resp.getHighWatermark());
         return PollResult.ADVANCED;
+    }
+
+    private PollResult reconcileOnFencedEpoch(int followerEpoch, int leaderCurrentEpoch) throws IOException {
+        log.warn(
+                "replica fetch fenced for {}-{}: follower epoch {}, leader at {}; reconciling",
+                topic,
+                partition,
+                followerEpoch,
+                leaderCurrentEpoch);
+        long endOffset = peer.offsetsForLeaderEpoch(topic, partition, followerEpoch);
+        var local = logManager.logFor(topic, partition);
+        if (endOffset < local.nextOffset()) {
+            log.warn(
+                    "truncating {}-{} from {} to {} after OffsetsForLeaderEpoch",
+                    topic,
+                    partition,
+                    local.nextOffset(),
+                    endOffset);
+            local.truncateTo(endOffset);
+        }
+        return PollResult.RECONCILED;
     }
 
     public long highWatermark() {

@@ -106,6 +106,22 @@ public final class OffsetIndex implements AutoCloseable {
         entryCount = newCount;
     }
 
+    /** Drop every entry whose offset is {@code >= targetOffset}. */
+    public synchronized void truncateAtOrAbove(long targetOffset) throws IOException {
+        int keep = 0;
+        for (int i = 0; i < entryCount; i++) {
+            long off = baseOffset + relAt(i);
+            if (off >= targetOffset) break;
+            keep = i + 1;
+        }
+        truncate(keep);
+    }
+
+    /** Drop every entry. */
+    public synchronized void truncateAll() throws IOException {
+        truncate(0);
+    }
+
     @Override
     public synchronized void close() throws IOException {
         channel.close();

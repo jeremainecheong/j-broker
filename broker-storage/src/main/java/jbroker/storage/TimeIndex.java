@@ -85,6 +85,27 @@ public final class TimeIndex implements AutoCloseable {
         entryCount = newCount;
     }
 
+    /** Drop every entry whose associated offset is {@code >= targetOffset}. */
+    public synchronized void truncateAtOrAbove(long targetOffset) throws IOException {
+        int keep = 0;
+        for (int i = 0; i < entryCount; i++) {
+            // Each entry is (timestamp, relOffset) where relOffset is int32.
+            var buf = ByteBuffer.allocate(ENTRY_BYTES).order(ByteOrder.BIG_ENDIAN);
+            channel.read(buf, (long) i * ENTRY_BYTES);
+            buf.flip();
+            buf.getLong(); // skip timestamp
+            long off = baseOffset + buf.getInt();
+            if (off >= targetOffset) break;
+            keep = i + 1;
+        }
+        truncate(keep);
+    }
+
+    /** Drop every entry. */
+    public synchronized void truncateAll() throws IOException {
+        truncate(0);
+    }
+
     @Override
     public synchronized void close() throws IOException {
         channel.close();

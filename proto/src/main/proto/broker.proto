@@ -19,6 +19,10 @@ service Consumer {
 // from the partition leader. Distinct from Consumer.Fetch (client-facing).
 service ReplicaConsumer {
   rpc ReplicaFetch(ReplicaFetchRequest) returns (ReplicaFetchResponse);
+  // Follower reconciliation (P6.4): after a FENCED_EPOCH on ReplicaFetch,
+  // the follower asks the leader for the end offset of its last-seen
+  // leader_epoch so it can truncate any divergent suffix before resuming.
+  rpc OffsetsForLeaderEpoch(OffsetsForLeaderEpochRequest) returns (OffsetsForLeaderEpochResponse);
 }
 
 service Admin {
@@ -86,6 +90,22 @@ message ReplicaFetchResponse {
   // follower can detect its own staleness.
   int32 current_leader_epoch = 3;
   Error error = 4;
+}
+
+// ===== OffsetsForLeaderEpoch (follower -> leader, P6.4) =====
+
+message OffsetsForLeaderEpochRequest {
+  string topic = 1;
+  int32 partition = 2;
+  // The leader_epoch the follower last observed. The leader answers
+  // with the endOffset of that epoch (the startOffset of the next
+  // recorded epoch, or current LEO if this is the latest epoch).
+  int32 leader_epoch = 3;
+}
+
+message OffsetsForLeaderEpochResponse {
+  int64 end_offset = 1;
+  Error error = 2;
 }
 
 // ===== InitProducerId =====

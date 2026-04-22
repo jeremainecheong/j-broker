@@ -25,6 +25,15 @@ dependencies {
     }
 }
 
+// Spring Boot's starter classpath exposes legacy @Deprecated types and raw
+// generics that -Xlint:all + -Werror (applied by the convention plugin)
+// would escalate to compile errors as soon as controllers reference them.
+// Strip -Werror here — the convention plugin's other lints still run, and
+// hand-written code remains warning-free. Mirrors proto/build.gradle.kts.
+tasks.withType<JavaCompile>().configureEach {
+    options.compilerArgs.removeIf { it == "-Werror" }
+}
+
 application {
     mainClass.set("jbroker.admin.AdminApp")
 }

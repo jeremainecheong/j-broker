@@ -109,6 +109,26 @@ public final class Log implements AutoCloseable {
     }
 
     /**
+     * Truncate the log so its LEO becomes {@code targetOffset}. Used by the
+     * follower reconciliation path (P6.4): after {@code OffsetsForLeaderEpoch}
+     * reveals a divergent suffix, the follower drops everything at or after
+     * {@code targetOffset} and re-fetches from there.
+     *
+     * <p>Batch-granular: a mid-batch targetOffset rounds down to the
+     * containing batch's baseOffset (the whole divergent batch is dropped).
+     */
+    public synchronized void truncateTo(long targetOffset) throws IOException {
+        if (targetOffset >= nextOffset()) return;
+        while (segments.size() > 1 && segments.get(segments.size() - 1).baseOffset() >= targetOffset) {
+            var tail = segments.remove(segments.size() - 1);
+            tail.close();
+            tail.delete();
+        }
+        var active = segments.get(segments.size() - 1);
+        active.truncateAtOrAbove(targetOffset);
+    }
+
+    /**
      * Read one or more batches starting at or after {@code offset}, capped at
      * {@code maxBytes}. Reads may span at most one segment boundary per call.
      */

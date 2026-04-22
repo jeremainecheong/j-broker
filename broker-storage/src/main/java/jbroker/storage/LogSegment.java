@@ -253,6 +253,62 @@ public final class LogSegment implements AutoCloseable {
         timeIndex.force();
     }
 
+    /**
+     * Truncate this segment so the resulting {@link #nextOffset()} equals
+     * {@code targetOffset}. Scans batches and cuts at the first batch whose
+     * {@code baseOffset >= targetOffset}. If no such batch exists, this is
+     * a no-op. If {@code targetOffset <= baseOffset}, the segment is
+     * emptied.
+     */
+    public synchronized void truncateAtOrAbove(long targetOffset) throws IOException {
+        if (targetOffset <= baseOffset) {
+            logChannel.truncate(0);
+            offsetIndex.truncateAll();
+            timeIndex.truncateAll();
+            nextOffset = baseOffset;
+            bytesSinceLastIndex = 0;
+            maxTimestamp = 0L;
+            return;
+        }
+        if (targetOffset >= nextOffset) return;
+        long size = logChannel.size();
+        if (size == 0) return;
+        var buf = ByteBuffer.allocate((int) size);
+        int read = 0;
+        while (read < size) {
+            int n = logChannel.read(buf, read);
+            if (n <= 0) break;
+            read += n;
+        }
+        buf.flip();
+
+        int cutPos = 0;
+        long newNextOffset = baseOffset;
+        long newMaxTs = 0L;
+        while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
+            int startPos = buf.position();
+            RecordBatch.Parsed parsed;
+            try {
+                parsed = RecordBatch.decode(buf);
+            } catch (IllegalArgumentException e) {
+                break;
+            }
+            if (parsed.baseOffset() >= targetOffset) {
+                break;
+            }
+            cutPos = buf.position();
+            newNextOffset = parsed.baseOffset() + parsed.lastOffsetDelta() + 1;
+            if (parsed.maxTimestamp() > newMaxTs) newMaxTs = parsed.maxTimestamp();
+            if (cutPos - startPos <= 0) break; // defensive
+        }
+        logChannel.truncate(cutPos);
+        offsetIndex.truncateAtOrAbove(targetOffset);
+        timeIndex.truncateAtOrAbove(targetOffset);
+        nextOffset = newNextOffset;
+        maxTimestamp = newMaxTs;
+        bytesSinceLastIndex = 0;
+    }
+
     @Override
     public synchronized void close() throws IOException {
         logChannel.close();

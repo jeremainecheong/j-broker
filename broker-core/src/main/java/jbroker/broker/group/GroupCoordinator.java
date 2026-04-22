@@ -147,11 +147,30 @@ public final class GroupCoordinator {
         }
     }
 
+    /**
+     * Notified after every membership change to a group so the caller can
+     * persist a Type-2 GroupMetadataValue record into
+     * {@code __consumer_offsets}. Caller is expected to encode the
+     * snapshot via
+     * {@link jbroker.broker.ConsumerOffsetsTopic#valueForGroupMetadata}
+     * and append to the appropriate partition log.
+     *
+     * <p>Fires on join (new member, dynamic or static), leave, and
+     * eviction. Steady-state heartbeats and stage advancement do NOT
+     * fire — only structural changes to membership do, which keeps the
+     * write rate bounded and predictable.
+     */
+    @FunctionalInterface
+    public interface SnapshotListener {
+        void onGroupSnapshot(String groupId, jbroker.broker.ConsumerOffsetsTopic.GroupMetadataValue snapshot);
+    }
+
     private final Map<String, GroupState> groups = new HashMap<>();
     private final ReentrantLock groupsLock = new ReentrantLock();
     private final PartitionCountSource partitionSource;
     private final PartitionAssignor assignor;
     private final Function<String, String> memberIdGenerator;
+    private volatile SnapshotListener snapshotListener;
 
     public GroupCoordinator(PartitionCountSource partitionSource, PartitionAssignor assignor) {
         this(partitionSource, assignor, instanceId -> UUID.randomUUID().toString());
@@ -168,6 +187,16 @@ public final class GroupCoordinator {
         this.partitionSource = partitionSource;
         this.assignor = assignor;
         this.memberIdGenerator = memberIdGenerator;
+        this.snapshotListener = (g, s) -> {};
+    }
+
+    /**
+     * Plug in a snapshot listener. Typically called from {@code Broker.start}
+     * once the {@link jbroker.storage.LogManager} and topic state are
+     * available. Replaces any prior listener atomically.
+     */
+    public void setSnapshotListener(SnapshotListener listener) {
+        this.snapshotListener = listener == null ? (g, s) -> {} : listener;
     }
 
     public JoinResult join(
@@ -178,6 +207,8 @@ public final class GroupCoordinator {
             int rebalanceTimeoutMs,
             long nowNs) {
         var group = groupOf(groupId);
+        JoinResult result;
+        boolean structuralChange;
         group.lock.lock();
         try {
             // Static membership: existing instance_id reuses its slot.
@@ -190,8 +221,8 @@ public final class GroupCoordinator {
                     existing.sessionTimeoutNs = sessionTimeoutMs * 1_000_000L;
                     existing.rebalanceTimeoutMs = rebalanceTimeoutMs;
                     // Static-rejoin keeps the same memberEpoch + assignment;
-                    // no generation bump (subscription change handling lands
-                    // in P7.7 incremental rebalance).
+                    // no generation bump and NO snapshot fire — the on-disk
+                    // record from the original join is still valid.
                     return new JoinResult(
                             existing.memberId,
                             existing.memberEpoch,
@@ -218,11 +249,14 @@ public final class GroupCoordinator {
             }
             group.generation++;
             recomputeAssignment(group);
-            return new JoinResult(
+            structuralChange = true;
+            result = new JoinResult(
                     newId, member.memberEpoch, group.generation, member.currentAssignment, HEARTBEAT_INTERVAL_MS);
         } finally {
             group.lock.unlock();
         }
+        if (structuralChange) fireSnapshot(group);
+        return result;
     }
 
     public HeartbeatResult heartbeat(
@@ -271,6 +305,7 @@ public final class GroupCoordinator {
 
     public void leave(String groupId, String memberId) {
         var group = groupOf(groupId);
+        boolean changed = false;
         group.lock.lock();
         try {
             var removed = group.members.remove(memberId);
@@ -280,9 +315,11 @@ public final class GroupCoordinator {
             }
             group.generation++;
             recomputeAssignment(group);
+            changed = true;
         } finally {
             group.lock.unlock();
         }
+        if (changed) fireSnapshot(group);
     }
 
     public List<EvictedMember> tickEvictions(long nowNs) {
@@ -290,6 +327,7 @@ public final class GroupCoordinator {
         groupsLock.lock();
         var snapshot = new ArrayList<>(groups.values());
         groupsLock.unlock();
+        var changedGroups = new ArrayList<GroupState>();
         for (var group : snapshot) {
             group.lock.lock();
             try {
@@ -309,10 +347,15 @@ public final class GroupCoordinator {
                 }
                 group.generation++;
                 recomputeAssignment(group);
+                changedGroups.add(group);
             } finally {
                 group.lock.unlock();
             }
         }
+        // Snapshot fires happen outside the group lock so the listener
+        // (typically a Log.appendRaw on __consumer_offsets) can't deadlock
+        // against an inbound RPC under concurrent load.
+        for (var g : changedGroups) fireSnapshot(g);
         return List.copyOf(evicted);
     }
 
@@ -487,5 +530,87 @@ public final class GroupCoordinator {
         var as = new HashSet<>(a);
         var bs = new HashSet<>(b);
         return as.equals(bs);
+    }
+
+    /**
+     * P7.8 — capture the group's current state in a form that can be encoded
+     * via {@link jbroker.broker.ConsumerOffsetsTopic#valueForGroupMetadata}
+     * and persisted to {@code __consumer_offsets}.
+     */
+    public Optional<jbroker.broker.ConsumerOffsetsTopic.GroupMetadataValue> snapshotGroup(String groupId) {
+        var group = groupOf(groupId);
+        group.lock.lock();
+        try {
+            if (group.members.isEmpty()) {
+                return Optional.of(new jbroker.broker.ConsumerOffsetsTopic.GroupMetadataValue(
+                        group.generation, java.util.List.of()));
+            }
+            var snapshots = new java.util.ArrayList<jbroker.broker.ConsumerOffsetsTopic.MemberSnapshot>();
+            // Stable ordering on member_id so the persisted bytes are
+            // reproducible regardless of HashMap iteration order.
+            var sortedIds = new java.util.ArrayList<>(group.members.keySet());
+            java.util.Collections.sort(sortedIds);
+            for (var mid : sortedIds) {
+                var m = group.members.get(mid);
+                var subs = new java.util.ArrayList<>(m.subscribedTopics);
+                java.util.Collections.sort(subs);
+                snapshots.add(new jbroker.broker.ConsumerOffsetsTopic.MemberSnapshot(
+                        m.memberId, m.instanceId, m.memberEpoch, subs, new java.util.ArrayList<>(m.currentAssignment)));
+            }
+            return Optional.of(new jbroker.broker.ConsumerOffsetsTopic.GroupMetadataValue(group.generation, snapshots));
+        } finally {
+            group.lock.unlock();
+        }
+    }
+
+    /**
+     * P7.8 — rebuild a group's state from a persisted snapshot. Called by
+     * the recovery walk after coordinator activation. Existing in-memory
+     * state for the group is overwritten — the on-disk record is the
+     * source of truth.
+     *
+     * <p>{@code lastHeartbeatNs} for each member is reset to {@code nowNs}
+     * so that members aren't immediately evicted before they have a chance
+     * to send their first post-failover heartbeat. Their next heartbeat
+     * also re-establishes their session-timeout commitment.
+     */
+    public void restoreGroup(
+            String groupId, jbroker.broker.ConsumerOffsetsTopic.GroupMetadataValue snapshot, long nowNs) {
+        var group = groupOf(groupId);
+        group.lock.lock();
+        try {
+            group.members.clear();
+            group.instanceIndex.clear();
+            group.generation = snapshot.generation();
+            for (var m : snapshot.members()) {
+                var member = new MemberState(
+                        m.memberId(),
+                        m.instanceId() == null ? "" : m.instanceId(),
+                        new HashSet<>(m.subscribedTopics()),
+                        m.memberEpoch(),
+                        nowNs,
+                        DEFAULT_SESSION_TIMEOUT_MS * 1_000_000L,
+                        /*rebalanceTimeoutMs*/ 60_000,
+                        m.assignment());
+                group.members.put(member.memberId, member);
+                if (!member.instanceId.isEmpty()) {
+                    group.instanceIndex.put(member.instanceId, member.memberId);
+                }
+            }
+        } finally {
+            group.lock.unlock();
+        }
+    }
+
+    private void fireSnapshot(GroupState group) {
+        try {
+            var snap = snapshotGroup(group.groupId).orElse(null);
+            if (snap != null) snapshotListener.onGroupSnapshot(group.groupId, snap);
+        } catch (Exception ignored) {
+            // Snapshot persistence failures must not break the live RPC
+            // path. The next membership change will retry; the recovery
+            // walk falls back to whatever's already on disk if a window
+            // of writes was lost.
+        }
     }
 }

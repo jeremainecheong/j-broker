@@ -255,6 +255,19 @@ public final class Broker implements AutoCloseable {
         // partitions this broker leads after Raft replay finishes;
         // coordinator-failover-time recovery is P7.8.
         var offsetCache = new OffsetCache();
+        // P7.8 — persist GroupMetadataValue records on every membership
+        // change. Encodes via ConsumerOffsetsTopic.valueForGroupMetadata
+        // and self-produces a Type-2 record into the appropriate
+        // __consumer_offsets partition (key namespaced via 0x02). The
+        // recovery walk re-reads these on broker startup or coordinator
+        // activation; latest-record-per-key wins.
+        groupCoordinator.setSnapshotListener((groupId, snap) -> {
+            try {
+                appendGroupMetadataSnapshot(topicManager, logManager, groupId, snap);
+            } catch (Exception e) {
+                log.debug("group metadata snapshot append failed for {}; will retry on next change", groupId, e);
+            }
+        });
         var consumerHandler = new ConsumerHandler(
                 topicManager,
                 logManager,
@@ -361,7 +374,12 @@ public final class Broker implements AutoCloseable {
                     // change) is P7.8.
                     try {
                         recoverNewlyOwnedOffsetPartitions(
-                                topicManager, logManager, offsetCache, recoveredPartitions, selfIdVal);
+                                topicManager,
+                                logManager,
+                                offsetCache,
+                                groupCoordinator,
+                                recoveredPartitions,
+                                selfIdVal);
                     } catch (Exception e) {
                         log.debug("offset cache recovery failed; will retry next tick", e);
                     }
@@ -511,15 +529,17 @@ public final class Broker implements AutoCloseable {
     }
 
     /**
-     * P7.6 — for each {@code __consumer_offsets} partition this broker
-     * leads, walk the log into the {@link OffsetCache} once. Subsequent
-     * ticks skip recovered partitions; coordinator-failover handling that
-     * re-recovers on leadership change is P7.8.
+     * P7.6 + P7.8 — for each {@code __consumer_offsets} partition this
+     * broker leads, walk the log twice (Type-1 records into the
+     * {@link OffsetCache}, Type-2 records into the
+     * {@link GroupCoordinator}). Subsequent ticks skip recovered
+     * partitions. Both walks are idempotent and can run in either order.
      */
     private static void recoverNewlyOwnedOffsetPartitions(
             jbroker.broker.TopicManager topicManager,
             LogManager logManager,
             OffsetCache offsetCache,
+            GroupCoordinator groupCoordinator,
             java.util.Map<Integer, Boolean> recovered,
             int selfBrokerId)
             throws IOException {
@@ -531,8 +551,48 @@ public final class Broker implements AutoCloseable {
             var ps = topicManager.partitionState(jbroker.broker.ConsumerOffsetsTopic.NAME, p);
             if (ps.isEmpty() || ps.get().leader() != selfBrokerId) continue;
             jbroker.broker.group.OffsetCacheRecovery.rebuild(logManager, p, offsetCache);
+            jbroker.broker.group.GroupMetadataRecovery.rebuild(logManager, p, groupCoordinator, System.nanoTime());
             recovered.put(p, Boolean.TRUE);
         }
+    }
+
+    /**
+     * P7.8 — encode and append a single Type-2 record carrying the
+     * group's latest snapshot into its coordinator partition. The
+     * partition is determined by {@code floorMod(group.hashCode(),
+     * partitionCount)}, matching the {@code FindCoordinator} routing.
+     */
+    private static void appendGroupMetadataSnapshot(
+            jbroker.broker.TopicManager topicManager,
+            LogManager logManager,
+            String groupId,
+            jbroker.broker.ConsumerOffsetsTopic.GroupMetadataValue snapshot)
+            throws IOException {
+        var topicDesc =
+                topicManager.describe(jbroker.broker.ConsumerOffsetsTopic.NAME).orElseThrow();
+        int partition = Math.floorMod(groupId.hashCode(), topicDesc.partitions());
+        byte[] key = jbroker.broker.ConsumerOffsetsTopic.keyForGroupMetadata(groupId);
+        byte[] value = jbroker.broker.ConsumerOffsetsTopic.valueForGroupMetadata(snapshot);
+        var record = new jbroker.storage.Record(0, 0L, key, value);
+        var records = java.util.List.of(record);
+        var log = logManager.logFor(jbroker.broker.ConsumerOffsetsTopic.NAME, partition);
+        var buf = java.nio.ByteBuffer.allocate(jbroker.storage.RecordBatch.estimatedSize(records));
+        long base = log.nextOffset();
+        long now = System.currentTimeMillis();
+        jbroker.storage.RecordBatch.encode(
+                buf,
+                base, /*partitionLeaderEpoch*/
+                0,
+                now,
+                now, /*producerId*/
+                -1L, /*producerEpoch*/
+                (short) -1, /*baseSequence*/
+                -1,
+                records);
+        buf.flip();
+        byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+        log.appendRaw(bytes, base);
     }
 
     /**

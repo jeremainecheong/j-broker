@@ -229,9 +229,20 @@ public final class ConsumerHandler {
                     .build();
         }
 
-        // Steady-state heartbeat
-        var hb = groupCoordinator.heartbeat(
-                req.getGroupId(), req.getMemberId(), req.getMemberEpoch(), java.util.List.of(), nowNs);
+        // Steady-state heartbeat. Flatten the request's owned_partitions
+        // (one TopicPartitions per topic) into a flat list of TopicPartition
+        // pairs so the coordinator can compare it against currentAssignment
+        // for cooperative incremental rebalance ack detection (P7.7).
+        var owned = new java.util.ArrayList<jbroker.proto.common.TopicPartition>();
+        for (var tp : req.getOwnedPartitionsList()) {
+            for (int p : tp.getPartitionsList()) {
+                owned.add(jbroker.proto.common.TopicPartition.newBuilder()
+                        .setTopic(tp.getTopic())
+                        .setPartition(p)
+                        .build());
+            }
+        }
+        var hb = groupCoordinator.heartbeat(req.getGroupId(), req.getMemberId(), req.getMemberEpoch(), owned, nowNs);
         var b = ConsumerGroupHeartbeatResponse.newBuilder()
                 .setMemberId(req.getMemberId())
                 .setMemberEpoch(hb.memberEpoch())

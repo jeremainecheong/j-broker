@@ -90,26 +90,20 @@ class GroupHeartbeatEndToEndIT {
             assertThat(m2.getError()).isEqualTo(ErrorCode.OK);
             assertThat(m3.getError()).isEqualTo(ErrorCode.OK);
 
-            // m1's assignment was bumped by m2's join (and again by m3's),
-            // so re-fetch its current state via a steady-state heartbeat.
-            // Same for m2.
-            var m1Updated = stub.consumerGroupHeartbeat(ConsumerGroupHeartbeatRequest.newBuilder()
-                    .setGroupId("g1")
-                    .setMemberId(m1.getMemberId())
-                    .setMemberEpoch(m1.getMemberEpoch())
-                    .build());
-            var m2Updated = stub.consumerGroupHeartbeat(ConsumerGroupHeartbeatRequest.newBuilder()
-                    .setGroupId("g1")
-                    .setMemberId(m2.getMemberId())
-                    .setMemberEpoch(m2.getMemberEpoch())
-                    .build());
+            // P7.7 — cooperative incremental rebalance changed the
+            // dynamics here. m1 lost partitions but had no additions →
+            // single-stage advance to kept set [0,1]. m2 lost [4,5] AND
+            // gained [2] → stage 1 returns [3] (kept), then after m2 acks
+            // by sending owned_partitions=[3], stage 2 returns [2,3]. m3
+            // got [4,5] immediately at join (brand-new member, no kept set).
+            //
+            // Drive m1 forward — single tick suffices.
+            var m1Final = driveToSettled(stub, "g1", m1.getMemberId(), m1.getMemberEpoch(), m1.getAssignment());
+            // Drive m2 forward — needs the stage-1→stage-2 dance.
+            var m2Final = driveToSettled(stub, "g1", m2.getMemberId(), m2.getMemberEpoch(), m2.getAssignment());
 
-            // m3's epoch already reflects the latest assignment
-            // (no further joins after it), so m3.assignment is current.
-            // For m1/m2, the steady-state response carries the new
-            // assignment + bumped epoch.
-            int m1Partitions = totalPartitionCount(m1Updated.getAssignment());
-            int m2Partitions = totalPartitionCount(m2Updated.getAssignment());
+            int m1Partitions = totalPartitionCount(m1Final);
+            int m2Partitions = totalPartitionCount(m2Final);
             int m3Partitions = totalPartitionCount(m3.getAssignment());
             assertThat(m1Partitions).isEqualTo(2);
             assertThat(m2Partitions).isEqualTo(2);
@@ -117,8 +111,8 @@ class GroupHeartbeatEndToEndIT {
 
             // No partition assigned to two members.
             var allAssigned = new HashSet<Integer>();
-            collectPartitions(m1Updated.getAssignment(), allAssigned);
-            collectPartitions(m2Updated.getAssignment(), allAssigned);
+            collectPartitions(m1Final, allAssigned);
+            collectPartitions(m2Final, allAssigned);
             collectPartitions(m3.getAssignment(), allAssigned);
             assertThat(allAssigned).containsExactlyInAnyOrder(0, 1, 2, 3, 4, 5);
         } finally {
@@ -126,6 +120,37 @@ class GroupHeartbeatEndToEndIT {
             channel.awaitTermination(2, TimeUnit.SECONDS);
             broker.close();
         }
+    }
+
+    /**
+     * P7.7 cooperative-rebalance helper: heartbeat a member through any
+     * staged kept-set → target transition and return its final assignment.
+     * Caller passes the assignment the member already has (from the join
+     * response, or empty for a member that was just created).
+     */
+    private static jbroker.proto.broker.Assignment driveToSettled(
+            ConsumerGrpc.ConsumerBlockingStub stub,
+            String group,
+            String memberId,
+            int startEpoch,
+            jbroker.proto.broker.Assignment startAssignment) {
+        var owned = startAssignment;
+        int epoch = startEpoch;
+        // Two ticks max: stage 1 (advertise kept) → stage 2 (advertise
+        // target after ack). Idempotent past stage 2 — a third tick is a
+        // no-op steady-state heartbeat.
+        for (int i = 0; i < 3; i++) {
+            var hb = stub.consumerGroupHeartbeat(ConsumerGroupHeartbeatRequest.newBuilder()
+                    .setGroupId(group)
+                    .setMemberId(memberId)
+                    .setMemberEpoch(epoch)
+                    .addAllOwnedPartitions(owned.getAssignedPartitionsList())
+                    .build());
+            if (hb.getAssignment().getAssignedPartitionsCount() == 0) return owned; // steady-state, no change
+            owned = hb.getAssignment();
+            epoch = hb.getMemberEpoch();
+        }
+        return owned;
     }
 
     private static ConsumerGroupHeartbeatRequest joinReq(String group, String topic) {

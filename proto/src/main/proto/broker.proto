@@ -41,6 +41,21 @@ service Admin {
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
 }
 
+// Milestone 8 — read-only admin observability surface. All RPCs answer from
+// whichever broker receives the request (metadata is replicated); the
+// admin-app fans out when it needs cluster-wide aggregation. Handlers
+// land in later P8 slices; wires the surface and leaves every RPC
+// returning ErrorCode.UNIMPLEMENTED until its owning slice replaces it.
+service Metadata {
+  rpc DescribeCluster(DescribeClusterRequest) returns (DescribeClusterResponse);
+  rpc DescribeTopicPartitions(DescribeTopicPartitionsRequest)
+      returns (DescribeTopicPartitionsResponse);
+  rpc ListConsumerGroups(ListConsumerGroupsRequest) returns (ListConsumerGroupsResponse);
+  rpc DescribeConsumerGroup(DescribeConsumerGroupRequest)
+      returns (DescribeConsumerGroupResponse);
+  rpc DescribeRaft(DescribeRaftRequest) returns (DescribeRaftResponse);
+}
+
 // Broker-to-broker cluster management RPCs. adds BrokerHeartbeat
 // so each broker advertises its liveness directly to every peer; the
 // active controller () uses the aggregated view to fence
@@ -346,4 +361,130 @@ message OffsetFetchResult {
   int32 leader_epoch = 3;
   string metadata = 4;
   jbroker.common.ErrorCode error = 5;
+}
+
+// ===== Metadata service (Milestone 8) =====
+//
+// Read-only surface consumed by admin-app. Each RPC is answerable from
+// any broker's local metadata replica (aggregation happens client-side
+// when cluster-wide views are needed). wires the surface and every
+// handler returns ErrorCode.UNIMPLEMENTED; later slices fill bodies:
+// DescribeCluster; DescribeTopicPartitions;
+// ListConsumerGroups + DescribeConsumerGroup; DescribeRaft.
+
+message DescribeClusterRequest {}
+
+message DescribeClusterResponse {
+  jbroker.common.ErrorCode error = 1;
+  int32 controller_id = 2;
+  int64 current_term = 3;
+  int64 metadata_offset = 4;
+  repeated BrokerInfo nodes = 5;
+}
+
+message BrokerInfo {
+  int32 broker_id = 1;
+  string host = 2;
+  int32 port = 3;
+  // LEADER | FOLLOWER | CANDIDATE | UNKNOWN (for peers whose role the
+  // responding broker cannot observe directly).
+  string role = 4;
+  bool alive = 5;
+  int64 last_seen_millis = 6;
+}
+
+message DescribeTopicPartitionsRequest {
+  string topic = 1;
+}
+
+message DescribeTopicPartitionsResponse {
+  jbroker.common.ErrorCode error = 1;
+  string topic = 2;
+  int32 partitions = 3;
+  int32 replication_factor = 4;
+  bool internal = 5;
+  bool compact = 6;
+  int64 created_millis = 7;
+  map<string, string> config = 8;
+  repeated PartitionStateInfo partition_states = 9;
+}
+
+message PartitionStateInfo {
+  int32 partition = 1;
+  int32 leader = 2;
+  repeated int32 isr = 3;
+  repeated int32 replicas = 4;
+  int32 leader_epoch = 5;
+  int32 partition_epoch = 6;
+  // -1 sentinel means "ask the partition leader" — the responding broker
+  // does not lead this partition, so it cannot report HWM / LEO locally.
+  int64 high_watermark = 7;
+  int64 log_end_offset = 8;
+}
+
+message ListConsumerGroupsRequest {}
+
+message ListConsumerGroupsResponse {
+  jbroker.common.ErrorCode error = 1;
+  repeated ConsumerGroupSummary groups = 2;
+}
+
+message ConsumerGroupSummary {
+  string group_id = 1;
+  // e.g. "Stable" | "PreparingRebalance" | "Empty" (Milestone 8 emits only
+  // "Stable" | "Empty"; cooperative states are masked until needed).
+  string state = 2;
+  int32 member_count = 3;
+  string assignor = 4;
+  int32 generation = 5;
+  // Partition in __consumer_offsets that owns this group. Useful for
+  // admin-level diagnostics.
+  int32 coordinator_partition = 6;
+}
+
+message DescribeConsumerGroupRequest {
+  string group_id = 1;
+}
+
+message DescribeConsumerGroupResponse {
+  jbroker.common.ErrorCode error = 1;
+  string group_id = 2;
+  int32 generation = 3;
+  string state = 4;
+  string assignor = 5;
+  repeated MemberInfo members = 6;
+  repeated PartitionLag partitions = 7;
+}
+
+message MemberInfo {
+  string member_id = 1;
+  string instance_id = 2;
+  int32 member_epoch = 3;
+  repeated TopicPartitions owned_partitions = 4;
+  repeated string subscribed_topics = 5;
+}
+
+message PartitionLag {
+  jbroker.common.TopicPartition tp = 1;
+  int64 committed_offset = 2;
+  int64 high_watermark = 3;
+  // max(0, high_watermark - committed_offset). Emitted server-side so
+  // the admin-app doesn't have to duplicate the clamp.
+  int64 lag = 4;
+  string owner_member_id = 5;
+}
+
+message DescribeRaftRequest {}
+
+message DescribeRaftResponse {
+  jbroker.common.ErrorCode error = 1;
+  int32 node_id = 2;
+  string role = 3;
+  int64 current_term = 4;
+  int64 commit_index = 5;
+  int64 last_applied = 6;
+  // -1 if not voted.
+  int32 voted_for = 7;
+  int64 last_log_index = 8;
+  int64 last_log_term = 9;
 }

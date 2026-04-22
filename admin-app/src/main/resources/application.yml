@@ -1,0 +1,29 @@
+server:
+  port: 9090
+
+spring:
+  application:
+    name: jbroker-admin
+  threads:
+    virtual:
+      # Milestone 8 targets virtual threads for SseEmitter fan-out (§8.8) and
+      # for every controller's gRPC fan-out across brokers. Spring Boot
+      # 3.2+ honours this flag.
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+jbroker:
+  admin:
+    # Comma-separated list of broker host:port endpoints the admin-app
+    # talks to. Overridable per environment.
+    brokers: localhost:9092
+  redis:
+    # Empty → admin-app uses its in-process ring buffer for the SSE event
+    # stream and does not attempt a Redis connection. Set to e.g.
+    # "redis://localhost:6379" in production.
+    url: ""

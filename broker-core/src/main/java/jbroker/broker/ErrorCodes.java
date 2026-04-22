@@ -27,5 +27,9 @@ public final class ErrorCodes {
     /** client-supplied fetch {@code session_id} was not found in the broker cache. */
     public static final int FETCH_SESSION_ID_NOT_FOUND = 85;
 
+    // Milestone 8 — admin surface placeholders.
+    /** Milestone 8 skeleton placeholder: RPC is wired but the body has not yet been implemented. */
+    public static final int UNIMPLEMENTED = 99;
+
     private ErrorCodes() {}
 }

@@ -12,6 +12,14 @@ import jbroker.proto.broker.ConsumerGroupHeartbeatResponse;
 import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.CreateTopicRequest;
 import jbroker.proto.broker.CreateTopicResponse;
+import jbroker.proto.broker.DescribeClusterRequest;
+import jbroker.proto.broker.DescribeClusterResponse;
+import jbroker.proto.broker.DescribeConsumerGroupRequest;
+import jbroker.proto.broker.DescribeConsumerGroupResponse;
+import jbroker.proto.broker.DescribeRaftRequest;
+import jbroker.proto.broker.DescribeRaftResponse;
+import jbroker.proto.broker.DescribeTopicPartitionsRequest;
+import jbroker.proto.broker.DescribeTopicPartitionsResponse;
 import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.DescribeTopicResponse;
 import jbroker.proto.broker.FetchOffsetsRequest;
@@ -22,10 +30,13 @@ import jbroker.proto.broker.FindCoordinatorRequest;
 import jbroker.proto.broker.FindCoordinatorResponse;
 import jbroker.proto.broker.InitProducerIdRequest;
 import jbroker.proto.broker.InitProducerIdResponse;
+import jbroker.proto.broker.ListConsumerGroupsRequest;
+import jbroker.proto.broker.ListConsumerGroupsResponse;
 import jbroker.proto.broker.ListOffsetsRequest;
 import jbroker.proto.broker.ListOffsetsResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
+import jbroker.proto.broker.MetadataGrpc;
 import jbroker.proto.broker.OffsetsForLeaderEpochRequest;
 import jbroker.proto.broker.OffsetsForLeaderEpochResponse;
 import jbroker.proto.broker.ProduceRequest;
@@ -141,6 +152,43 @@ public final class BrokerGrpcServices {
             @Override
             public void brokerHeartbeat(BrokerHeartbeatRequest req, StreamObserver<BrokerHeartbeatResponse> out) {
                 out.onNext(handler.handle(req));
+                out.onCompleted();
+            }
+        };
+    }
+
+    public static MetadataGrpc.MetadataImplBase metadata(MetadataServiceHandler handler) {
+        return new MetadataGrpc.MetadataImplBase() {
+            @Override
+            public void describeCluster(DescribeClusterRequest req, StreamObserver<DescribeClusterResponse> out) {
+                out.onNext(handler.describeCluster(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void describeTopicPartitions(
+                    DescribeTopicPartitionsRequest req, StreamObserver<DescribeTopicPartitionsResponse> out) {
+                out.onNext(handler.describeTopicPartitions(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void listConsumerGroups(
+                    ListConsumerGroupsRequest req, StreamObserver<ListConsumerGroupsResponse> out) {
+                out.onNext(handler.listConsumerGroups(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void describeConsumerGroup(
+                    DescribeConsumerGroupRequest req, StreamObserver<DescribeConsumerGroupResponse> out) {
+                out.onNext(handler.describeConsumerGroup(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void describeRaft(DescribeRaftRequest req, StreamObserver<DescribeRaftResponse> out) {
+                out.onNext(handler.describeRaft(req));
                 out.onCompleted();
             }
         };

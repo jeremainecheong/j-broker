@@ -75,13 +75,12 @@ class OffsetsForLeaderEpochHandlerTest {
     }
 
     @Test
-    void returnsCurrentLeoWhenEpochIsUnknown(@TempDir Path dir) throws Exception {
-        // Follower asks about an epoch the leader never saw. Kafka's
-        // convention: reply with the UNDEFINED_EPOCH / undefined_epoch
-        // sentinel so follower truncates to -1 (i.e. empty log). We use
-        // endOffset = current LEO as a safer default — follower that
-        // follows along sees max; the follower's own bookkeeping
-        // compares against its own LEO.
+    void returnsUndefinedEpochOffsetWhenCheckpointIsEmpty(@TempDir Path dir) throws Exception {
+        // Follower asks about an epoch but the leader's checkpoint has no
+        // entries at all (pre-P6.4 log, or freshly restored snapshot where
+        // the LeaderEpochListener has not yet assigned). Kafka returns
+        // UNDEFINED_EPOCH_OFFSET = -1, instructing the follower to truncate
+        // its entire log.
         var tm = new TopicManager();
         tm.onTopicCommitted("t", 1, 1, 0L);
         tm.onPartitionChange("t", 0, LEADER, List.of(LEADER), List.of(LEADER), 10, 0);
@@ -93,7 +92,57 @@ class OffsetsForLeaderEpochHandlerTest {
             var resp = handler.handle(request("t", 0, /* unknown */ 99));
 
             assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
-            assertThat(resp.getEndOffset()).isEqualTo(1L);
+            assertThat(resp.getEndOffset()).isEqualTo(OffsetsForLeaderEpochHandler.UNDEFINED_EPOCH_OFFSET);
+        }
+    }
+
+    @Test
+    void returnsUndefinedEpochOffsetWhenRequestedEpochBelowEarliest(@TempDir Path dir) throws Exception {
+        // Follower's last-known epoch is older than anything the leader
+        // remembers — e.g. the leader's earliest retained checkpoint entry
+        // is epoch 3, but the follower asks about epoch 1. Kafka returns
+        // -1 so the follower truncates to 0 and rebuilds.
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 1, 0L);
+        tm.onPartitionChange("t", 0, LEADER, List.of(LEADER), List.of(LEADER), 5, 0);
+
+        try (var lm = lm(dir)) {
+            var cp = lm.leaderEpochCheckpoint("t", 0);
+            cp.assign(3, 0L);
+            cp.assign(5, 100L);
+            lm.logFor("t", 0).append(List.of(new Record(0, 0L, null, new byte[] {1})), 1_000L);
+
+            var handler = new OffsetsForLeaderEpochHandler(lm, tm, LEADER);
+            var resp = handler.handle(request("t", 0, /* below earliest */ 1));
+
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getEndOffset()).isEqualTo(OffsetsForLeaderEpochHandler.UNDEFINED_EPOCH_OFFSET);
+        }
+    }
+
+    @Test
+    void returnsStartOffsetOfSucceedingEpochWhenRequestedEpochIsInGap(@TempDir Path dir) throws Exception {
+        // Leader skipped epochs 3 and 4 (e.g. two fast back-to-back
+        // re-elections before a record was written). Entries: (2,0),(5,500).
+        // Follower asks about epoch 3. Kafka's algorithm: largest recorded
+        // epoch <= 3 is 2, so end-of-epoch-3 = startOffset of the next
+        // recorded epoch = 500. Current-code bug: returns LEO because
+        // exact-match fails.
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 1, 0L);
+        tm.onPartitionChange("t", 0, LEADER, List.of(LEADER), List.of(LEADER), 5, 0);
+
+        try (var lm = lm(dir)) {
+            var cp = lm.leaderEpochCheckpoint("t", 0);
+            cp.assign(2, 0L);
+            cp.assign(5, 500L);
+            lm.logFor("t", 0).append(List.of(new Record(0, 0L, null, new byte[] {1})), 1_000L);
+
+            var handler = new OffsetsForLeaderEpochHandler(lm, tm, LEADER);
+            var resp = handler.handle(request("t", 0, /* in gap */ 3));
+
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getEndOffset()).isEqualTo(500L);
         }
     }
 

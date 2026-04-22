@@ -67,6 +67,13 @@ message ProduceRequest {
   int64 producer_id = 4;
   int32 producer_epoch = 5;
   int32 base_sequence = 6;
+  // Milestone 6.6 durability gate. Kafka semantics:
+  //   0 / 1 (or proto3 default = 0): leader appends locally and returns
+  //     without waiting for followers. Subject to loss on leader failure.
+  //   -1: wait for the HWM to advance past the produced last-offset,
+  //     i.e. every ISR member has replicated the record. Rejected with
+  //     NOT_ENOUGH_REPLICAS if the wait times out.
+  int32 acks = 7;
 }
 
 message ProduceResponse {

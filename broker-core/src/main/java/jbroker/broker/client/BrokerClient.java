@@ -88,8 +88,21 @@ public final class BrokerClient implements AutoCloseable {
 
     // ---- Produce ----
 
-    /** Produce a single record to a specific partition; returns the assigned offset. */
+    /** Produce a single record with leader-only acks (default). */
     public long produce(String topic, int partition, byte[] value) {
+        return produceWithAcks(topic, partition, value, /*acks*/ 1);
+    }
+
+    /**
+     * Produce a single record and block until every ISR member has
+     * replicated it (acks=all). Throws on timeout (the leader rejects
+     * with {@code NOT_ENOUGH_REPLICAS}).
+     */
+    public long produceAcksAll(String topic, int partition, byte[] value) {
+        return produceWithAcks(topic, partition, value, /*acks*/ -1);
+    }
+
+    private long produceWithAcks(String topic, int partition, byte[] value, int acks) {
         var records = List.of(new Record(0, 0L, null, value));
         var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
         long now = System.currentTimeMillis();
@@ -97,7 +110,13 @@ public final class BrokerClient implements AutoCloseable {
         buf.flip();
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
-        var resp = producer.withDeadlineAfter(5, TimeUnit.SECONDS)
+        // acks=all may legitimately block for several seconds while
+        // followers catch up; use a deadline a hair longer than the
+        // broker's internal ACKS_ALL_TIMEOUT_MS (5s) so the server-side
+        // NOT_ENOUGH_REPLICAS error surfaces to the caller rather than
+        // a gRPC DEADLINE_EXCEEDED.
+        long deadlineSeconds = acks == -1 ? 7 : 5;
+        var resp = producer.withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
                 .produce(ProduceRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -107,6 +126,7 @@ public final class BrokerClient implements AutoCloseable {
                         // idempotent-producer dedup.
                         .setProducerId(-1L)
                         .setBaseSequence(-1)
+                        .setAcks(acks)
                         .build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("produce failed: " + resp.getError().getMessage());

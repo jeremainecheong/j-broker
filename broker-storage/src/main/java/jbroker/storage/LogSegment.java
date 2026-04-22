@@ -130,6 +130,51 @@ public final class LogSegment implements AutoCloseable {
     }
 
     /**
+     * Append a pre-encoded batch byte-for-byte. The batch's {@code baseOffset}
+     * must equal this segment's {@link #nextOffset()} — used by the follower
+     * replication path () to preserve the leader's baseSequence,
+     * producerId, producerEpoch, partitionLeaderEpoch, and timestamps.
+     *
+     * <p>Verifies the batch's header matches {@code expectedBaseOffset} and
+     * throws {@link IllegalArgumentException} otherwise.
+     */
+    public synchronized int appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+        if (expectedBaseOffset != nextOffset) {
+            throw new IllegalArgumentException(
+                    "expectedBaseOffset " + expectedBaseOffset + " != segment nextOffset " + nextOffset);
+        }
+        var view = ByteBuffer.wrap(encodedBatch);
+        long batchBaseOffset = view.getLong();
+        if (batchBaseOffset != expectedBaseOffset) {
+            throw new IllegalArgumentException(
+                    "batch baseOffset " + batchBaseOffset + " != expectedBaseOffset " + expectedBaseOffset);
+        }
+        // Peek the header fields we need for the indexes.
+        // Layout: baseOffset(8) batchLength(4) partitionLeaderEpoch(4) magic(1)
+        //         crc(4) attributes(2) lastOffsetDelta(4) firstTimestamp(8) maxTimestamp(8) ...
+        view.position(8 + 4 + 4 + 1 + 4 + 2); // skip to lastOffsetDelta
+        int lastOffsetDelta = view.getInt();
+        view.getLong(); // firstTimestamp (unused here)
+        long maxTs = view.getLong();
+
+        int pos = (int) logChannel.size();
+        var toWrite = ByteBuffer.wrap(encodedBatch);
+        while (toWrite.hasRemaining()) {
+            logChannel.write(toWrite, pos + (encodedBatch.length - toWrite.remaining()));
+        }
+
+        if (bytesSinceLastIndex >= indexIntervalBytes || offsetIndex.size() == 0) {
+            offsetIndex.append(expectedBaseOffset, pos);
+            timeIndex.append(maxTs, expectedBaseOffset);
+            bytesSinceLastIndex = 0;
+        }
+        bytesSinceLastIndex += encodedBatch.length;
+        nextOffset = expectedBaseOffset + lastOffsetDelta + 1;
+        if (maxTs > this.maxTimestamp) this.maxTimestamp = maxTs;
+        return pos;
+    }
+
+    /**
      * Append a single batch. The batch's {@code baseOffset} is expected to be
      * this segment's {@link #nextOffset()}. Returns the position at which the
      * batch was written.
@@ -206,6 +251,62 @@ public final class LogSegment implements AutoCloseable {
         logChannel.force(true);
         offsetIndex.force();
         timeIndex.force();
+    }
+
+    /**
+     * Truncate this segment so the resulting {@link #nextOffset()} equals
+     * {@code targetOffset}. Scans batches and cuts at the first batch whose
+     * {@code baseOffset >= targetOffset}. If no such batch exists, this is
+     * a no-op. If {@code targetOffset <= baseOffset}, the segment is
+     * emptied.
+     */
+    public synchronized void truncateAtOrAbove(long targetOffset) throws IOException {
+        if (targetOffset <= baseOffset) {
+            logChannel.truncate(0);
+            offsetIndex.truncateAll();
+            timeIndex.truncateAll();
+            nextOffset = baseOffset;
+            bytesSinceLastIndex = 0;
+            maxTimestamp = 0L;
+            return;
+        }
+        if (targetOffset >= nextOffset) return;
+        long size = logChannel.size();
+        if (size == 0) return;
+        var buf = ByteBuffer.allocate((int) size);
+        int read = 0;
+        while (read < size) {
+            int n = logChannel.read(buf, read);
+            if (n <= 0) break;
+            read += n;
+        }
+        buf.flip();
+
+        int cutPos = 0;
+        long newNextOffset = baseOffset;
+        long newMaxTs = 0L;
+        while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
+            int startPos = buf.position();
+            RecordBatch.Parsed parsed;
+            try {
+                parsed = RecordBatch.decode(buf);
+            } catch (IllegalArgumentException e) {
+                break;
+            }
+            if (parsed.baseOffset() >= targetOffset) {
+                break;
+            }
+            cutPos = buf.position();
+            newNextOffset = parsed.baseOffset() + parsed.lastOffsetDelta() + 1;
+            if (parsed.maxTimestamp() > newMaxTs) newMaxTs = parsed.maxTimestamp();
+            if (cutPos - startPos <= 0) break; // defensive
+        }
+        logChannel.truncate(cutPos);
+        offsetIndex.truncateAtOrAbove(targetOffset);
+        timeIndex.truncateAtOrAbove(targetOffset);
+        nextOffset = newNextOffset;
+        maxTimestamp = newMaxTs;
+        bytesSinceLastIndex = 0;
     }
 
     @Override

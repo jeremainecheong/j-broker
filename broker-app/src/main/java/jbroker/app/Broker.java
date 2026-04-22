@@ -15,6 +15,7 @@ import jbroker.broker.BrokerGrpcServices;
 import jbroker.broker.FetchHandler;
 import jbroker.broker.InitProducerIdHandler;
 import jbroker.broker.MetadataStateMachine;
+import jbroker.broker.OffsetsForLeaderEpochHandler;
 import jbroker.broker.ProduceHandler;
 import jbroker.broker.ProducerIdRegistry;
 import jbroker.broker.ReplicaFetchHandler;
@@ -101,8 +102,6 @@ public final class Broker implements AutoCloseable {
 
         var topicManager = new TopicManager();
         var producerIdRegistry = new ProducerIdRegistry();
-        var metadataSm = new MetadataStateMachine(topicManager, producerIdRegistry);
-        var waitingSm = new WaitingStateMachine(metadataSm);
 
         // --- LogManager (partition data logs) ---
         var logManager = new LogManager(
@@ -112,6 +111,22 @@ public final class Broker implements AutoCloseable {
                         Long.MAX_VALUE /* no auto-retention in Milestone 5 */,
                         jbroker.storage.LogSegment.DEFAULT_INDEX_INTERVAL_BYTES,
                         TimeUnit.MINUTES.toMillis(5)));
+
+        // : whenever a partition's leader_epoch bumps and self is the
+        // new leader, record (epoch, current_leo) in the partition's
+        // LeaderEpochCheckpoint so OffsetsForLeaderEpoch can answer.
+        int selfId = config.selfId().value();
+        MetadataStateMachine.LeaderEpochListener leaderEpochListener = (topic, partition, epoch, leaderId) -> {
+            if (leaderId != selfId) return;
+            try {
+                var leo = logManager.logFor(topic, partition).nextOffset();
+                logManager.leaderEpochCheckpoint(topic, partition).assign(epoch, leo);
+            } catch (IOException e) {
+                log.warn("failed to record leader-epoch checkpoint for {}-{}", topic, partition, e);
+            }
+        };
+        var metadataSm = new MetadataStateMachine(topicManager, producerIdRegistry, leaderEpochListener);
+        var waitingSm = new WaitingStateMachine(metadataSm);
 
         // --- Raft transport (self-only, empty peer map) ---
         var raftDriver = new RaftDriver(
@@ -125,6 +140,8 @@ public final class Broker implements AutoCloseable {
         var followerTracker = new FollowerStateTracker();
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
+        var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(
+                logManager, topicManager, config.selfId().value());
         AdminHandler.MetadataProposer proposer = (payload, timeoutMs) -> {
             var fut = waitingSm.awaitApply(payload);
             raftDriver.propose(payload);
@@ -136,7 +153,7 @@ public final class Broker implements AutoCloseable {
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch))
-                .addService(BrokerGrpcServices.replicaConsumer(replicaFetch))
+                .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
                 .addService(BrokerGrpcServices.admin(admin))
                 .build()
                 .start();

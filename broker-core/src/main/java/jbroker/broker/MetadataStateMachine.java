@@ -15,16 +15,34 @@ import jbroker.raft.core.StateMachine;
  */
 public final class MetadataStateMachine implements StateMachine {
 
+    /**
+     * Notified whenever a partition's {@code leader_epoch} strictly
+     * increases on this broker. Partition-epoch-only flips (ISR shrink/
+     * expand under the same leader) do NOT fire. Used by the follower
+     * replication path to record {@code LeaderEpochCheckpoint} entries.
+     */
+    @FunctionalInterface
+    public interface LeaderEpochListener {
+        void onLeaderEpochBump(String topic, int partition, int newLeaderEpoch, int leaderBrokerId);
+    }
+
     private final TopicManager topicManager;
     private final ProducerIdRegistry producerIdRegistry;
+    private final LeaderEpochListener leaderEpochListener;
 
     public MetadataStateMachine(TopicManager topicManager) {
-        this(topicManager, new ProducerIdRegistry());
+        this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {});
     }
 
     public MetadataStateMachine(TopicManager topicManager, ProducerIdRegistry producerIdRegistry) {
+        this(topicManager, producerIdRegistry, (t, p, e, l) -> {});
+    }
+
+    public MetadataStateMachine(
+            TopicManager topicManager, ProducerIdRegistry producerIdRegistry, LeaderEpochListener leaderEpochListener) {
         this.topicManager = topicManager;
         this.producerIdRegistry = producerIdRegistry;
+        this.leaderEpochListener = leaderEpochListener;
     }
 
     @Override
@@ -67,6 +85,10 @@ public final class MetadataStateMachine implements StateMachine {
         // Empty replicas list = earlierrecord; default to ISR for
         // backward compatibility (same replica set either way).
         var replicas = p.getReplicasList().isEmpty() ? p.getIsrList() : p.getReplicasList();
+        int priorLeaderEpoch = topicManager
+                .partitionState(p.getTopic(), p.getPartition())
+                .map(PartitionState::leaderEpoch)
+                .orElse(-1);
         topicManager.onPartitionChange(
                 p.getTopic(),
                 p.getPartition(),
@@ -75,6 +97,12 @@ public final class MetadataStateMachine implements StateMachine {
                 replicas,
                 p.getLeaderEpoch(),
                 p.getPartitionEpoch());
+        // Fire only on a real bump — merge may have ignored this record if
+        // its epoch didn't advance, and partition-epoch-only flips under the
+        // same leader_epoch mustn't trigger follower reconciliation.
+        if (p.getLeaderEpoch() > priorLeaderEpoch) {
+            leaderEpochListener.onLeaderEpochBump(p.getTopic(), p.getPartition(), p.getLeaderEpoch(), p.getLeader());
+        }
     }
 
     // Snapshot format versions.

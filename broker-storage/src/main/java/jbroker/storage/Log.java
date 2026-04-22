@@ -67,6 +67,24 @@ public final class Log implements AutoCloseable {
         }
     }
 
+    /**
+     * Append a pre-encoded batch to the end of the log at
+     * {@code expectedBaseOffset} (= {@link #nextOffset()} at call time).
+     * Used by the follower replication path to preserve every byte of the
+     * leader's batch header.
+     */
+    public synchronized long appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+        var active = segments.get(segments.size() - 1);
+        active.appendRaw(encodedBatch, expectedBaseOffset);
+        long assignedLast = active.nextOffset() - 1;
+        if (active.sizeBytes() >= config.segmentBytes()) {
+            var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
+            active.force();
+            segments.add(next);
+        }
+        return assignedLast;
+    }
+
     public synchronized long append(List<Record> records, long nowMillis) throws IOException {
         var active = segments.get(segments.size() - 1);
         long firstTimestamp = nowMillis;
@@ -85,9 +103,29 @@ public final class Log implements AutoCloseable {
         return assignedLast;
     }
 
-    public long nextOffset() {
+    public synchronized long nextOffset() {
         var active = segments.get(segments.size() - 1);
         return active.nextOffset();
+    }
+
+    /**
+     * Truncate the log so its LEO becomes {@code targetOffset}. Used by the
+     * follower reconciliation path (): after {@code OffsetsForLeaderEpoch}
+     * reveals a divergent suffix, the follower drops everything at or after
+     * {@code targetOffset} and re-fetches from there.
+     *
+     * <p>Batch-granular: a mid-batch targetOffset rounds down to the
+     * containing batch's baseOffset (the whole divergent batch is dropped).
+     */
+    public synchronized void truncateTo(long targetOffset) throws IOException {
+        if (targetOffset >= nextOffset()) return;
+        while (segments.size() > 1 && segments.get(segments.size() - 1).baseOffset() >= targetOffset) {
+            var tail = segments.remove(segments.size() - 1);
+            tail.close();
+            tail.delete();
+        }
+        var active = segments.get(segments.size() - 1);
+        active.truncateAtOrAbove(targetOffset);
     }
 
     /**

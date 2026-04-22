@@ -64,7 +64,22 @@ class ReplicaFetchEndToEndIT {
                 // multi-broker ISR story lands in where a real controller
                 // will propose PartitionChangeRecords adding follower broker ids.
                 var fetcher = new ReplicaFetcher(
-                        followerLm, "replicated", 0, /* followerBrokerId */ 1, req -> peer.fetch(req, 5_000L));
+                        followerLm,
+                        "replicated",
+                        0, /* followerBrokerId */
+                        1,
+                        new ReplicaFetcher.Peer() {
+                            @Override
+                            public jbroker.proto.broker.ReplicaFetchResponse fetch(
+                                    jbroker.proto.broker.ReplicaFetchRequest req) {
+                                return peer.fetch(req, 5_000L);
+                            }
+
+                            @Override
+                            public long offsetsForLeaderEpoch(String topic, int partition, int leaderEpoch) {
+                                return peer.offsetsForLeaderEpoch(topic, partition, leaderEpoch, 5_000L);
+                            }
+                        });
 
                 long deadline = System.currentTimeMillis() + 30_000;
                 while (System.currentTimeMillis() < deadline

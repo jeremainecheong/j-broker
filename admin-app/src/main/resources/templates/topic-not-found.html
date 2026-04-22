@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Topic not found')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1>Topic not found</h1>
+      <div class="card">
+        <p>No topic with name <code th:text="${topicName}">?</code> exists in the cluster.</p>
+        <p><a class="btn secondary" href="/topics">← Back to topics</a></p>
+      </div>
+    </main>
+    <footer>j-broker admin — Phase 8</footer>
+  </body>
+</html>

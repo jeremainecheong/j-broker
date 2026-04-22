@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Topic')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1 th:text="|Topic: ${topic.name()}|">Topic</h1>
+      <div class="card">
+        <strong>Partitions:</strong> <span th:text="${topic.partitions()}">-</span> ·
+        <strong>Replication factor:</strong> <span th:text="${topic.replicationFactor()}">-</span> ·
+        <strong>Internal:</strong> <span th:text="${topic.internal() ? 'yes' : 'no'}">-</span> ·
+        <strong>Compact:</strong> <span th:text="${topic.compact() ? 'yes' : 'no'}">-</span>
+        <form method="post" th:action="@{/ui/topics/{name}/delete(name=${topic.name()})}" style="float:right;">
+          <button class="btn danger" type="submit" onclick="return confirm('Delete topic?');">Delete</button>
+        </form>
+      </div>
+
+      <div class="card" th:if="${!topic.config().isEmpty()}">
+        <h2 style="margin-top:0; font-size:1.05rem;">Config</h2>
+        <table>
+          <thead><tr><th>Key</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr th:each="e : ${topic.config()}">
+              <td th:text="${e.key}">-</td>
+              <td th:text="${e.value}">-</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0; font-size:1.05rem;">Partitions</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Leader</th><th>ISR</th><th>Replicas</th><th>Leader epoch</th>
+              <th>High watermark</th><th>Log end offset</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr th:each="p : ${topic.partitionStates()}" th:attr="data-partition=${p.partition()}">
+              <td th:text="${p.partition()}">0</td>
+              <td th:text="${p.leader()}">-</td>
+              <td th:text="${#strings.listJoin(p.isr(), ',')}">-</td>
+              <td th:text="${#strings.listJoin(p.replicas(), ',')}">-</td>
+              <td th:text="${p.leaderEpoch()}">0</td>
+              <td th:text="${p.highWatermark() < 0 ? '—' : p.highWatermark()}">0</td>
+              <td th:text="${p.logEndOffset() < 0 ? '—' : p.logEndOffset()}">0</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><a class="btn secondary" href="/topics">← Back to topics</a></p>
+    </main>
+    <footer>j-broker admin — Phase 8</footer>
+  </body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Topics')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main x-data="{ showCreate: false }">
+      <h1>Topics
+        <button class="btn" style="float:right;" @click="showCreate = true">+ Create topic</button>
+      </h1>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Partitions</th>
+              <th>Replication factor</th>
+              <th>Internal</th>
+              <th>Compact</th>
+              <th>Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr th:each="t : ${topics}" th:attr="data-topic-name=${t.name()}">
+              <td><a th:href="@{/topics/{name}(name=${t.name()})}" th:text="${t.name()}">orders</a></td>
+              <td th:text="${t.partitions()}">-</td>
+              <td th:text="${t.replicationFactor()}">-</td>
+              <td th:text="${t.internal() ? 'yes' : 'no'}">-</td>
+              <td th:text="${t.compact() ? 'yes' : 'no'}">-</td>
+              <td th:text="${t.createdMillis()}">-</td>
+              <td>
+                <a class="btn secondary" th:href="@{/topics/{name}(name=${t.name()})}">details</a>
+              </td>
+            </tr>
+            <tr th:if="${topics.size() == 0}">
+              <td colspan="7" style="color: var(--muted);">No topics yet. Click "+ Create topic" above.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Alpine.js-powered create-topic modal -->
+      <div x-show="showCreate" x-cloak
+           style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:100;">
+        <div class="card" style="width:400px;">
+          <h2 style="margin-top:0; font-size:1.05rem;">Create topic</h2>
+          <form method="post" action="/ui/topics">
+            <label style="display:block; margin-bottom:0.5rem;">
+              Name <input type="text" name="name" required style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:0.5rem;">
+              Partitions <input type="number" name="partitions" value="1" min="1" style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:1rem;">
+              Replication factor <input type="number" name="replicationFactor" value="1" min="1" style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+              <button type="button" class="btn secondary" @click="showCreate = false">Cancel</button>
+              <button type="submit" class="btn">Create</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+    <footer>j-broker admin — Phase 8</footer>
+  </body>
+</html>

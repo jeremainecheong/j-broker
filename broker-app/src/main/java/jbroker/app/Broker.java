@@ -214,8 +214,16 @@ public final class Broker implements AutoCloseable {
             brokerRegistry.onBrokerRegistration(bid, h, pt);
             fetcherManager.onBrokerRegistration(bid, h, pt);
         };
+        // P8.3 — on DeleteTopic, evict LogManager cache + segment files so
+        // topic-recreation with the same name can't pick up stale offsets,
+        // and kick the replica-fetcher reconcile loop so any live fetcher
+        // stops as soon as the metadata record applies.
+        MetadataStateMachine.TopicDeletionListener topicDeletionChain = deletedTopic -> {
+            logManager.deleteTopicDir(deletedTopic);
+            fetcherManager.scheduleReconcile();
+        };
         var metadataSm = new MetadataStateMachine(
-                topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager);
+                topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager, topicDeletionChain);
         var waitingSm = new WaitingStateMachine(metadataSm);
 
         // --- Raft transport (peer map built from static voter set) ---

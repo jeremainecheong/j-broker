@@ -45,11 +45,29 @@ public final class MetadataStateMachine implements StateMachine {
         void onBrokerRegistration(int brokerId, String host, int port);
     }
 
+    /**
+     * P8.3 — fires after a {@code DeleteTopicRecord} applies. Consumers:
+     * <ul>
+     *   <li>{@code ReplicaFetcherManager.scheduleReconcile()} so in-flight
+     *       fetchers on a deleted topic stop promptly rather than waiting
+     *       on the next unrelated listener event.</li>
+     *   <li>{@code LogManager.deleteTopicDir} so segment files + cached
+     *       {@link jbroker.storage.Log} handles do not outlive the topic.
+     *       This closes the data-leak window where a topic recreated with
+     *       the same name would otherwise see old offsets.</li>
+     * </ul>
+     */
+    @FunctionalInterface
+    public interface TopicDeletionListener {
+        void onTopicDeleted(String topic);
+    }
+
     private final TopicManager topicManager;
     private final ProducerIdRegistry producerIdRegistry;
     private final LeaderEpochListener leaderEpochListener;
     private final BrokerRegistrationListener brokerRegistrationListener;
     private final PartitionChangeListener partitionChangeListener;
+    private final TopicDeletionListener topicDeletionListener;
 
     public MetadataStateMachine(TopicManager topicManager) {
         this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt) -> {}, (t, p, s) -> {});
@@ -70,11 +88,28 @@ public final class MetadataStateMachine implements StateMachine {
             LeaderEpochListener leaderEpochListener,
             BrokerRegistrationListener brokerRegistrationListener,
             PartitionChangeListener partitionChangeListener) {
+        this(
+                topicManager,
+                producerIdRegistry,
+                leaderEpochListener,
+                brokerRegistrationListener,
+                partitionChangeListener,
+                t -> {});
+    }
+
+    public MetadataStateMachine(
+            TopicManager topicManager,
+            ProducerIdRegistry producerIdRegistry,
+            LeaderEpochListener leaderEpochListener,
+            BrokerRegistrationListener brokerRegistrationListener,
+            PartitionChangeListener partitionChangeListener,
+            TopicDeletionListener topicDeletionListener) {
         this.topicManager = topicManager;
         this.producerIdRegistry = producerIdRegistry;
         this.leaderEpochListener = leaderEpochListener;
         this.brokerRegistrationListener = brokerRegistrationListener;
         this.partitionChangeListener = partitionChangeListener;
+        this.topicDeletionListener = topicDeletionListener;
     }
 
     @Override
@@ -126,10 +161,15 @@ public final class MetadataStateMachine implements StateMachine {
             var r = record.getBroker();
             brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
         } else if (record.hasDeleteTopic()) {
-            // P8.3 — drop topic + partition catalogue entries. On-disk
-            // segment cleanup is deferred (Phase 9+); the admin DoD only
-            // requires the metadata to disappear cluster-wide.
-            topicManager.onTopicDeleted(record.getDeleteTopic().getTopic());
+            // P8.3 — drop the topic from the metadata catalogue, then let
+            // the broker-level listener evict LogManager cache entries,
+            // delete on-disk segments, and kick the replica-fetcher
+            // reconcile loop so any in-flight fetch against the now-gone
+            // partitions stops promptly rather than waiting on the next
+            // unrelated metadata event.
+            var deletedTopic = record.getDeleteTopic().getTopic();
+            topicManager.onTopicDeleted(deletedTopic);
+            topicDeletionListener.onTopicDeleted(deletedTopic);
         } else if (record.hasUpdateTopicConfig()) {
             var u = record.getUpdateTopicConfig();
             topicManager.onTopicConfigUpdated(u.getTopic(), u.getConfigMap());

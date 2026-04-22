@@ -38,4 +38,16 @@ public interface RaftCore {
      * without round-tripping through the Raft protocol.
      */
     Optional<NodeId> currentLeader();
+
+    /** P8.5 — point-in-time Raft-node state exposed by {@code /api/v1/raft}. */
+    record Observability(
+            long currentTerm, long commitIndex, long lastApplied, long lastLogIndex, long lastLogTerm, int votedFor) {}
+
+    /**
+     * Snapshot of the bookkeeping fields the admin REST layer surfaces.
+     * Called on the driver's pump thread via {@link #step} already, so this
+     * returning a consistent read under concurrent {@code step} calls is a
+     * non-goal — callers accept "most-recent applied state" semantics.
+     */
+    Observability observability();
 }

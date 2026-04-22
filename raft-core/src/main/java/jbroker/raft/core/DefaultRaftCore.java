@@ -186,6 +186,28 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     @Override
+    public Observability observability() {
+        long lastIdx = log.lastIndex();
+        Term lastTerm = Term.ZERO;
+        if (lastIdx > 0) {
+            try {
+                var entries = log.read(lastIdx, 1);
+                if (!entries.isEmpty()) lastTerm = entries.get(0).term();
+            } catch (Exception ignored) {
+                // Observability-only: a missing/truncated last entry falls
+                // back to Term.ZERO rather than throwing up the stack.
+            }
+        }
+        return new Observability(
+                persistentState.currentTerm().value(),
+                commitIndex,
+                lastApplied,
+                lastIdx,
+                lastTerm.value(),
+                persistentState.votedFor().map(NodeId::value).orElse(-1));
+    }
+
+    @Override
     public List<RaftEffect> step(RaftEvent event) {
         var effects = new ArrayList<RaftEffect>();
         switch (event) {

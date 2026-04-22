@@ -41,6 +41,7 @@ public final class FetchHandler {
     }
 
     public FetchResponse handle(FetchRequest req) {
+        long startNs = System.nanoTime();
         var topic = topicManager.describe(req.getTopic());
         if (topic.isEmpty()) {
             return FetchResponse.newBuilder()
@@ -86,8 +87,10 @@ public final class FetchHandler {
                     .setPartition(req.getPartition())
                     .build();
             sessionCache.update(sessionId, tp, req.getOffset(), /*leaderEpoch*/ 0);
+            byte[] bytes = baos.toByteArray();
+            metrics.recordFetch(System.nanoTime() - startNs, bytes.length);
             return FetchResponse.newBuilder()
-                    .setRecords(ByteString.copyFrom(baos.toByteArray()))
+                    .setRecords(ByteString.copyFrom(bytes))
                     .setHighWatermark(hwm)
                     .setSessionId(sessionId)
                     .build();

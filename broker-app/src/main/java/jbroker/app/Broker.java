@@ -242,7 +242,7 @@ public final class Broker implements AutoCloseable {
         var fetch = new FetchHandler(logManager, topicManager, fetchSessionCache, brokerMetrics);
         var followerTracker = new FollowerStateTracker();
         var produce =
-                new ProduceHandler(logManager, topicManager, config.selfId().value(), followerTracker);
+                new ProduceHandler(logManager, topicManager, config.selfId().value(), followerTracker, brokerMetrics);
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(
@@ -324,14 +324,16 @@ public final class Broker implements AutoCloseable {
                 () -> raftDriver.currentTerm().value(),
                 // Phase 8 scope: metadata_offset is a forward-compat field.
                 // WaitingStateMachine doesn't yet expose applied-offset; stub
-                // to 0L for now. P8.5 revisits.
+                // to 0L for now.
                 () -> 0L,
                 System::nanoTime,
                 MetadataServiceHandler.DEFAULT_STALENESS_NANOS,
                 topicManager,
                 logManager,
                 groupCoordinator,
-                offsetCache);
+                offsetCache,
+                raftDriver::observability,
+                brokerMetrics);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))

@@ -82,6 +82,8 @@ public final class Broker implements AutoCloseable {
     private final ScheduledExecutorService isrTicker;
     private final ScheduledExecutorService registrationTicker;
     private final jbroker.broker.BrokerRegistry brokerRegistry;
+    private final jbroker.broker.BrokerLiveness brokerLiveness;
+    private final jbroker.broker.BrokerHeartbeatSender heartbeatSender;
     private final jbroker.broker.replication.ReplicaFetcherManager fetcherManager;
     private final jbroker.broker.replication.DefaultFetcherFactory fetcherFactory;
 
@@ -95,6 +97,8 @@ public final class Broker implements AutoCloseable {
             ScheduledExecutorService isrTicker,
             ScheduledExecutorService registrationTicker,
             jbroker.broker.BrokerRegistry brokerRegistry,
+            jbroker.broker.BrokerLiveness brokerLiveness,
+            jbroker.broker.BrokerHeartbeatSender heartbeatSender,
             jbroker.broker.replication.ReplicaFetcherManager fetcherManager,
             jbroker.broker.replication.DefaultFetcherFactory fetcherFactory) {
         this.topicManager = tm;
@@ -106,6 +110,8 @@ public final class Broker implements AutoCloseable {
         this.isrTicker = isrTicker;
         this.registrationTicker = registrationTicker;
         this.brokerRegistry = brokerRegistry;
+        this.brokerLiveness = brokerLiveness;
+        this.heartbeatSender = heartbeatSender;
         this.fetcherManager = fetcherManager;
         this.fetcherFactory = fetcherFactory;
     }
@@ -195,10 +201,14 @@ public final class Broker implements AutoCloseable {
         var admin = new AdminHandler(topicManager, proposer, config.selfId().value(), brokerRegistry::knownBrokerIds);
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
+        var brokerLiveness = new jbroker.broker.BrokerLiveness();
+        var heartbeatHandler = new jbroker.broker.BrokerHeartbeatHandler(brokerLiveness, System::nanoTime);
+
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
+                .addService(BrokerGrpcServices.cluster(heartbeatHandler))
                 .addService(BrokerGrpcServices.admin(admin))
                 .build()
                 .start();
@@ -298,6 +308,23 @@ public final class Broker implements AutoCloseable {
                 2,
                 TimeUnit.SECONDS);
 
+        // Point-to-point heartbeat sender: every broker periodically
+        // pings every peer (excluding self) with its current metadata
+        // offset. Receivers update their BrokerLiveness maps directly.
+        var heartbeatPeers = new java.util.ArrayList<jbroker.broker.BrokerHeartbeatSender.PeerAddress>();
+        for (var v : config.voters()) {
+            if (v.id().equals(config.selfId())) continue;
+            heartbeatPeers.add(
+                    new jbroker.broker.BrokerHeartbeatSender.PeerAddress(v.id().value(), v.host(), v.brokerPort()));
+        }
+        // metadata-offset is a forward-compat field in the heartbeat RPC;
+        // P6.5.c's fencer only looks at wall-clock, so a placeholder 0 is
+        // fine here. Wire up a real applied-offset supplier if a consumer
+        // needs it.
+        var heartbeatSender = new jbroker.broker.BrokerHeartbeatSender(
+                config.selfId().value(), heartbeatPeers, () -> 0L, /*intervalMs*/ 1_000L);
+        heartbeatSender.start();
+
         return new Broker(
                 topicManager,
                 logManager,
@@ -308,12 +335,18 @@ public final class Broker implements AutoCloseable {
                 isrTicker,
                 registrationTicker,
                 brokerRegistry,
+                brokerLiveness,
+                heartbeatSender,
                 fetcherManager,
                 fetcherFactory);
     }
 
     public jbroker.broker.BrokerRegistry brokerRegistry() {
         return brokerRegistry;
+    }
+
+    public jbroker.broker.BrokerLiveness brokerLiveness() {
+        return brokerLiveness;
     }
 
     public int brokerPort() {
@@ -345,6 +378,9 @@ public final class Broker implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        // Stop heartbeat sender before its peer channels race against
+        // the peer brokers shutting down their gRPC servers.
+        heartbeatSender.close();
         // Stop in-flight fetchers before raftDriver + logManager close so
         // their pollOnce calls can't race against closed resources.
         fetcherManager.close();

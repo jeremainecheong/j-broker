@@ -31,6 +31,29 @@ service Admin {
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
 }
 
+// Broker-to-broker cluster management RPCs. P6.5.b adds BrokerHeartbeat
+// so each broker advertises its liveness directly to every peer; the
+// active controller (P6.5.c) uses the aggregated view to fence
+// unresponsive brokers from partition leadership.
+//
+// Heartbeats deliberately bypass the Raft log: the design spec's
+// BrokerHeartbeatRecord approach was blocked by the "follower propose
+// silently dropped" constraint observed in P6.5.a. Point-to-point RPCs
+// match real KRaft's broker-heartbeat protocol and are the spec's
+// explicit perf-tuning fallback.
+service Cluster {
+  rpc BrokerHeartbeat(BrokerHeartbeatRequest) returns (BrokerHeartbeatResponse);
+}
+
+message BrokerHeartbeatRequest {
+  int32 broker_id = 1;
+  int64 current_metadata_offset = 2;
+}
+
+message BrokerHeartbeatResponse {
+  Error error = 1;
+}
+
 // ===== Produce =====
 
 message ProduceRequest {

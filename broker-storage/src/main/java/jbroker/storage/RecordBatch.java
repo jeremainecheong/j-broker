@@ -7,8 +7,10 @@ import java.util.List;
 import java.util.zip.CRC32C;
 
 /**
- * Kafka v2 record batch, simplified: uncompressed, no transactional fields,
- * no headers. Supports encode (for append) and decode (for fetch / recovery).
+ * Kafka v2 record batch, simplified: uncompressed, no transactional fields.
+ * Supports encode (for append) and decode (for fetch / recovery). Per-record
+ * headers are optional — encoded as a varint count followed by
+ * {@code (keyLen varint, key bytes, valueLen varint, value bytes)} pairs.
  *
  * <p>Wire format (big-endian):
  *
@@ -40,7 +42,9 @@ import java.util.zip.CRC32C;
  *  key              byte[keyLength] (omitted if null)
  *  valueLength      varint (-1 ⇒ null value)
  *  value            byte[valueLength]
- *  numHeaders       varint (always 0 in this impl)
+ *  numHeaders       varint
+ *  headers          numHeaders × (headerKeyLen varint, headerKey bytes,
+ *                                 headerValueLen varint, headerValue bytes)
  * </pre>
  */
 public final class RecordBatch {
@@ -150,7 +154,25 @@ public final class RecordBatch {
             Varints.writeVarint(r.value().length, out);
             out.put(r.value());
         }
-        Varints.writeVarint(0, out); // numHeaders
+        var hdr = r.headers();
+        int pairCount = hdr.length / 2;
+        Varints.writeVarint(pairCount, out);
+        for (int i = 0; i < pairCount; i++) {
+            byte[] hk = hdr[i * 2];
+            byte[] hv = hdr[i * 2 + 1];
+            if (hk == null) {
+                Varints.writeVarint(-1, out);
+            } else {
+                Varints.writeVarint(hk.length, out);
+                out.put(hk);
+            }
+            if (hv == null) {
+                Varints.writeVarint(-1, out);
+            } else {
+                Varints.writeVarint(hv.length, out);
+                out.put(hv);
+            }
+        }
     }
 
     /** Size of the inner-record bytes (everything past the length-prefix varint). */
@@ -168,7 +190,23 @@ public final class RecordBatch {
         } else {
             size += Varints.sizeOfVarint(r.value().length) + r.value().length;
         }
-        size += Varints.sizeOfVarint(0); // headers count
+        var hdr = r.headers();
+        int pairCount = hdr.length / 2;
+        size += Varints.sizeOfVarint(pairCount);
+        for (int i = 0; i < pairCount; i++) {
+            byte[] hk = hdr[i * 2];
+            byte[] hv = hdr[i * 2 + 1];
+            if (hk == null) {
+                size += Varints.sizeOfVarint(-1);
+            } else {
+                size += Varints.sizeOfVarint(hk.length) + hk.length;
+            }
+            if (hv == null) {
+                size += Varints.sizeOfVarint(-1);
+            } else {
+                size += Varints.sizeOfVarint(hv.length) + hv.length;
+            }
+        }
         return size;
     }
 
@@ -252,9 +290,31 @@ public final class RecordBatch {
                 value = new byte[valueLen];
                 in.get(value);
             }
-            Varints.readVarint(in); // headers count (ignored)
+            int headerCount = Varints.readVarint(in);
+            byte[][] headers;
+            if (headerCount <= 0) {
+                headers = Record.NO_HEADERS;
+            } else {
+                headers = new byte[headerCount * 2][];
+                for (int h = 0; h < headerCount; h++) {
+                    int hkLen = Varints.readVarint(in);
+                    byte[] hk = null;
+                    if (hkLen >= 0) {
+                        hk = new byte[hkLen];
+                        in.get(hk);
+                    }
+                    int hvLen = Varints.readVarint(in);
+                    byte[] hv = null;
+                    if (hvLen >= 0) {
+                        hv = new byte[hvLen];
+                        in.get(hv);
+                    }
+                    headers[h * 2] = hk;
+                    headers[h * 2 + 1] = hv;
+                }
+            }
             in.position(recEnd); // skip any unread trailer
-            records.add(new Record(offsetDelta, timestampDelta, key, value));
+            records.add(new Record(offsetDelta, timestampDelta, key, value, headers));
         }
         if (attributes != 0) {
             /* Compression / transactional bits not yet supported; tolerate

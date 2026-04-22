@@ -69,4 +69,38 @@ class RecordBatchTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("magic");
     }
+
+    @Test
+    void roundTripsHeaders() {
+        byte[][] headers = {
+            "X-DLT-Failure-Cause".getBytes(),
+            "RuntimeException: boom".getBytes(),
+            "X-Trace-Id".getBytes(),
+            "abcd-1234".getBytes()
+        };
+        var records = List.of(new Record(0, 0L, null, "payload".getBytes(), headers));
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        RecordBatch.encode(buf, 0L, 0, 0L, 0L, -1L, (short) -1, -1, records);
+        buf.flip();
+
+        var parsed = RecordBatch.decode(buf);
+        assertThat(parsed.records()).hasSize(1);
+        var r = parsed.records().get(0);
+        assertThat(r.value()).containsExactly("payload".getBytes());
+        assertThat(r.headers().length).isEqualTo(4);
+        assertThat(r.headers()[0]).containsExactly("X-DLT-Failure-Cause".getBytes());
+        assertThat(r.headers()[1]).containsExactly("RuntimeException: boom".getBytes());
+        assertThat(r.headers()[2]).containsExactly("X-Trace-Id".getBytes());
+        assertThat(r.headers()[3]).containsExactly("abcd-1234".getBytes());
+    }
+
+    @Test
+    void recordWithoutHeadersDefaultsToEmptyArray() {
+        var records = List.of(new Record(0, 0L, null, new byte[] {7}));
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        RecordBatch.encode(buf, 0L, 0, 0L, 0L, -1L, (short) -1, -1, records);
+        buf.flip();
+        var parsed = RecordBatch.decode(buf);
+        assertThat(parsed.records().get(0).headers().length).isZero();
+    }
 }

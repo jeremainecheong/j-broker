@@ -21,6 +21,7 @@ public final class ConsumerConfig {
     private final int rebalanceTimeoutMs;
     private final int fetchMaxBytes;
     private final Duration pollFetchDeadline;
+    private final DeadLetterPolicy deadLetterPolicy;
 
     private ConsumerConfig(Builder b) {
         this.bootstrapHost = b.bootstrapHost;
@@ -31,6 +32,7 @@ public final class ConsumerConfig {
         this.rebalanceTimeoutMs = b.rebalanceTimeoutMs;
         this.fetchMaxBytes = b.fetchMaxBytes;
         this.pollFetchDeadline = b.pollFetchDeadline;
+        this.deadLetterPolicy = b.deadLetterPolicy;
     }
 
     public String bootstrapHost() {
@@ -65,6 +67,11 @@ public final class ConsumerConfig {
         return pollFetchDeadline;
     }
 
+    /** Dead-letter routing policy, or {@code null} if disabled. */
+    public DeadLetterPolicy deadLetterPolicy() {
+        return deadLetterPolicy;
+    }
+
     public static Builder builder(String groupId, String bootstrapHost, int bootstrapPort) {
         return new Builder(groupId, bootstrapHost, bootstrapPort);
     }
@@ -78,6 +85,7 @@ public final class ConsumerConfig {
         private int rebalanceTimeoutMs = DEFAULT_REBALANCE_TIMEOUT_MS;
         private int fetchMaxBytes = DEFAULT_FETCH_MAX_BYTES;
         private Duration pollFetchDeadline = Duration.ofSeconds(5);
+        private DeadLetterPolicy deadLetterPolicy;
 
         private Builder(String groupId, String bootstrapHost, int bootstrapPort) {
             this.groupId = groupId;
@@ -108,6 +116,15 @@ public final class ConsumerConfig {
 
         public Builder pollFetchDeadline(Duration d) {
             this.pollFetchDeadline = d;
+            return this;
+        }
+
+        /**
+         * Enable dead-letter routing for handler-driven {@code poll} calls.
+         * Pass {@code null} to disable (the default).
+         */
+        public Builder deadLetterPolicy(DeadLetterPolicy p) {
+            this.deadLetterPolicy = p;
             return this;
         }
 

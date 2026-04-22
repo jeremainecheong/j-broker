@@ -283,10 +283,34 @@ public final class Broker implements AutoCloseable {
                 config.selfId().value(),
                 System::nanoTime,
                 System::currentTimeMillis);
-        // P8.1 — Metadata service skeleton. Handler bodies are
-        // UNIMPLEMENTED placeholders replaced in later P8 slices
-        // (DescribeCluster in P8.2, DescribeTopicPartitions in P8.3, etc.).
-        var metadataHandler = new MetadataServiceHandler();
+        // P8.2 — Metadata service: DescribeCluster now wired to live
+        // BrokerRegistry + BrokerLiveness + Raft state. Remaining RPCs
+        // return UNIMPLEMENTED until their owning slice lands.
+        //
+        // RaftCore.currentLeader() tracks the leader only on followers —
+        // the incumbent leader never populates its own leaderId field (it
+        // doesn't receive AppendEntries from itself). So when self is
+        // LEADER, fall back to self; otherwise ask Raft.
+        final int selfBrokerIdForMeta = config.selfId().value();
+        java.util.function.Supplier<java.util.Optional<Integer>> controllerIdSupplier = () -> {
+            if (raftDriver.role() == jbroker.raft.core.Role.LEADER) {
+                return java.util.Optional.of(selfBrokerIdForMeta);
+            }
+            return raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value);
+        };
+        var metadataHandler = new MetadataServiceHandler(
+                selfBrokerIdForMeta,
+                brokerRegistry,
+                brokerLiveness,
+                () -> raftDriver.role().toString(),
+                controllerIdSupplier,
+                () -> raftDriver.currentTerm().value(),
+                // Phase 8 scope: metadata_offset is a forward-compat field.
+                // WaitingStateMachine doesn't yet expose applied-offset; stub
+                // to 0L for now. P8.5 revisits.
+                () -> 0L,
+                System::nanoTime,
+                MetadataServiceHandler.DEFAULT_STALENESS_NANOS);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))

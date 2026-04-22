@@ -8,6 +8,10 @@ plugins {
 dependencies {
     implementation(project(":broker-core"))
     implementation(project(":proto"))
+    // gRPC shaded netty channel builder. Not exported transitively by
+    // broker-core (only raft-transport apis it), so bring it in directly
+    // here so admin-app client code can dial brokers.
+    implementation("io.grpc:grpc-netty-shaded:1.65.1")
 
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-thymeleaf")

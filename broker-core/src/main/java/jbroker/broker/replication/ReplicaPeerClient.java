@@ -3,6 +3,7 @@ package jbroker.broker.replication;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import java.util.concurrent.TimeUnit;
+import jbroker.proto.broker.OffsetsForLeaderEpochRequest;
 import jbroker.proto.broker.ReplicaConsumerGrpc;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
@@ -25,6 +26,25 @@ public final class ReplicaPeerClient implements AutoCloseable {
 
     public ReplicaFetchResponse fetch(ReplicaFetchRequest req, long timeoutMillis) {
         return stub.withDeadlineAfter(timeoutMillis, TimeUnit.MILLISECONDS).replicaFetch(req);
+    }
+
+    /**
+     * Queries the leader's {@code OffsetsForLeaderEpoch} (P6.4). Throws
+     * {@link RuntimeException} on a non-NONE error so the follower's
+     * reconciliation loop surfaces the failure cleanly.
+     */
+    public long offsetsForLeaderEpoch(String topic, int partition, int leaderEpoch, long timeoutMillis) {
+        var resp = stub.withDeadlineAfter(timeoutMillis, TimeUnit.MILLISECONDS)
+                .offsetsForLeaderEpoch(OffsetsForLeaderEpochRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .setLeaderEpoch(leaderEpoch)
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException(
+                    "offsetsForLeaderEpoch failed: " + resp.getError().getMessage());
+        }
+        return resp.getEndOffset();
     }
 
     @Override

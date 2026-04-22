@@ -75,15 +75,64 @@ class ReplicaFetcherTest {
     }
 
     @Test
-    void pollOnFencedEpochLeavesLogUnchanged(@TempDir Path dir) throws Exception {
+    void pollOnFencedEpochReconcilesViaOffsetsForLeaderEpoch(@TempDir Path dir) throws Exception {
         try (var lm = lm(dir)) {
+            // Follower has 5 records under epoch 0 — 3 that the leader
+            // agrees with (0..2) and 2 divergent ones (3..4) it wrote
+            // before a leadership change.
+            var log = lm.logFor("orders", 0);
+            for (int i = 0; i < 5; i++) {
+                log.append(List.of(new jbroker.storage.Record(0, 0L, null, new byte[] {(byte) i})), 1_000L);
+            }
             var peer = new StubPeer();
-            peer.enqueueError(jbroker.broker.ErrorCodes.FENCED_EPOCH, /* current epoch */ 5);
+            // First fetch: FENCED, leader is at epoch 1 now.
+            peer.enqueueError(jbroker.broker.ErrorCodes.FENCED_EPOCH, /* current epoch */ 1);
+            // Follower asks OffsetsForLeaderEpoch(epoch=0) -> leader says
+            // epoch 0 ended at offset 3.
+            peer.enqueueOffsets(3L);
 
             var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
-            assertThat(fetcher.pollOnce(/* my epoch */ 3)).isEqualTo(ReplicaFetcher.PollResult.FENCED);
+            var result = fetcher.pollOnce(/* follower's last epoch */ 0);
 
-            assertThat(lm.logFor("orders", 0).nextOffset()).isZero();
+            assertThat(result).isEqualTo(ReplicaFetcher.PollResult.RECONCILED);
+            // Divergent tail (offsets 3..4) truncated.
+            assertThat(lm.logFor("orders", 0).nextOffset()).isEqualTo(3L);
+        }
+    }
+
+    @Test
+    void pollUsesAppendRawToPreserveLeaderBatchMetadata(@TempDir Path dir) throws Exception {
+        try (var lm = lm(dir)) {
+            var peer = new StubPeer();
+            long leaderTs = 1_700_000_000_000L;
+            long producerId = 99L;
+            short producerEpoch = 7;
+            int baseSeq = 42;
+            int partitionLeaderEpoch = 4;
+            peer.enqueue(
+                    encodedBatchRich(
+                            0L,
+                            List.of(valueOf("a"), valueOf("b")),
+                            leaderTs,
+                            producerId,
+                            producerEpoch,
+                            baseSeq,
+                            partitionLeaderEpoch),
+                    2L,
+                    partitionLeaderEpoch);
+
+            var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
+            fetcher.pollOnce(partitionLeaderEpoch);
+
+            // Read the follower's log back and verify metadata is preserved.
+            var batches = lm.logFor("orders", 0).read(0L, 1024);
+            assertThat(batches).hasSize(1);
+            var parsed = batches.get(0);
+            assertThat(parsed.firstTimestamp()).isEqualTo(leaderTs);
+            assertThat(parsed.producerId()).isEqualTo(producerId);
+            assertThat(parsed.producerEpoch()).isEqualTo(producerEpoch);
+            assertThat(parsed.baseSequence()).isEqualTo(baseSeq);
+            assertThat(parsed.partitionLeaderEpoch()).isEqualTo(partitionLeaderEpoch);
         }
     }
 
@@ -112,6 +161,35 @@ class ReplicaFetcherTest {
         var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
         long now = 1_000L;
         RecordBatch.encode(buf, baseOffset, 0, now, now, -1L, (short) -1, -1, records);
+        buf.flip();
+        byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+        return ByteString.copyFrom(bytes);
+    }
+
+    private static ByteString encodedBatchRich(
+            long baseOffset,
+            List<byte[]> values,
+            long firstTimestamp,
+            long producerId,
+            short producerEpoch,
+            int baseSeq,
+            int partitionLeaderEpoch) {
+        var records = new java.util.ArrayList<Record>();
+        for (int i = 0; i < values.size(); i++) {
+            records.add(new Record(i, 0L, null, values.get(i)));
+        }
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        RecordBatch.encode(
+                buf,
+                baseOffset,
+                partitionLeaderEpoch,
+                firstTimestamp,
+                firstTimestamp,
+                producerId,
+                producerEpoch,
+                baseSeq,
+                records);
         buf.flip();
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
@@ -156,11 +234,24 @@ class ReplicaFetcherTest {
                     .build());
         }
 
+        private final java.util.Deque<Long> offsetResponses = new java.util.ArrayDeque<>();
+
         @Override
         public ReplicaFetchResponse fetch(ReplicaFetchRequest req) {
             var resp = queue.poll();
             if (resp == null) throw new IllegalStateException("no canned response");
             return resp;
+        }
+
+        void enqueueOffsets(long endOffset) {
+            offsetResponses.add(endOffset);
+        }
+
+        @Override
+        public long offsetsForLeaderEpoch(String topic, int partition, int leaderEpoch) {
+            var v = offsetResponses.poll();
+            if (v == null) throw new IllegalStateException("no canned offsetsForLeaderEpoch");
+            return v;
         }
     }
 }

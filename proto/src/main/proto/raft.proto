@@ -90,6 +90,15 @@ message TopicRecord {
   int32 partitions = 2;
   int32 replication_factor = 3;
   int64 created_millis = 4;
+  // Phase 7 — internal topics are hidden from {@code Admin.ListTopics} by
+  // default (filtered by {@link TopicManager#list()}). __consumer_offsets
+  // is the first internal topic; future ones (transactions, group state)
+  // will share the flag.
+  bool internal = 5;
+  // Marker for read-time compaction (latest-record-per-key wins). Real
+  // on-disk compaction is a Phase 9+ concern; in P7 this only flags topics
+  // whose recovery scan should compact in memory.
+  bool compact = 6;
 }
 
 message PartitionRecord {

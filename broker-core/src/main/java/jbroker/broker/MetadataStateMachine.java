@@ -92,14 +92,24 @@ public final class MetadataStateMachine implements StateMachine {
         if (record.hasTopic()) {
             var t = record.getTopic();
             topicManager.onTopicCommitted(
-                    t.getTopic(), t.getPartitions(), t.getReplicationFactor(), t.getCreatedMillis());
+                    t.getTopic(),
+                    t.getPartitions(),
+                    t.getReplicationFactor(),
+                    t.getCreatedMillis(),
+                    t.getInternal(),
+                    t.getCompact());
         } else if (record.hasPartitionChange()) {
             applyPartitionChange(record.getPartitionChange());
         } else if (record.hasCreateTopic()) {
             var ct = record.getCreateTopic();
             var t = ct.getTopic();
             topicManager.onTopicCommitted(
-                    t.getTopic(), t.getPartitions(), t.getReplicationFactor(), t.getCreatedMillis());
+                    t.getTopic(),
+                    t.getPartitions(),
+                    t.getReplicationFactor(),
+                    t.getCreatedMillis(),
+                    t.getInternal(),
+                    t.getCompact());
             for (var p : ct.getPartitionChangesList()) {
                 applyPartitionChange(p);
             }
@@ -152,19 +162,26 @@ public final class MetadataStateMachine implements StateMachine {
     //  v3 (P6.3):     adds replica set alongside ISR.
     //  v4 (P6.3):     splits leader_epoch from partition_epoch.
     //  v5 (P6.7):     appends producer-id counter.
-    private static final byte SNAPSHOT_VERSION = 5;
+    //  v6 (P7.2):     per-topic internal + compact flags.
+    private static final byte SNAPSHOT_VERSION = 6;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
         var dout = new java.io.DataOutputStream(out);
         dout.writeByte(SNAPSHOT_VERSION);
-        var list = topicManager.list();
+        // v6 snapshot includes internal topics (Phase 7's __consumer_offsets);
+        // listAll() returns the full catalogue while list() filters internals.
+        var list = topicManager.listAll();
         dout.writeInt(list.size());
         for (var t : list) {
             dout.writeUTF(t.topic());
             dout.writeInt(t.partitions());
             dout.writeInt(t.replicationFactor());
             dout.writeLong(t.createdMillis());
+            // v6: internal + compact flags. Older readers only see the four
+            // fields above; v6 readers additionally consume two bools.
+            dout.writeBoolean(t.internal());
+            dout.writeBoolean(t.compact());
         }
         var assignments = topicManager.allPartitionAssignments();
         dout.writeInt(assignments.size());
@@ -203,7 +220,20 @@ public final class MetadataStateMachine implements StateMachine {
             var partitions = din.readInt();
             var rf = din.readInt();
             var created = din.readLong();
-            topicManager.onTopicCommitted(topic, partitions, rf, created);
+            boolean internal;
+            boolean compact;
+            if (version >= 6) {
+                internal = din.readBoolean();
+                compact = din.readBoolean();
+            } else {
+                // Pre-P7 snapshots predate the flags. Names beginning with
+                // "__" are still treated as internal so legacy snapshots
+                // restored against new code don't accidentally surface
+                // plumbing topics in Admin.ListTopics.
+                internal = topic.startsWith("__");
+                compact = false;
+            }
+            topicManager.onTopicCommitted(topic, partitions, rf, created, internal, compact);
         }
         if (version >= 2) {
             int m = din.readInt();

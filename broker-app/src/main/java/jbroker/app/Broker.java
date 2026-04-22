@@ -239,6 +239,11 @@ public final class Broker implements AutoCloseable {
                     if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return;
                     for (var v : config.voters()) {
                         int bid = v.id().value();
+                        // Benign race: the registry may be updated between
+                        // this check and the propose, producing one extra
+                        // duplicate record per election. applyBrokerRegistration
+                        // is idempotent (last-writer-wins overwrite to the
+                        // same value) so the duplicate is harmless.
                         if (brokerRegistry.addressFor(bid).isPresent()) continue;
                         try {
                             var record = jbroker.proto.raft.MetadataRecord.newBuilder()

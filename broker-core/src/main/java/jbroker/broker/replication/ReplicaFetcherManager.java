@@ -64,11 +64,6 @@ public final class ReplicaFetcherManager
         this.factory = factory;
     }
 
-    /** Accessor kept for factories that need to reach the local log manager. */
-    public LogManager logManager() {
-        return logManager;
-    }
-
     /**
      * Idempotent: aligns active fetchers to "every partition where self is a
      * follower and the leader's address is known."

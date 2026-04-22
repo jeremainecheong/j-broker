@@ -78,11 +78,14 @@ public final class AdminHandler {
         // Bundle the TopicRecord and per-partition leader assignments into
         // a single CreateTopicRecord so both halves commit in one
         // state-machine transition — no half-initialised topic window.
+        // Clamp TopicRecord.replicationFactor to the actual replicas count
+        // so downstream readers (DescribeTopic, future ISR/fencer checks)
+        // see a self-consistent record rather than rf=3 / replicas=[self].
         var ct = CreateTopicRecord.newBuilder()
                 .setTopic(TopicRecord.newBuilder()
                         .setTopic(req.getTopic())
                         .setPartitions(req.getPartitions())
-                        .setReplicationFactor(req.getReplicationFactor())
+                        .setReplicationFactor(rf)
                         .setCreatedMillis(System.currentTimeMillis())
                         .build());
         for (int p = 0; p < req.getPartitions(); p++) {

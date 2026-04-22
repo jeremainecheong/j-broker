@@ -24,6 +24,8 @@ public final class ErrorCodes {
     public static final int FENCED_MEMBER_EPOCH = 83;
     /** {@code FetchOffsets} for a (group, tp) the group has never committed. */
     public static final int OFFSET_OUT_OF_RANGE = 84;
+    /** P7.11 — client-supplied fetch {@code session_id} was not found in the broker cache. */
+    public static final int FETCH_SESSION_ID_NOT_FOUND = 85;
 
     private ErrorCodes() {}
 }

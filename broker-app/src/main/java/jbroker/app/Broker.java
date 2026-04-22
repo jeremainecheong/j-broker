@@ -337,45 +337,53 @@ public final class Broker implements AutoCloseable {
                 config.consumerOffsetsPartitions());
         registrationTicker.scheduleWithFixedDelay(
                 () -> {
-                    if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return;
-                    for (var v : config.voters()) {
-                        int bid = v.id().value();
-                        // Benign race: the registry may be updated between
-                        // this check and the propose, producing one extra
-                        // duplicate record per election. applyBrokerRegistration
-                        // is idempotent (last-writer-wins overwrite to the
-                        // same value) so the duplicate is harmless.
-                        if (brokerRegistry.addressFor(bid).isPresent()) continue;
+                    // Raft-leader-only work: propose BrokerRegistration
+                    // records and __consumer_offsets CreateTopic. Both are
+                    // Raft proposals and only the Raft leader can make them.
+                    if (raftDriver.role() == jbroker.raft.core.Role.LEADER) {
+                        for (var v : config.voters()) {
+                            int bid = v.id().value();
+                            // Benign race: the registry may be updated between
+                            // this check and the propose, producing one extra
+                            // duplicate record per election. applyBrokerRegistration
+                            // is idempotent (last-writer-wins overwrite to the
+                            // same value) so the duplicate is harmless.
+                            if (brokerRegistry.addressFor(bid).isPresent()) continue;
+                            try {
+                                var record = jbroker.proto.raft.MetadataRecord.newBuilder()
+                                        .setBroker(jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
+                                                .setBrokerId(bid)
+                                                .setHost(v.host())
+                                                .setPort(v.brokerPort())
+                                                .build())
+                                        .build()
+                                        .toByteArray();
+                                raftDriver.propose(record);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            } catch (Exception e) {
+                                log.debug("registration propose for broker {} failed; retrying", bid, e);
+                            }
+                        }
+                        // After every registration tick, give the
+                        // __consumer_offsets creator a chance to land. Idempotent:
+                        // it self-skips when the topic already exists or when
+                        // no peers are known yet.
                         try {
-                            var record = jbroker.proto.raft.MetadataRecord.newBuilder()
-                                    .setBroker(jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
-                                            .setBrokerId(bid)
-                                            .setHost(v.host())
-                                            .setPort(v.brokerPort())
-                                            .build())
-                                    .build()
-                                    .toByteArray();
-                            raftDriver.propose(record);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
+                            consumerOffsetsCreator.ensureCreated();
                         } catch (Exception e) {
-                            log.debug("registration propose for broker {} failed; retrying", bid, e);
+                            log.debug("__consumer_offsets create attempt failed; will retry next tick", e);
                         }
                     }
-                    // After every registration tick, give the
-                    // __consumer_offsets creator a chance to land. Idempotent:
-                    // it self-skips when the topic already exists or when
-                    // no peers are known yet.
-                    try {
-                        consumerOffsetsCreator.ensureCreated();
-                    } catch (Exception e) {
-                        log.debug("__consumer_offsets create attempt failed; will retry next tick", e);
-                    }
-                    // for each __consumer_offsets partition this
-                    // broker leads, walk the log once into the OffsetCache.
-                    // Coordinator-failover-time recovery (post-leadership
-                    // change) is .
+                    // Recovery is NOT gated on Raft leadership: every broker
+                    // must bootstrap its OffsetCache + GroupCoordinator for
+                    // __consumer_offsets partitions IT leads locally. After
+                    // a coord failover (/ ), the new partition
+                    // leader may well be a Raft follower — the recovery walk
+                    // still has to run so a fetchOffsets RPC arriving at the
+                    // new coordinator returns the committed offset instead
+                    // of OFFSET_OUT_OF_RANGE.
                     try {
                         recoverNewlyOwnedOffsetPartitions(
                                 topicManager,
@@ -385,7 +393,7 @@ public final class Broker implements AutoCloseable {
                                 recoveredPartitions,
                                 selfIdVal);
                     } catch (Exception e) {
-                        log.debug("offset cache recovery failed; will retry next tick", e);
+                        log.warn("offset cache recovery failed on broker {}; will retry next tick", selfIdVal, e);
                     }
                 },
                 0,
@@ -560,9 +568,14 @@ public final class Broker implements AutoCloseable {
             if (recovered.containsKey(p)) continue;
             var ps = topicManager.partitionState(jbroker.broker.ConsumerOffsetsTopic.NAME, p);
             if (ps.isEmpty() || ps.get().leader() != selfBrokerId) continue;
-            jbroker.broker.group.OffsetCacheRecovery.rebuild(logManager, p, offsetCache);
+            int offsetsApplied = jbroker.broker.group.OffsetCacheRecovery.rebuild(logManager, p, offsetCache);
             jbroker.broker.group.GroupMetadataRecovery.rebuild(logManager, p, groupCoordinator, System.nanoTime());
             recovered.put(p, Boolean.TRUE);
+            log.info(
+                    "recovered __consumer_offsets-{} on broker {}: {} offset-commit records applied",
+                    p,
+                    selfBrokerId,
+                    offsetsApplied);
         }
     }
 

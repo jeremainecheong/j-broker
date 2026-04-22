@@ -7,7 +7,6 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
-import jbroker.proto.broker.DescribeClusterRequest;
 import jbroker.proto.broker.DescribeConsumerGroupRequest;
 import jbroker.proto.broker.DescribeRaftRequest;
 import jbroker.proto.broker.DescribeTopicPartitionsRequest;
@@ -19,9 +18,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * P8.1 wire-up IT — the Phase 8 {@code Metadata} gRPC surface is reachable on
- * the broker. Every RPC returns {@link ErrorCode#UNIMPLEMENTED} for now;
- * later Phase 8 slices replace the body and add scenario-specific tests.
+ * P8.1/P8.2 wire-up IT — the Phase 8 {@code Metadata} gRPC surface is
+ * reachable on the broker. {@code DescribeCluster} is implemented as of
+ * P8.2 (tested in {@link DescribeClusterIT}); every other RPC continues
+ * to return {@link ErrorCode#UNIMPLEMENTED} until its owning slice lands.
  */
 class MetadataServiceWireUpIT {
 
@@ -34,7 +34,7 @@ class MetadataServiceWireUpIT {
     }
 
     @Test
-    void everyMetadataRpcIsReachableAndReturnsUnimplemented(@TempDir Path dir) throws Exception {
+    void unimplementedRpcsReturnUnimplementedUntilOwnerSliceLands(@TempDir Path dir) throws Exception {
         int brokerPort = freePort();
         int raftPort = freePort();
         var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
@@ -43,9 +43,6 @@ class MetadataServiceWireUpIT {
                 .build();
         try {
             var stub = MetadataGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-            assertThat(stub.describeCluster(DescribeClusterRequest.newBuilder().build())
-                            .getError())
-                    .isEqualTo(ErrorCode.UNIMPLEMENTED);
             assertThat(stub.describeTopicPartitions(DescribeTopicPartitionsRequest.newBuilder()
                                     .setTopic("orders")
                                     .build())

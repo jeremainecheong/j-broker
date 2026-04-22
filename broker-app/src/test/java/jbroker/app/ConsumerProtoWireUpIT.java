@@ -8,7 +8,6 @@ import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import jbroker.proto.broker.CommitOffsetsRequest;
-import jbroker.proto.broker.ConsumerGroupHeartbeatRequest;
 import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.FetchOffsetsRequest;
 import jbroker.proto.broker.FindCoordinatorRequest;
@@ -52,14 +51,18 @@ class ConsumerProtoWireUpIT {
         try {
             var stub = ConsumerGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
 
+            // Without waiting for __consumer_offsets / broker registration to
+            // land, FindCoordinator legitimately returns CNA. The IT
+            // intentionally hits the broker before either has applied to
+            // exercise the placeholder path that's still in place for
+            // CommitOffsets / FetchOffsets after P7.5.
             var find = stub.findCoordinator(
                     FindCoordinatorRequest.newBuilder().setKey("g1").build());
             assertThat(find.getError()).isEqualTo(ErrorCode.COORDINATOR_NOT_AVAILABLE);
 
-            var hb = stub.consumerGroupHeartbeat(
-                    ConsumerGroupHeartbeatRequest.newBuilder().setGroupId("g1").build());
-            assertThat(hb.getError()).isEqualTo(ErrorCode.COORDINATOR_NOT_AVAILABLE);
-
+            // CommitOffsets handler still returns the per-tp
+            // COORDINATOR_NOT_AVAILABLE placeholder until P7.6 plugs in
+            // the offset persistence path.
             var commit = stub.commitOffsets(CommitOffsetsRequest.newBuilder()
                     .setGroupId("g1")
                     .addCommits(OffsetCommit.newBuilder()
@@ -72,6 +75,8 @@ class ConsumerProtoWireUpIT {
                     .build());
             assertThat(commit.getResults(0).getError()).isEqualTo(ErrorCode.COORDINATOR_NOT_AVAILABLE);
 
+            // FetchOffsets handler still returns the per-tp
+            // OFFSET_OUT_OF_RANGE placeholder until P7.6.
             var fetchOff = stub.fetchOffsets(FetchOffsetsRequest.newBuilder()
                     .setGroupId("g1")
                     .addTps(TopicPartition.newBuilder()
@@ -81,6 +86,12 @@ class ConsumerProtoWireUpIT {
                     .build());
             assertThat(fetchOff.getResults(0).getError()).isEqualTo(ErrorCode.OFFSET_OUT_OF_RANGE);
             assertThat(fetchOff.getResults(0).getOffset()).isEqualTo(-1L);
+
+            // Note: ConsumerGroupHeartbeat moved off the placeholder path in
+            // P7.5 — it now hits GroupCoordinator and joins members
+            // successfully. GroupHeartbeatEndToEndIT covers the post-P7.5
+            // semantics; this IT keeps assertions only on RPCs whose
+            // placeholders are still in place.
         } finally {
             channel.shutdown();
             channel.awaitTermination(2, TimeUnit.SECONDS);

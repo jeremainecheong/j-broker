@@ -3,6 +3,7 @@ package jbroker.broker.replication;
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
 import jbroker.broker.BrokerRegistry;
+import jbroker.broker.MetadataStateMachine;
 import jbroker.broker.PartitionState;
 import jbroker.broker.TopicManager;
 import jbroker.storage.LogManager;
@@ -22,7 +23,10 @@ import org.slf4j.LoggerFactory;
  * can substitute lightweight stubs for the real {@link ReplicaPeerClient} +
  * {@link ReplicaFetcher} + scheduled pump.
  */
-public final class ReplicaFetcherManager implements AutoCloseable {
+public final class ReplicaFetcherManager
+        implements AutoCloseable,
+                MetadataStateMachine.PartitionChangeListener,
+                MetadataStateMachine.BrokerRegistrationListener {
 
     private static final Logger log = LoggerFactory.getLogger(ReplicaFetcherManager.class);
 
@@ -100,6 +104,16 @@ public final class ReplicaFetcherManager implements AutoCloseable {
 
     private boolean shouldFollow(PartitionState state) {
         return state.leader() != selfId && state.replicas().contains(selfId);
+    }
+
+    @Override
+    public void onPartitionChange(String topic, int partition, PartitionState state) {
+        reconcile();
+    }
+
+    @Override
+    public void onBrokerRegistration(int brokerId, String host, int port) {
+        reconcile();
     }
 
     @Override

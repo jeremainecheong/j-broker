@@ -132,6 +132,34 @@ class ReplicaFetcherManagerTest {
     }
 
     @Test
+    void listenerCallbacksTriggerReconcile(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        var reg = new BrokerRegistry();
+        try (var lmgr = lm(dir)) {
+            var handles = new ConcurrentHashMap<String, FakeFetcher>();
+            var mgr = new ReplicaFetcherManager(2, tm, reg, lmgr, capturingFactory(handles));
+
+            // Initial state: no partitions known, no fetchers.
+            mgr.reconcile();
+            assertThat(handles).isEmpty();
+
+            // Simulate the state machine firing PartitionChangeListener
+            // after an applied CreateTopicRecord.
+            tm.onPartitionChange("orders", 0, 1, List.of(1, 2, 3), List.of(1, 2, 3), 5, 0);
+            mgr.onPartitionChange("orders", 0, tm.partitionState("orders", 0).orElseThrow());
+            // Leader address not yet registered, so fetcher is still deferred.
+            assertThat(handles).isEmpty();
+
+            // Now simulate the registration arriving. The listener should
+            // trigger a reconcile that spawns the fetcher.
+            reg.onBrokerRegistration(1, "h1", 9001);
+            mgr.onBrokerRegistration(1, "h1", 9001);
+            assertThat(handles).containsKey("orders-0");
+        }
+    }
+
+    @Test
     void reconcileDoesNotSpawnWhenSelfIsLeader(@TempDir Path dir) throws Exception {
         var tm = new TopicManager();
         tm.onTopicCommitted("orders", 1, 3, 0L);

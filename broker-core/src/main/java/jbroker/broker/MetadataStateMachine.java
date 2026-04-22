@@ -26,23 +26,55 @@ public final class MetadataStateMachine implements StateMachine {
         void onLeaderEpochBump(String topic, int partition, int newLeaderEpoch, int leaderBrokerId);
     }
 
+    /**
+     * Fires after every applied {@code PartitionChangeRecord}, passing the
+     * post-merge partition state. Note: "applied" means "the apply call
+     * ran"; {@link TopicManager}'s accept-if-newer merge may keep the
+     * existing state if the record is older, in which case the listener
+     * still fires with the unchanged state. Consumers (e.g. {@code
+     * ReplicaFetcherManager}) must be idempotent under re-firing.
+     */
+    @FunctionalInterface
+    public interface PartitionChangeListener {
+        void onPartitionChange(String topic, int partition, PartitionState state);
+    }
+
+    /** Fires after every applied {@code BrokerRegistrationRecord}. */
+    @FunctionalInterface
+    public interface BrokerRegistrationListener {
+        void onBrokerRegistration(int brokerId, String host, int port);
+    }
+
     private final TopicManager topicManager;
     private final ProducerIdRegistry producerIdRegistry;
     private final LeaderEpochListener leaderEpochListener;
+    private final BrokerRegistrationListener brokerRegistrationListener;
+    private final PartitionChangeListener partitionChangeListener;
 
     public MetadataStateMachine(TopicManager topicManager) {
-        this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {});
+        this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(TopicManager topicManager, ProducerIdRegistry producerIdRegistry) {
-        this(topicManager, producerIdRegistry, (t, p, e, l) -> {});
+        this(topicManager, producerIdRegistry, (t, p, e, l) -> {}, (b, h, pt) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(
             TopicManager topicManager, ProducerIdRegistry producerIdRegistry, LeaderEpochListener leaderEpochListener) {
+        this(topicManager, producerIdRegistry, leaderEpochListener, (b, h, pt) -> {}, (t, p, s) -> {});
+    }
+
+    public MetadataStateMachine(
+            TopicManager topicManager,
+            ProducerIdRegistry producerIdRegistry,
+            LeaderEpochListener leaderEpochListener,
+            BrokerRegistrationListener brokerRegistrationListener,
+            PartitionChangeListener partitionChangeListener) {
         this.topicManager = topicManager;
         this.producerIdRegistry = producerIdRegistry;
         this.leaderEpochListener = leaderEpochListener;
+        this.brokerRegistrationListener = brokerRegistrationListener;
+        this.partitionChangeListener = partitionChangeListener;
     }
 
     @Override
@@ -76,9 +108,13 @@ public final class MetadataStateMachine implements StateMachine {
             // idempotent under replay — a duplicate or out-of-order apply
             // cannot regress the counter.
             producerIdRegistry.applyAssignment(record.getProducerIdAssignment().getNextProducerId());
+        } else if (record.hasBroker()) {
+            // P6.5.a: broker-gRPC address discovery. The listener is where
+            // BrokerRegistry + ReplicaFetcherManager plug in.
+            var r = record.getBroker();
+            brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
         }
-        // PartitionRecord / BrokerRegistrationRecord: not yet dispatched;
-        // Phase 6 later steps will consume them.
+        // PartitionRecord: not yet dispatched — unused by any consumer.
     }
 
     private void applyPartitionChange(jbroker.proto.raft.PartitionChangeRecord p) {
@@ -103,6 +139,11 @@ public final class MetadataStateMachine implements StateMachine {
         if (p.getLeaderEpoch() > priorLeaderEpoch) {
             leaderEpochListener.onLeaderEpochBump(p.getTopic(), p.getPartition(), p.getLeaderEpoch(), p.getLeader());
         }
+        // Partition-change listener fires unconditionally with the
+        // post-merge state. Consumers reconcile idempotently on every fire.
+        topicManager
+                .partitionState(p.getTopic(), p.getPartition())
+                .ifPresent(s -> partitionChangeListener.onPartitionChange(p.getTopic(), p.getPartition(), s));
     }
 
     // Snapshot format versions.

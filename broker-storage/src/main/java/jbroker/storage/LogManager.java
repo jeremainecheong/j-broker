@@ -29,6 +29,7 @@ public final class LogManager implements AutoCloseable {
     private final Path rootDir;
     private final Config config;
     private final ConcurrentHashMap<String, Log> logs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, LeaderEpochCheckpoint> epochCheckpoints = new ConcurrentHashMap<>();
     private final ScheduledExecutorService cleaner;
 
     public LogManager(Path rootDir, Config config) throws IOException {
@@ -60,6 +61,27 @@ public final class LogManager implements AutoCloseable {
             var log = Log.open(dir, logConfig);
             logs.put(key, log);
             return log;
+        }
+    }
+
+    /**
+     * Per-partition {@link LeaderEpochCheckpoint}. Lazily opened alongside
+     * the partition directory; reused across calls. Used by the P6.4
+     * follower reconciliation path via {@code OffsetsForLeaderEpoch}.
+     */
+    public LeaderEpochCheckpoint leaderEpochCheckpoint(String topic, int partition) throws IOException {
+        String key = topic + "-" + partition;
+        var existing = epochCheckpoints.get(key);
+        if (existing != null) return existing;
+        synchronized (epochCheckpoints) {
+            existing = epochCheckpoints.get(key);
+            if (existing != null) return existing;
+            // Ensure the partition directory exists even if no log is open yet.
+            var dir = rootDir.resolve(key);
+            Files.createDirectories(dir);
+            var cp = LeaderEpochCheckpoint.open(dir.resolve("leader-epoch-checkpoint"));
+            epochCheckpoints.put(key, cp);
+            return cp;
         }
     }
 

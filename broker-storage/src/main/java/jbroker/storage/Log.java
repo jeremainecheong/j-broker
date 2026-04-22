@@ -103,7 +103,7 @@ public final class Log implements AutoCloseable {
         return assignedLast;
     }
 
-    public long nextOffset() {
+    public synchronized long nextOffset() {
         var active = segments.get(segments.size() - 1);
         return active.nextOffset();
     }

@@ -34,9 +34,9 @@ class MultiBrokerStartupIT {
         int r1 = freePort(), r2 = freePort(), r3 = freePort();
         int b1 = freePort(), b2 = freePort(), b3 = freePort();
         var voters = List.of(
-                new VoterAddress(new NodeId(1), "127.0.0.1", r1),
-                new VoterAddress(new NodeId(2), "127.0.0.1", r2),
-                new VoterAddress(new NodeId(3), "127.0.0.1", r3));
+                new VoterAddress(new NodeId(1), "127.0.0.1", r1, b1),
+                new VoterAddress(new NodeId(2), "127.0.0.1", r2, b2),
+                new VoterAddress(new NodeId(3), "127.0.0.1", r3, b3));
 
         try (var br1 = Broker.start(new Broker.Config(new NodeId(1), dir1, r1, b1, voters));
                 var br2 = Broker.start(new Broker.Config(new NodeId(2), dir2, r2, b2, voters));
@@ -52,6 +52,18 @@ class MultiBrokerStartupIT {
                 Thread.sleep(50);
             }
             assertThat(leaders).isEqualTo(1);
+
+            long regDeadline = System.currentTimeMillis() + 10_000;
+            while (System.currentTimeMillis() < regDeadline) {
+                boolean allKnowAll = br1.brokerRegistry().knownBrokerIds().containsAll(List.of(1, 2, 3))
+                        && br2.brokerRegistry().knownBrokerIds().containsAll(List.of(1, 2, 3))
+                        && br3.brokerRegistry().knownBrokerIds().containsAll(List.of(1, 2, 3));
+                if (allKnowAll) break;
+                Thread.sleep(50);
+            }
+            assertThat(br1.brokerRegistry().addressFor(2)).isPresent();
+            assertThat(br2.brokerRegistry().addressFor(3)).isPresent();
+            assertThat(br3.brokerRegistry().addressFor(1)).isPresent();
         }
     }
 }

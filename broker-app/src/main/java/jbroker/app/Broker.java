@@ -64,7 +64,12 @@ public final class Broker implements AutoCloseable {
          * single-broker callers keep working unchanged.
          */
         public Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {
-            this(selfId, dataDir, raftPort, brokerPort, List.of(new VoterAddress(selfId, "127.0.0.1", raftPort)));
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    List.of(new VoterAddress(selfId, "127.0.0.1", raftPort, brokerPort)));
         }
     }
 
@@ -75,6 +80,8 @@ public final class Broker implements AutoCloseable {
     private final Server brokerServer;
     private final int brokerPort;
     private final ScheduledExecutorService isrTicker;
+    private final ScheduledExecutorService registrationTicker;
+    private final jbroker.broker.BrokerRegistry brokerRegistry;
 
     private Broker(
             TopicManager tm,
@@ -83,7 +90,9 @@ public final class Broker implements AutoCloseable {
             RaftDriver raftDriver,
             Server brokerServer,
             int brokerPort,
-            ScheduledExecutorService isrTicker) {
+            ScheduledExecutorService isrTicker,
+            ScheduledExecutorService registrationTicker,
+            jbroker.broker.BrokerRegistry brokerRegistry) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
@@ -91,6 +100,8 @@ public final class Broker implements AutoCloseable {
         this.brokerServer = brokerServer;
         this.brokerPort = brokerPort;
         this.isrTicker = isrTicker;
+        this.registrationTicker = registrationTicker;
+        this.brokerRegistry = brokerRegistry;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -138,14 +149,21 @@ public final class Broker implements AutoCloseable {
                 log.warn("failed to record leader-epoch checkpoint for {}-{}", topic, partition, e);
             }
         };
-        var metadataSm = new MetadataStateMachine(topicManager, producerIdRegistry, leaderEpochListener);
+        var brokerRegistry = new jbroker.broker.BrokerRegistry();
+        var metadataSm = new MetadataStateMachine(
+                topicManager,
+                producerIdRegistry,
+                leaderEpochListener,
+                brokerRegistry,
+                // PartitionChangeListener is wired once ReplicaFetcherManager lands.
+                (t, p, s) -> {});
         var waitingSm = new WaitingStateMachine(metadataSm);
 
         // --- Raft transport (peer map built from static voter set) ---
         var peerMap = new java.util.HashMap<NodeId, RaftPeerClient>();
         for (var v : config.voters()) {
             if (v.id().equals(config.selfId())) continue;
-            peerMap.put(v.id(), new RaftPeerClient(v.id(), v.raftHost(), v.raftPort()));
+            peerMap.put(v.id(), new RaftPeerClient(v.id(), v.host(), v.raftPort()));
         }
         var raftDriver = new RaftDriver(
                 config.selfId(), core, waitingSm, Map.copyOf(peerMap), TimeUnit.MILLISECONDS.toNanos(30));
@@ -190,6 +208,51 @@ public final class Broker implements AutoCloseable {
             }
         }
 
+        // Whoever is the Raft leader is responsible for proposing
+        // BrokerRegistrationRecords for every voter that isn't already in
+        // the registry. This avoids the "follower proposes get silently
+        // dropped" trap: non-leader proposes can't commit, so self-
+        // registration from a non-leader would never land.
+        //
+        // The leader uses the static voter config to synthesise each
+        // broker's address; follower brokers can't contribute data here,
+        // but the address they bound at freePort()-time must match the
+        // port they advertised back to us in their voter entry — tests
+        // construct voters with bound ports to guarantee this.
+        final int selfIdVal = config.selfId().value();
+        var registrationTicker = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "broker-registration-" + selfIdVal);
+            t.setDaemon(true);
+            return t;
+        });
+        registrationTicker.scheduleWithFixedDelay(
+                () -> {
+                    if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return;
+                    for (var v : config.voters()) {
+                        int bid = v.id().value();
+                        if (brokerRegistry.addressFor(bid).isPresent()) continue;
+                        try {
+                            var record = jbroker.proto.raft.MetadataRecord.newBuilder()
+                                    .setBroker(jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
+                                            .setBrokerId(bid)
+                                            .setHost(v.host())
+                                            .setPort(v.brokerPort())
+                                            .build())
+                                    .build()
+                                    .toByteArray();
+                            raftDriver.propose(record);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        } catch (Exception e) {
+                            log.debug("registration propose for broker {} failed; retrying", bid, e);
+                        }
+                    }
+                },
+                0,
+                1,
+                TimeUnit.SECONDS);
+
         // ISR housekeeping ticker: every 2s, ask IsrManager for any
         // (leader, ISR) flips and propose them through Raft. 10s lag
         // timeout matches Kafka's default replica.lag.time.max.ms.
@@ -221,7 +284,20 @@ public final class Broker implements AutoCloseable {
                 2,
                 TimeUnit.SECONDS);
 
-        return new Broker(topicManager, logManager, waitingSm, raftDriver, server, server.getPort(), isrTicker);
+        return new Broker(
+                topicManager,
+                logManager,
+                waitingSm,
+                raftDriver,
+                server,
+                server.getPort(),
+                isrTicker,
+                registrationTicker,
+                brokerRegistry);
+    }
+
+    public jbroker.broker.BrokerRegistry brokerRegistry() {
+        return brokerRegistry;
     }
 
     public int brokerPort() {
@@ -238,11 +314,13 @@ public final class Broker implements AutoCloseable {
 
     @Override
     public void close() {
-        // Shut the ticker down first and wait briefly so an in-flight
+        // Shut the tickers down first and wait briefly so an in-flight
         // propose()/fut.get() chain can't race against raftDriver.close().
         isrTicker.shutdownNow();
+        registrationTicker.shutdownNow();
         try {
             isrTicker.awaitTermination(1, TimeUnit.SECONDS);
+            registrationTicker.awaitTermination(1, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

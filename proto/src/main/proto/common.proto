@@ -9,6 +9,12 @@ enum ErrorCode {
   UNSUPPORTED_VERSION = 50;
   STALE_LEADER_EPOCH = 70;
   FENCED_LEADER_EPOCH = 71;
+  // Milestone 7 — consumer groups
+  COORDINATOR_NOT_AVAILABLE = 80;
+  NOT_COORDINATOR = 81;
+  UNKNOWN_MEMBER_ID = 82;
+  FENCED_MEMBER_EPOCH = 83;
+  OFFSET_OUT_OF_RANGE = 84;
 }
 
 message BrokerEndpoint {
@@ -16,4 +22,11 @@ message BrokerEndpoint {
   string host = 2;
   int32 port = 3;
   string directory_id = 4;
+}
+
+// Identifier for a single partition of a topic. Milestone 7 surfaces this on
+// consumer-group RPCs (offset commit/fetch, assignment).
+message TopicPartition {
+  string topic = 1;
+  int32 partition = 2;
 }

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Metrics')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1>Metrics</h1>
+
+      <div class="card">
+        <h2 style="margin-top:0; font-size:1.05rem;">Throughput</h2>
+        <canvas id="throughputChart" width="800" height="240" data-testid="throughput-chart"></canvas>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0; font-size:1.05rem;">Latency (p99, microseconds)</h2>
+        <canvas id="latencyChart" width="800" height="240" data-testid="latency-chart"></canvas>
+      </div>
+
+      <script src="https://unpkg.com/[email protected]/dist/chart.umd.min.js"></script>
+      <script th:inline="javascript">
+        /*<![CDATA[*/
+        // Rolling 30-sample in-page ring; each tick we poll the admin REST
+        // endpoints and push the latest (produceBytesPerSec, fetchBytesPerSec)
+        // onto each chart. Labels are relative seconds since page load.
+        const MAX_POINTS = 30;
+        const startMillis = Date.now();
+
+        const tput = new Chart(document.getElementById('throughputChart'), {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [
+              { label: 'produce B/s', data: [], borderColor: '#0a66c2', tension: 0.2, fill: false },
+              { label: 'fetch B/s', data: [], borderColor: '#2f9e44', tension: 0.2, fill: false }
+            ]
+          },
+          options: { animation: false, scales: { y: { beginAtZero: true } } }
+        });
+
+        const lat = new Chart(document.getElementById('latencyChart'), {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [
+              { label: 'produce p99 µs', data: [], borderColor: '#0a66c2', tension: 0.2, fill: false },
+              { label: 'fetch p99 µs', data: [], borderColor: '#2f9e44', tension: 0.2, fill: false }
+            ]
+          },
+          options: { animation: false, scales: { y: { beginAtZero: true } } }
+        });
+
+        async function refresh() {
+          try {
+            const [tRes, lRes] = await Promise.all([
+              fetch('/api/v1/metrics/throughput').then(r => r.json()),
+              fetch('/api/v1/metrics/latency').then(r => r.json())
+            ]);
+            const label = Math.round((Date.now() - startMillis) / 1000) + 's';
+            pushPoint(tput, label, [tRes.produceBytesPerSec || 0, tRes.fetchBytesPerSec || 0]);
+            pushPoint(lat, label,
+              [(lRes.produce?.p99Nanos || 0) / 1000, (lRes.fetch?.p99Nanos || 0) / 1000]);
+          } catch (e) {
+            // Network glitch during a chart refresh — skip; Chart.js will
+            // catch up on the next tick.
+          }
+        }
+
+        function pushPoint(chart, label, values) {
+          chart.data.labels.push(label);
+          values.forEach((v, i) => chart.data.datasets[i].data.push(v));
+          if (chart.data.labels.length > MAX_POINTS) {
+            chart.data.labels.shift();
+            chart.data.datasets.forEach(d => d.data.shift());
+          }
+          chart.update('none');
+        }
+
+        refresh();
+        setInterval(refresh, 2000);
+        /*]]>*/
+      </script>
+    </main>
+    <footer>j-broker admin — Milestone 8</footer>
+  </body>
+</html>

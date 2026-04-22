@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Consumer group')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1 th:text="|Consumer group: ${detail.groupId()}|">Consumer group</h1>
+      <div class="card">
+        <strong>State:</strong>
+        <span class="pill" th:classappend="${detail.state() == 'Stable' ? 'alive' : 'unknown'}"
+              th:text="${detail.state()}">Stable</span>
+        ·
+        <strong>Generation:</strong> <span th:text="${detail.generation()}">-</span>
+        ·
+        <strong>Assignor:</strong> <span th:text="${detail.assignor()}">range</span>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0; font-size:1.05rem;">Members</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Member ID</th>
+              <th>Instance ID</th>
+              <th>Epoch</th>
+              <th>Subscribed</th>
+              <th>Owned partitions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr th:each="m : ${detail.members()}" th:attr="data-member-id=${m.memberId()}">
+              <td th:text="${m.memberId()}">-</td>
+              <td th:text="${m.instanceId() ?: '—'}">-</td>
+              <td th:text="${m.memberEpoch()}">0</td>
+              <td th:text="${#strings.listJoin(m.subscribedTopics(), ', ')}">-</td>
+              <td>
+                <span th:each="op : ${m.ownedPartitions()}"
+                      th:text="|${op.topic()}:[${#strings.listJoin(op.partitions(), ',')}] |">-</span>
+              </td>
+            </tr>
+            <tr th:if="${detail.members().size() == 0}">
+              <td colspan="5" style="color: var(--muted);">No members currently joined.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0; font-size:1.05rem;">Partition lag</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Topic</th>
+              <th>Partition</th>
+              <th>Committed offset</th>
+              <th>High watermark</th>
+              <th>Lag</th>
+              <th>Owner</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr th:each="p : ${detail.partitions()}"
+                th:attr="data-partition=${p.partition()}, data-lag=${p.lag()}">
+              <td th:text="${p.topic()}">-</td>
+              <td th:text="${p.partition()}">-</td>
+              <td th:text="${p.committedOffset()}">0</td>
+              <td th:text="${p.highWatermark() < 0 ? '—' : p.highWatermark()}">0</td>
+              <td>
+                <!-- Colour-code lag: green < 100, yellow 100..1000, red > 1000. Cell
+                     also carries data-lag so the E2E can assert on exact values. -->
+                <span class="pill"
+                      th:classappend="${p.lag() < 100 ? 'alive' : (p.lag() < 1000 ? 'unknown' : 'dead')}"
+                      th:text="${p.lag()}">0</span>
+              </td>
+              <td th:text="${p.ownerMemberId() ?: '—'}">-</td>
+            </tr>
+            <tr th:if="${detail.partitions().size() == 0}">
+              <td colspan="6" style="color: var(--muted);">No committed offsets yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><a class="btn secondary" href="/groups">← Back to groups</a></p>
+    </main>
+    <footer>j-broker admin — Milestone 8</footer>
+  </body>
+</html>

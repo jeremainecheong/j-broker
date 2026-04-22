@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Raft')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1>Raft state</h1>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Node ID</th>
+              <th>Role</th>
+              <th>Term</th>
+              <th>Commit index</th>
+              <th>Last applied</th>
+              <th>Voted for</th>
+              <th>Last log index</th>
+              <th>Last log term</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr th:each="n : ${nodes}"
+                th:attr="data-node-id=${n.nodeId()}, data-node-role=${n.role()}">
+              <td th:text="${n.nodeId()}">-</td>
+              <td>
+                <span class="pill"
+                      th:classappend="${n.role() == 'LEADER' ? 'leader' : (n.role() == 'FOLLOWER' ? 'follower' : 'unknown')}"
+                      th:text="${n.role()}">-</span>
+              </td>
+              <td th:text="${n.currentTerm()}">-</td>
+              <td th:text="${n.commitIndex()}">-</td>
+              <td th:text="${n.lastApplied()}">-</td>
+              <td th:text="${n.votedFor() < 0 ? '—' : n.votedFor()}">-</td>
+              <td th:text="${n.lastLogIndex()}">-</td>
+              <td th:text="${n.lastLogTerm()}">-</td>
+              <td>
+                <span class="pill" th:classappend="${n.status() == 'REACHABLE' ? 'alive' : 'dead'}"
+                      th:text="${n.status()}">-</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+    <footer>j-broker admin — Milestone 8</footer>
+  </body>
+</html>

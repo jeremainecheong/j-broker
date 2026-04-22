@@ -18,6 +18,8 @@ import jbroker.proto.broker.DescribeClusterRequest;
 import jbroker.proto.broker.DescribeClusterResponse;
 import jbroker.proto.broker.DescribeConsumerGroupRequest;
 import jbroker.proto.broker.DescribeConsumerGroupResponse;
+import jbroker.proto.broker.DescribeMetricsRequest;
+import jbroker.proto.broker.DescribeMetricsResponse;
 import jbroker.proto.broker.DescribeRaftRequest;
 import jbroker.proto.broker.DescribeRaftResponse;
 import jbroker.proto.broker.DescribeTopicPartitionsRequest;
@@ -193,6 +195,12 @@ public final class BrokerGrpcServices {
             @Override
             public void describeRaft(DescribeRaftRequest req, StreamObserver<DescribeRaftResponse> out) {
                 out.onNext(handler.describeRaft(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void describeMetrics(DescribeMetricsRequest req, StreamObserver<DescribeMetricsResponse> out) {
+                out.onNext(handler.describeMetrics(req));
                 out.onCompleted();
             }
         };

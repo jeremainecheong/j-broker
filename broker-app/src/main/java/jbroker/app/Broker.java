@@ -23,6 +23,8 @@ import jbroker.broker.ProducerIdRegistry;
 import jbroker.broker.ReplicaFetchHandler;
 import jbroker.broker.TopicManager;
 import jbroker.broker.WaitingStateMachine;
+import jbroker.broker.group.GroupCoordinator;
+import jbroker.broker.group.RangeAssignor;
 import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.broker.replication.IsrManager;
 import jbroker.raft.core.DefaultRaftCore;
@@ -241,7 +243,18 @@ public final class Broker implements AutoCloseable {
         var brokerLiveness = new jbroker.broker.BrokerLiveness();
         var heartbeatHandler = new jbroker.broker.BrokerHeartbeatHandler(brokerLiveness, System::nanoTime);
 
-        var consumerHandler = new ConsumerHandler(topicManager, logManager, brokerRegistry);
+        // Group coordinator: in-memory state for groups whose coordinator
+        // partition this broker leads. wires the heartbeat path;         // staticness; will wire the per-coord-partition activation
+        // listener so coordinator failover rebuilds state.
+        var groupCoordinator = new GroupCoordinator(
+                topic -> topicManager.describe(topic).map(td -> td.partitions()).orElse(0), new RangeAssignor());
+        var consumerHandler = new ConsumerHandler(
+                topicManager,
+                logManager,
+                brokerRegistry,
+                groupCoordinator,
+                config.selfId().value(),
+                System::nanoTime);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
@@ -397,6 +410,15 @@ public final class Broker implements AutoCloseable {
                         fencer.tick(System.nanoTime());
                     } catch (Exception e) {
                         log.debug("fencer tick failed, retrying on next tick", e);
+                    }
+                    try {
+                        // drop members past their session timeout.
+                        // Runs on every broker (each one is the coordinator
+                        // for its own __consumer_offsets partitions) so the
+                        // tick is unconditional, not leader-gated.
+                        groupCoordinator.tickEvictions(System.nanoTime());
+                    } catch (Exception e) {
+                        log.debug("group eviction tick failed, retrying on next tick", e);
                     }
                 },
                 1,

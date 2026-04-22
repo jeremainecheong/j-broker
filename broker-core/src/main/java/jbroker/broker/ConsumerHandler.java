@@ -1,6 +1,9 @@
 package jbroker.broker;
 
 import java.io.IOException;
+import java.util.HashSet;
+import jbroker.broker.group.GroupCoordinator;
+import jbroker.proto.broker.Assignment;
 import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.CommitOffsetsResponse;
 import jbroker.proto.broker.CommitResult;
@@ -14,6 +17,7 @@ import jbroker.proto.broker.ListOffsetsRequest;
 import jbroker.proto.broker.ListOffsetsResponse;
 import jbroker.proto.broker.ListOffsetsResult;
 import jbroker.proto.broker.OffsetFetchResult;
+import jbroker.proto.broker.TopicPartitions;
 import jbroker.proto.common.BrokerEndpoint;
 import jbroker.proto.common.ErrorCode;
 import jbroker.storage.LogManager;
@@ -42,11 +46,38 @@ public final class ConsumerHandler {
     private final TopicManager topicManager;
     private final LogManager logManager;
     private final BrokerRegistry brokerRegistry;
+    private final GroupCoordinator groupCoordinator;
+    private final int selfBrokerId;
+    private final java.util.function.LongSupplier nanoClock;
 
+    /**
+     * Milestone 7.1 / 7.3 form — no group coordinator. Coordinator-routed RPCs
+     * fall back to the placeholder error codes. Used by tests that don't
+     * exercise the heartbeat path; production wiring uses the full form.
+     */
     public ConsumerHandler(TopicManager topicManager, LogManager logManager, BrokerRegistry brokerRegistry) {
+        this(
+                topicManager,
+                logManager,
+                brokerRegistry, /*groupCoordinator*/
+                null, /*selfBrokerId*/
+                -1,
+                System::nanoTime);
+    }
+
+    public ConsumerHandler(
+            TopicManager topicManager,
+            LogManager logManager,
+            BrokerRegistry brokerRegistry,
+            GroupCoordinator groupCoordinator,
+            int selfBrokerId,
+            java.util.function.LongSupplier nanoClock) {
         this.topicManager = topicManager;
         this.logManager = logManager;
         this.brokerRegistry = brokerRegistry;
+        this.groupCoordinator = groupCoordinator;
+        this.selfBrokerId = selfBrokerId;
+        this.nanoClock = nanoClock;
     }
 
     /**
@@ -98,10 +129,131 @@ public final class ConsumerHandler {
                 .build();
     }
 
+    /**
+     * KIP-848 server-driven heartbeat. The single RPC carries join /
+     * steady-state / leave semantics depending on {@code member_epoch}:
+     * <ul>
+     *   <li>{@code member_id == ""} or {@code member_epoch == 0}: join.
+     *       Coordinator allocates a member id, runs the assignor, returns
+     *       the assignment + bumped epoch.</li>
+     *   <li>{@code member_epoch == -1}: leave. Coordinator drops the
+     *       member, recomputes assignment for survivors, returns OK with
+     *       {@code member_epoch = 0}.</li>
+     *   <li>else: steady-state heartbeat. Returns OK with the new
+     *       assignment (if recomputed since last fire) or empty (no
+     *       change). Stale epochs surface FENCED_MEMBER_EPOCH; unknown
+     *       member ids surface UNKNOWN_MEMBER_ID.</li>
+     * </ul>
+     *
+     * <p>Coordinator routing guard: if this broker doesn't lead the group's
+     * coordinator partition, returns NOT_COORDINATOR so the client refreshes
+     * via {@link #findCoordinator}. NOT_COORDINATOR also fires when the
+     * coordinator partition is unavailable (no leader) — that case is
+     * indistinguishable from the routing-mismatch case for the client (both
+     * trigger the same retry path).
+     */
     public ConsumerGroupHeartbeatResponse consumerGroupHeartbeat(ConsumerGroupHeartbeatRequest req) {
-        return ConsumerGroupHeartbeatResponse.newBuilder()
-                .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
-                .build();
+        if (groupCoordinator == null) {
+            return ConsumerGroupHeartbeatResponse.newBuilder()
+                    .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                    .build();
+        }
+        var routing = coordinatorRoutingFor(req.getGroupId());
+        if (routing != ErrorCode.OK) {
+            return ConsumerGroupHeartbeatResponse.newBuilder().setError(routing).build();
+        }
+        long nowNs = nanoClock.getAsLong();
+
+        // Leave (member_epoch == -1)
+        if (req.getMemberEpoch() == -1 && !req.getMemberId().isEmpty()) {
+            groupCoordinator.leave(req.getGroupId(), req.getMemberId());
+            return ConsumerGroupHeartbeatResponse.newBuilder()
+                    .setError(ErrorCode.OK)
+                    .setMemberId(req.getMemberId())
+                    .setMemberEpoch(0)
+                    .setHeartbeatIntervalMs(GroupCoordinator.HEARTBEAT_INTERVAL_MS)
+                    .build();
+        }
+
+        // Join (member_id == "" or member_epoch == 0)
+        if (req.getMemberId().isEmpty() || req.getMemberEpoch() == 0) {
+            long sessionTimeoutMs = req.getRebalanceTimeoutMs() > 0
+                    ? req.getRebalanceTimeoutMs()
+                    : GroupCoordinator.DEFAULT_SESSION_TIMEOUT_MS;
+            var subscribed = new HashSet<>(req.getSubscribedTopicsList());
+            var join = groupCoordinator.join(
+                    req.getGroupId(),
+                    req.getInstanceId(),
+                    subscribed,
+                    sessionTimeoutMs,
+                    req.getRebalanceTimeoutMs(),
+                    nowNs);
+            return ConsumerGroupHeartbeatResponse.newBuilder()
+                    .setError(ErrorCode.OK)
+                    .setMemberId(join.memberId())
+                    .setMemberEpoch(join.memberEpoch())
+                    .setHeartbeatIntervalMs(join.heartbeatIntervalMs())
+                    .setAssignment(toProtoAssignment(join.assignment()))
+                    .build();
+        }
+
+        // Steady-state heartbeat
+        var hb = groupCoordinator.heartbeat(
+                req.getGroupId(), req.getMemberId(), req.getMemberEpoch(), java.util.List.of(), nowNs);
+        var b = ConsumerGroupHeartbeatResponse.newBuilder()
+                .setMemberId(req.getMemberId())
+                .setMemberEpoch(hb.memberEpoch())
+                .setHeartbeatIntervalMs(hb.heartbeatIntervalMs());
+        switch (hb.outcome()) {
+            case OK -> {
+                b.setError(ErrorCode.OK);
+                hb.newAssignment().ifPresent(a -> b.setAssignment(toProtoAssignment(a)));
+            }
+            case UNKNOWN_MEMBER_ID -> b.setError(ErrorCode.UNKNOWN_MEMBER_ID);
+            case FENCED_MEMBER_EPOCH -> b.setError(ErrorCode.FENCED_MEMBER_EPOCH);
+        }
+        return b.build();
+    }
+
+    /**
+     * Three-way routing decision:
+     * <ul>
+     *   <li>{@link ErrorCode#OK} — this broker is the coordinator for the group;
+     *       proceed with the request.</li>
+     *   <li>{@link ErrorCode#COORDINATOR_NOT_AVAILABLE} — nobody is the
+     *       coordinator yet (topic missing or no partition leader). Client
+     *       should back off and retry.</li>
+     *   <li>{@link ErrorCode#NOT_COORDINATOR} — coordinator exists but is
+     *       another broker. Client should refresh via {@link #findCoordinator}
+     *       and retry against the indicated host.</li>
+     * </ul>
+     */
+    private ErrorCode coordinatorRoutingFor(String groupId) {
+        var topicDesc = topicManager.describe(ConsumerOffsetsTopic.NAME);
+        if (topicDesc.isEmpty()) return ErrorCode.COORDINATOR_NOT_AVAILABLE;
+        int partitionCount = topicDesc.get().partitions();
+        int partition = Math.floorMod(groupId.hashCode(), partitionCount);
+        var ps = topicManager.partitionState(ConsumerOffsetsTopic.NAME, partition);
+        if (ps.isEmpty() || ps.get().leader() <= 0) return ErrorCode.COORDINATOR_NOT_AVAILABLE;
+        return ps.get().leader() == selfBrokerId ? ErrorCode.OK : ErrorCode.NOT_COORDINATOR;
+    }
+
+    private static Assignment toProtoAssignment(java.util.List<jbroker.proto.common.TopicPartition> partitions) {
+        // Group by topic, preserve insertion order so equality checks in tests
+        // are stable.
+        var byTopic = new java.util.LinkedHashMap<String, java.util.List<Integer>>();
+        for (var tp : partitions) {
+            byTopic.computeIfAbsent(tp.getTopic(), k -> new java.util.ArrayList<>())
+                    .add(tp.getPartition());
+        }
+        var b = Assignment.newBuilder();
+        for (var entry : byTopic.entrySet()) {
+            b.addAssignedPartitions(TopicPartitions.newBuilder()
+                    .setTopic(entry.getKey())
+                    .addAllPartitions(entry.getValue())
+                    .build());
+        }
+        return b.build();
     }
 
     public CommitOffsetsResponse commitOffsets(CommitOffsetsRequest req) {

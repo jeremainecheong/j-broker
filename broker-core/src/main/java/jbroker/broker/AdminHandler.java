@@ -1,24 +1,32 @@
 package jbroker.broker;
 
 import java.util.ArrayList;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import jbroker.proto.broker.CreateTopicRequest;
 import jbroker.proto.broker.CreateTopicResponse;
+import jbroker.proto.broker.DeleteTopicRequest;
+import jbroker.proto.broker.DeleteTopicResponse;
 import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.DescribeTopicResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
+import jbroker.proto.broker.UpdateTopicConfigRequest;
+import jbroker.proto.broker.UpdateTopicConfigResponse;
 import jbroker.proto.raft.CreateTopicRecord;
+import jbroker.proto.raft.DeleteTopicRecord;
 import jbroker.proto.raft.MetadataRecord;
 import jbroker.proto.raft.PartitionChangeRecord;
 import jbroker.proto.raft.TopicRecord;
+import jbroker.proto.raft.UpdateTopicConfigRecord;
 
 /**
- * Routes {@code Admin} RPCs. {@code CreateTopic} proposes a
- * {@link MetadataRecord} through {@link MetadataProposer}; {@code ListTopics}
- * and {@code DescribeTopic} read from {@link TopicManager}.
+ * Routes {@code Admin} RPCs. {@code CreateTopic}/{@code DeleteTopic}/
+ * {@code UpdateTopicConfig} propose a {@link MetadataRecord} through
+ * {@link MetadataProposer}; {@code ListTopics} and {@code DescribeTopic}
+ * read from {@link TopicManager}.
  */
 public final class AdminHandler {
 
@@ -30,20 +38,41 @@ public final class AdminHandler {
         void proposeAndWait(byte[] payload, long timeoutMillis) throws Exception;
     }
 
+    /** Resolves the current Raft leader id for NOT_LEADER hint population. */
+    @FunctionalInterface
+    public interface LeaderIdLookup {
+        Optional<Integer> currentLeaderId();
+    }
+
     private final TopicManager topicManager;
     private final MetadataProposer proposer;
     private final int selfBrokerId;
     private final Supplier<Set<Integer>> knownBrokers;
+    private final LeaderIdLookup leaderLookup;
+    private final BrokerRegistry addressBook;
 
     public AdminHandler(
             TopicManager topicManager,
             MetadataProposer proposer,
             int selfBrokerId,
-            Supplier<Set<Integer>> knownBrokers) {
+            Supplier<Set<Integer>> knownBrokers,
+            LeaderIdLookup leaderLookup,
+            BrokerRegistry addressBook) {
         this.topicManager = topicManager;
         this.proposer = proposer;
         this.selfBrokerId = selfBrokerId;
         this.knownBrokers = knownBrokers;
+        this.leaderLookup = leaderLookup;
+        this.addressBook = addressBook;
+    }
+
+    /** Back-compat overload: no leader hint / address book (tests only). */
+    public AdminHandler(
+            TopicManager topicManager,
+            MetadataProposer proposer,
+            int selfBrokerId,
+            Supplier<Set<Integer>> knownBrokers) {
+        this(topicManager, proposer, selfBrokerId, knownBrokers, Optional::empty, new BrokerRegistry());
     }
 
     /**
@@ -57,10 +86,7 @@ public final class AdminHandler {
     public CreateTopicResponse createTopic(CreateTopicRequest req) {
         if (topicManager.exists(req.getTopic())) {
             return CreateTopicResponse.newBuilder()
-                    .setError(jbroker.proto.broker.Error.newBuilder()
-                            .setCode(ErrorCodes.TOPIC_ALREADY_EXISTS)
-                            .setMessage("topic already exists: " + req.getTopic())
-                            .build())
+                    .setError(buildError(ErrorCodes.TOPIC_ALREADY_EXISTS, "topic already exists: " + req.getTopic()))
                     .build();
         }
         // Pick up to replicationFactor brokers from the known set (self
@@ -75,24 +101,16 @@ public final class AdminHandler {
         }
         int rf = Math.min(req.getReplicationFactor(), candidates.size());
         var replicas = candidates.subList(0, rf);
-        // Bundle the TopicRecord and per-partition leader assignments into
-        // a single CreateTopicRecord so both halves commit in one
-        // state-machine transition — no half-initialised topic window.
-        // Clamp TopicRecord.replicationFactor to the actual replicas count
-        // so downstream readers (DescribeTopic, future ISR/fencer checks)
-        // see a self-consistent record rather than rf=3 / replicas=[self].
-        // P7.2: topics whose name starts with "__" are auto-marked internal
-        // (they're hidden from Admin.ListTopics by TopicManager#list).
         boolean internal = req.getTopic().startsWith("__");
-        var ct = CreateTopicRecord.newBuilder()
-                .setTopic(TopicRecord.newBuilder()
-                        .setTopic(req.getTopic())
-                        .setPartitions(req.getPartitions())
-                        .setReplicationFactor(rf)
-                        .setCreatedMillis(System.currentTimeMillis())
-                        .setInternal(internal)
-                        .setCompact(internal) // first internal topic, __consumer_offsets, is compacted
-                        .build());
+        var topicBuilder = TopicRecord.newBuilder()
+                .setTopic(req.getTopic())
+                .setPartitions(req.getPartitions())
+                .setReplicationFactor(rf)
+                .setCreatedMillis(System.currentTimeMillis())
+                .setInternal(internal)
+                .setCompact(internal);
+        topicBuilder.putAllConfig(req.getConfigMap());
+        var ct = CreateTopicRecord.newBuilder().setTopic(topicBuilder.build());
         for (int p = 0; p < req.getPartitions(); p++) {
             var pc = PartitionChangeRecord.newBuilder()
                     .setTopic(req.getTopic())
@@ -109,25 +127,60 @@ public final class AdminHandler {
         try {
             proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
         } catch (Exception e) {
-            return CreateTopicResponse.newBuilder()
-                    .setError(jbroker.proto.broker.Error.newBuilder()
-                            .setCode(ErrorCodes.NOT_LEADER)
-                            .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
-                            .build())
-                    .build();
+            return CreateTopicResponse.newBuilder().setError(notLeaderError(e)).build();
         }
         return CreateTopicResponse.newBuilder().build();
+    }
+
+    public DeleteTopicResponse deleteTopic(DeleteTopicRequest req) {
+        if (!topicManager.exists(req.getTopic())) {
+            return DeleteTopicResponse.newBuilder()
+                    .setError(buildError(ErrorCodes.UNKNOWN_TOPIC, "unknown topic: " + req.getTopic()))
+                    .build();
+        }
+        var record = MetadataRecord.newBuilder()
+                .setDeleteTopic(
+                        DeleteTopicRecord.newBuilder().setTopic(req.getTopic()).build())
+                .build();
+        try {
+            proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
+        } catch (Exception e) {
+            return DeleteTopicResponse.newBuilder().setError(notLeaderError(e)).build();
+        }
+        return DeleteTopicResponse.newBuilder().build();
+    }
+
+    public UpdateTopicConfigResponse updateTopicConfig(UpdateTopicConfigRequest req) {
+        var existing = topicManager.describe(req.getTopic());
+        if (existing.isEmpty()) {
+            return UpdateTopicConfigResponse.newBuilder()
+                    .setError(buildError(ErrorCodes.UNKNOWN_TOPIC, "unknown topic: " + req.getTopic()))
+                    .build();
+        }
+        var record = MetadataRecord.newBuilder()
+                .setUpdateTopicConfig(UpdateTopicConfigRecord.newBuilder()
+                        .setTopic(req.getTopic())
+                        .putAllConfig(req.getConfigMap())
+                        .build())
+                .build();
+        try {
+            proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
+        } catch (Exception e) {
+            return UpdateTopicConfigResponse.newBuilder()
+                    .setError(notLeaderError(e))
+                    .build();
+        }
+        var merged = topicManager
+                .describe(req.getTopic())
+                .map(TopicDescription::config)
+                .orElse(java.util.Map.of());
+        return UpdateTopicConfigResponse.newBuilder().putAllConfig(merged).build();
     }
 
     public ListTopicsResponse listTopics(ListTopicsRequest req) {
         var b = ListTopicsResponse.newBuilder();
         for (var t : topicManager.list()) {
-            b.addTopics(jbroker.proto.broker.TopicDescription.newBuilder()
-                    .setTopic(t.topic())
-                    .setPartitions(t.partitions())
-                    .setReplicationFactor(t.replicationFactor())
-                    .setCreatedMillis(t.createdMillis())
-                    .build());
+            b.addTopics(toDescriptionProto(t));
         }
         return b.build();
     }
@@ -136,19 +189,50 @@ public final class AdminHandler {
         var desc = topicManager.describe(req.getTopic());
         if (desc.isEmpty()) {
             return DescribeTopicResponse.newBuilder()
-                    .setError(jbroker.proto.broker.Error.newBuilder()
-                            .setCode(ErrorCodes.UNKNOWN_TOPIC)
-                            .setMessage("unknown topic: " + req.getTopic())
-                            .build())
+                    .setError(buildError(ErrorCodes.UNKNOWN_TOPIC, "unknown topic: " + req.getTopic()))
                     .build();
         }
         return DescribeTopicResponse.newBuilder()
-                .setTopic(jbroker.proto.broker.TopicDescription.newBuilder()
-                        .setTopic(desc.get().topic())
-                        .setPartitions(desc.get().partitions())
-                        .setReplicationFactor(desc.get().replicationFactor())
-                        .setCreatedMillis(desc.get().createdMillis())
-                        .build())
+                .setTopic(toDescriptionProto(desc.get()))
                 .build();
+    }
+
+    private jbroker.proto.broker.TopicDescription toDescriptionProto(TopicDescription t) {
+        return jbroker.proto.broker.TopicDescription.newBuilder()
+                .setTopic(t.topic())
+                .setPartitions(t.partitions())
+                .setReplicationFactor(t.replicationFactor())
+                .setCreatedMillis(t.createdMillis())
+                .setInternal(t.internal())
+                .setCompact(t.compact())
+                .putAllConfig(t.config())
+                .build();
+    }
+
+    private jbroker.proto.broker.Error buildError(int code, String message) {
+        return jbroker.proto.broker.Error.newBuilder()
+                .setCode(code)
+                .setMessage(message)
+                .build();
+    }
+
+    /**
+     * Convert a propose-failure into a NOT_LEADER error envelope with
+     * best-effort suggested_leader_* hints. When the proposer fails because
+     * self is not the Raft leader, the admin-app should retry against the
+     * hinted broker (if known).
+     */
+    private jbroker.proto.broker.Error notLeaderError(Exception cause) {
+        var b = jbroker.proto.broker.Error.newBuilder()
+                .setCode(ErrorCodes.NOT_LEADER)
+                .setMessage(cause.getMessage() == null ? cause.toString() : cause.getMessage());
+        leaderLookup.currentLeaderId().ifPresent(leaderId -> {
+            b.putHint("suggested_leader_id", Integer.toString(leaderId));
+            addressBook.addressFor(leaderId).ifPresent(hp -> {
+                b.putHint("suggested_leader_host", hp.host());
+                b.putHint("suggested_leader_port", Integer.toString(hp.port()));
+            });
+        });
+        return b.build();
     }
 }

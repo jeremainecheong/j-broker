@@ -214,8 +214,16 @@ public final class Broker implements AutoCloseable {
             brokerRegistry.onBrokerRegistration(bid, h, pt);
             fetcherManager.onBrokerRegistration(bid, h, pt);
         };
+        // P8.3 — on DeleteTopic, evict LogManager cache + segment files so
+        // topic-recreation with the same name can't pick up stale offsets,
+        // and kick the replica-fetcher reconcile loop so any live fetcher
+        // stops as soon as the metadata record applies.
+        MetadataStateMachine.TopicDeletionListener topicDeletionChain = deletedTopic -> {
+            logManager.deleteTopicDir(deletedTopic);
+            fetcherManager.scheduleReconcile();
+        };
         var metadataSm = new MetadataStateMachine(
-                topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager);
+                topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager, topicDeletionChain);
         var waitingSm = new WaitingStateMachine(metadataSm);
 
         // --- Raft transport (peer map built from static voter set) ---
@@ -244,7 +252,16 @@ public final class Broker implements AutoCloseable {
             raftDriver.propose(payload);
             fut.get(timeoutMs, TimeUnit.MILLISECONDS);
         };
-        var admin = new AdminHandler(topicManager, proposer, config.selfId().value(), brokerRegistry::knownBrokerIds);
+        // P8.3 — AdminHandler learns Raft leader id + registry so NOT_LEADER
+        // responses can carry suggested_leader_* hints that the admin REST
+        // layer surfaces into the error envelope.
+        var admin = new AdminHandler(
+                topicManager,
+                proposer,
+                config.selfId().value(),
+                brokerRegistry::knownBrokerIds,
+                () -> raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value),
+                brokerRegistry);
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var brokerLiveness = new jbroker.broker.BrokerLiveness();
@@ -310,7 +327,9 @@ public final class Broker implements AutoCloseable {
                 // to 0L for now. P8.5 revisits.
                 () -> 0L,
                 System::nanoTime,
-                MetadataServiceHandler.DEFAULT_STALENESS_NANOS);
+                MetadataServiceHandler.DEFAULT_STALENESS_NANOS,
+                topicManager,
+                logManager);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))

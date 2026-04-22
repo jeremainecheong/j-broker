@@ -28,7 +28,6 @@ import jbroker.raft.core.FilePersistentState;
 import jbroker.raft.core.FileRaftLog;
 import jbroker.raft.core.NodeId;
 import jbroker.raft.core.RaftConfig;
-import jbroker.raft.core.Role;
 import jbroker.raft.transport.RaftDriver;
 import jbroker.raft.transport.RaftPeerClient;
 import jbroker.storage.LogManager;
@@ -54,7 +53,25 @@ public final class Broker implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Broker.class);
 
-    public record Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {}
+    public record Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort, List<VoterAddress> voters) {
+        public Config {
+            voters = List.copyOf(voters);
+        }
+
+        /**
+         * Back-compat overload: single-voter config where the only voter is self,
+         * reachable at 127.0.0.1 on the provided {@code raftPort}. All existing
+         * single-broker callers keep working unchanged.
+         */
+        public Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    List.of(new VoterAddress(selfId, "127.0.0.1", raftPort, brokerPort)));
+        }
+    }
 
     private final TopicManager topicManager;
     private final LogManager logManager;
@@ -63,6 +80,10 @@ public final class Broker implements AutoCloseable {
     private final Server brokerServer;
     private final int brokerPort;
     private final ScheduledExecutorService isrTicker;
+    private final ScheduledExecutorService registrationTicker;
+    private final jbroker.broker.BrokerRegistry brokerRegistry;
+    private final jbroker.broker.replication.ReplicaFetcherManager fetcherManager;
+    private final jbroker.broker.replication.DefaultFetcherFactory fetcherFactory;
 
     private Broker(
             TopicManager tm,
@@ -71,7 +92,11 @@ public final class Broker implements AutoCloseable {
             RaftDriver raftDriver,
             Server brokerServer,
             int brokerPort,
-            ScheduledExecutorService isrTicker) {
+            ScheduledExecutorService isrTicker,
+            ScheduledExecutorService registrationTicker,
+            jbroker.broker.BrokerRegistry brokerRegistry,
+            jbroker.broker.replication.ReplicaFetcherManager fetcherManager,
+            jbroker.broker.replication.DefaultFetcherFactory fetcherFactory) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
@@ -79,6 +104,10 @@ public final class Broker implements AutoCloseable {
         this.brokerServer = brokerServer;
         this.brokerPort = brokerPort;
         this.isrTicker = isrTicker;
+        this.registrationTicker = registrationTicker;
+        this.brokerRegistry = brokerRegistry;
+        this.fetcherManager = fetcherManager;
+        this.fetcherFactory = fetcherFactory;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -91,9 +120,10 @@ public final class Broker implements AutoCloseable {
         // --- Raft layer (metadata log) ---
         var raftLog = FileRaftLog.open(raftDir.resolve("log.bin"));
         var state = FilePersistentState.open(raftDir.resolve("state.bin"));
+        var voterIds = config.voters().stream().map(VoterAddress::id).toList();
         var raftConfig = new RaftConfig(
                 config.selfId(),
-                List.of(config.selfId()),
+                voterIds,
                 TimeUnit.MILLISECONDS.toNanos(500),
                 TimeUnit.MILLISECONDS.toNanos(250),
                 TimeUnit.MILLISECONDS.toNanos(100),
@@ -125,12 +155,27 @@ public final class Broker implements AutoCloseable {
                 log.warn("failed to record leader-epoch checkpoint for {}-{}", topic, partition, e);
             }
         };
-        var metadataSm = new MetadataStateMachine(topicManager, producerIdRegistry, leaderEpochListener);
+        var brokerRegistry = new jbroker.broker.BrokerRegistry();
+        var fetcherFactory = new jbroker.broker.replication.DefaultFetcherFactory(
+                config.selfId().value(), logManager, topicManager, /*pollIntervalMs*/ 25L, /*fetchTimeoutMs*/ 2_000L);
+        var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
+                config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
+        MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt) -> {
+            brokerRegistry.onBrokerRegistration(bid, h, pt);
+            fetcherManager.onBrokerRegistration(bid, h, pt);
+        };
+        var metadataSm = new MetadataStateMachine(
+                topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager);
         var waitingSm = new WaitingStateMachine(metadataSm);
 
-        // --- Raft transport (self-only, empty peer map) ---
+        // --- Raft transport (peer map built from static voter set) ---
+        var peerMap = new java.util.HashMap<NodeId, RaftPeerClient>();
+        for (var v : config.voters()) {
+            if (v.id().equals(config.selfId())) continue;
+            peerMap.put(v.id(), new RaftPeerClient(v.id(), v.host(), v.raftPort()));
+        }
         var raftDriver = new RaftDriver(
-                config.selfId(), core, waitingSm, Map.<NodeId, RaftPeerClient>of(), TimeUnit.MILLISECONDS.toNanos(30));
+                config.selfId(), core, waitingSm, Map.copyOf(peerMap), TimeUnit.MILLISECONDS.toNanos(30));
         raftDriver.start(config.raftPort());
 
         // --- Broker gRPC server ---
@@ -147,7 +192,7 @@ public final class Broker implements AutoCloseable {
             raftDriver.propose(payload);
             fut.get(timeoutMs, TimeUnit.MILLISECONDS);
         };
-        var admin = new AdminHandler(topicManager, proposer, config.selfId().value());
+        var admin = new AdminHandler(topicManager, proposer, config.selfId().value(), brokerRegistry::knownBrokerIds);
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var server = NettyServerBuilder.forPort(config.brokerPort())
@@ -158,12 +203,12 @@ public final class Broker implements AutoCloseable {
                 .build()
                 .start();
 
-        // Single-node Raft elects itself as leader within one election
-        // timeout. Spin until the role settles so the first CreateTopic RPC
-        // doesn't race with election completion and get dropped as
-        // RejectClientPropose.
+        // Wait for Raft to complete a first election. In a multi-voter
+        // cluster this broker may or may not be the winner; instead of
+        // blocking on "self is LEADER", wait for the term to advance past
+        // 0, which is a cluster-wide signal that an election ran.
         long deadline = System.currentTimeMillis() + 5_000;
-        while (System.currentTimeMillis() < deadline && raftDriver.role() != Role.LEADER) {
+        while (System.currentTimeMillis() < deadline && raftDriver.currentTerm().value() == 0) {
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
@@ -171,6 +216,56 @@ public final class Broker implements AutoCloseable {
                 break;
             }
         }
+
+        // Whoever is the Raft leader is responsible for proposing
+        // BrokerRegistrationRecords for every voter that isn't already in
+        // the registry. This avoids the "follower proposes get silently
+        // dropped" trap: non-leader proposes can't commit, so self-
+        // registration from a non-leader would never land.
+        //
+        // The leader uses the static voter config to synthesise each
+        // broker's address; follower brokers can't contribute data here,
+        // but the address they bound at freePort()-time must match the
+        // port they advertised back to us in their voter entry — tests
+        // construct voters with bound ports to guarantee this.
+        final int selfIdVal = config.selfId().value();
+        var registrationTicker = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "broker-registration-" + selfIdVal);
+            t.setDaemon(true);
+            return t;
+        });
+        registrationTicker.scheduleWithFixedDelay(
+                () -> {
+                    if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return;
+                    for (var v : config.voters()) {
+                        int bid = v.id().value();
+                        // Benign race: the registry may be updated between
+                        // this check and the propose, producing one extra
+                        // duplicate record per election. applyBrokerRegistration
+                        // is idempotent (last-writer-wins overwrite to the
+                        // same value) so the duplicate is harmless.
+                        if (brokerRegistry.addressFor(bid).isPresent()) continue;
+                        try {
+                            var record = jbroker.proto.raft.MetadataRecord.newBuilder()
+                                    .setBroker(jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
+                                            .setBrokerId(bid)
+                                            .setHost(v.host())
+                                            .setPort(v.brokerPort())
+                                            .build())
+                                    .build()
+                                    .toByteArray();
+                            raftDriver.propose(record);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        } catch (Exception e) {
+                            log.debug("registration propose for broker {} failed; retrying", bid, e);
+                        }
+                    }
+                },
+                0,
+                1,
+                TimeUnit.SECONDS);
 
         // ISR housekeeping ticker: every 2s, ask IsrManager for any
         // (leader, ISR) flips and propose them through Raft. 10s lag
@@ -203,7 +298,22 @@ public final class Broker implements AutoCloseable {
                 2,
                 TimeUnit.SECONDS);
 
-        return new Broker(topicManager, logManager, waitingSm, raftDriver, server, server.getPort(), isrTicker);
+        return new Broker(
+                topicManager,
+                logManager,
+                waitingSm,
+                raftDriver,
+                server,
+                server.getPort(),
+                isrTicker,
+                registrationTicker,
+                brokerRegistry,
+                fetcherManager,
+                fetcherFactory);
+    }
+
+    public jbroker.broker.BrokerRegistry brokerRegistry() {
+        return brokerRegistry;
     }
 
     public int brokerPort() {
@@ -214,16 +324,31 @@ public final class Broker implements AutoCloseable {
         return topicManager;
     }
 
+    public jbroker.raft.core.Role role() {
+        return raftDriver.role();
+    }
+
+    /** Test-only accessor for assertion-driven inspection of per-broker logs. */
+    public LogManager logManager() {
+        return logManager;
+    }
+
     @Override
     public void close() {
-        // Shut the ticker down first and wait briefly so an in-flight
+        // Shut the tickers down first and wait briefly so an in-flight
         // propose()/fut.get() chain can't race against raftDriver.close().
         isrTicker.shutdownNow();
+        registrationTicker.shutdownNow();
         try {
             isrTicker.awaitTermination(1, TimeUnit.SECONDS);
+            registrationTicker.awaitTermination(1, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        // Stop in-flight fetchers before raftDriver + logManager close so
+        // their pollOnce calls can't race against closed resources.
+        fetcherManager.close();
+        fetcherFactory.close();
         brokerServer.shutdown();
         try {
             brokerServer.awaitTermination(5, TimeUnit.SECONDS);

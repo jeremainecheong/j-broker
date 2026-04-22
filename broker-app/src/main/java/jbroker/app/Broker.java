@@ -188,10 +188,10 @@ public final class Broker implements AutoCloseable {
         raftDriver.start(config.raftPort());
 
         // --- Broker gRPC server ---
-        var produce =
-                new ProduceHandler(logManager, topicManager, config.selfId().value());
         var fetch = new FetchHandler(logManager, topicManager);
         var followerTracker = new FollowerStateTracker();
+        var produce =
+                new ProduceHandler(logManager, topicManager, config.selfId().value(), followerTracker);
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(

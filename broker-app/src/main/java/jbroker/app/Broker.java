@@ -82,6 +82,8 @@ public final class Broker implements AutoCloseable {
     private final ScheduledExecutorService isrTicker;
     private final ScheduledExecutorService registrationTicker;
     private final jbroker.broker.BrokerRegistry brokerRegistry;
+    private final jbroker.broker.replication.ReplicaFetcherManager fetcherManager;
+    private final jbroker.broker.replication.DefaultFetcherFactory fetcherFactory;
 
     private Broker(
             TopicManager tm,
@@ -92,7 +94,9 @@ public final class Broker implements AutoCloseable {
             int brokerPort,
             ScheduledExecutorService isrTicker,
             ScheduledExecutorService registrationTicker,
-            jbroker.broker.BrokerRegistry brokerRegistry) {
+            jbroker.broker.BrokerRegistry brokerRegistry,
+            jbroker.broker.replication.ReplicaFetcherManager fetcherManager,
+            jbroker.broker.replication.DefaultFetcherFactory fetcherFactory) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
@@ -102,6 +106,8 @@ public final class Broker implements AutoCloseable {
         this.isrTicker = isrTicker;
         this.registrationTicker = registrationTicker;
         this.brokerRegistry = brokerRegistry;
+        this.fetcherManager = fetcherManager;
+        this.fetcherFactory = fetcherFactory;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -150,13 +156,16 @@ public final class Broker implements AutoCloseable {
             }
         };
         var brokerRegistry = new jbroker.broker.BrokerRegistry();
+        var fetcherFactory = new jbroker.broker.replication.DefaultFetcherFactory(
+                config.selfId().value(), logManager, topicManager, /*pollIntervalMs*/ 25L, /*fetchTimeoutMs*/ 2_000L);
+        var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
+                config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
+        MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt) -> {
+            brokerRegistry.onBrokerRegistration(bid, h, pt);
+            fetcherManager.onBrokerRegistration(bid, h, pt);
+        };
         var metadataSm = new MetadataStateMachine(
-                topicManager,
-                producerIdRegistry,
-                leaderEpochListener,
-                brokerRegistry,
-                // PartitionChangeListener is wired once ReplicaFetcherManager lands.
-                (t, p, s) -> {});
+                topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager);
         var waitingSm = new WaitingStateMachine(metadataSm);
 
         // --- Raft transport (peer map built from static voter set) ---
@@ -293,7 +302,9 @@ public final class Broker implements AutoCloseable {
                 server.getPort(),
                 isrTicker,
                 registrationTicker,
-                brokerRegistry);
+                brokerRegistry,
+                fetcherManager,
+                fetcherFactory);
     }
 
     public jbroker.broker.BrokerRegistry brokerRegistry() {
@@ -324,6 +335,10 @@ public final class Broker implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        // Stop in-flight fetchers before raftDriver + logManager close so
+        // their pollOnce calls can't race against closed resources.
+        fetcherManager.close();
+        fetcherFactory.close();
         brokerServer.shutdown();
         try {
             brokerServer.awaitTermination(5, TimeUnit.SECONDS);

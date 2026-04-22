@@ -1,6 +1,9 @@
 package jbroker.broker;
 
+import java.util.ArrayList;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import jbroker.proto.broker.CreateTopicRequest;
 import jbroker.proto.broker.CreateTopicResponse;
 import jbroker.proto.broker.DescribeTopicRequest;
@@ -30,11 +33,25 @@ public final class AdminHandler {
     private final TopicManager topicManager;
     private final MetadataProposer proposer;
     private final int selfBrokerId;
+    private final Supplier<Set<Integer>> knownBrokers;
 
-    public AdminHandler(TopicManager topicManager, MetadataProposer proposer, int selfBrokerId) {
+    public AdminHandler(
+            TopicManager topicManager,
+            MetadataProposer proposer,
+            int selfBrokerId,
+            Supplier<Set<Integer>> knownBrokers) {
         this.topicManager = topicManager;
         this.proposer = proposer;
         this.selfBrokerId = selfBrokerId;
+        this.knownBrokers = knownBrokers;
+    }
+
+    /**
+     * Back-compat overload: self-only replica set. Used by Phase 5 tests
+     * that don't spin up a BrokerRegistry.
+     */
+    public AdminHandler(TopicManager topicManager, MetadataProposer proposer, int selfBrokerId) {
+        this(topicManager, proposer, selfBrokerId, () -> Set.of(selfBrokerId));
     }
 
     public CreateTopicResponse createTopic(CreateTopicRequest req) {
@@ -46,12 +63,21 @@ public final class AdminHandler {
                             .build())
                     .build();
         }
-        // Single-broker P6.1: self is controller and the sole replica of
-        // every partition. Bundle the TopicRecord and per-partition leader
-        // assignments into one CreateTopicRecord so both halves commit in the
-        // same state-machine transition — no half-initialised topic window.
-        // Multi-broker Phase 6+ will keep the same atomic shape with the
-        // controller picking replicas per partition.
+        // Pick up to replicationFactor brokers from the known set (self
+        // always included so the controller leads its own partitions).
+        // If fewer brokers are registered than requested, clamp quietly —
+        // existing single-broker tests request rf=3 against a one-broker
+        // cluster and expect the topic to be created as a single replica.
+        var candidates = new ArrayList<Integer>();
+        candidates.add(selfBrokerId);
+        for (int b : knownBrokers.get()) {
+            if (b != selfBrokerId) candidates.add(b);
+        }
+        int rf = Math.min(req.getReplicationFactor(), candidates.size());
+        var replicas = candidates.subList(0, rf);
+        // Bundle the TopicRecord and per-partition leader assignments into
+        // a single CreateTopicRecord so both halves commit in one
+        // state-machine transition — no half-initialised topic window.
         var ct = CreateTopicRecord.newBuilder()
                 .setTopic(TopicRecord.newBuilder()
                         .setTopic(req.getTopic())
@@ -60,14 +86,16 @@ public final class AdminHandler {
                         .setCreatedMillis(System.currentTimeMillis())
                         .build());
         for (int p = 0; p < req.getPartitions(); p++) {
-            ct.addPartitionChanges(PartitionChangeRecord.newBuilder()
+            var pc = PartitionChangeRecord.newBuilder()
                     .setTopic(req.getTopic())
                     .setPartition(p)
                     .setLeader(selfBrokerId)
-                    .addIsr(selfBrokerId)
-                    .addReplicas(selfBrokerId)
-                    .setLeaderEpoch(0)
-                    .build());
+                    .setLeaderEpoch(0);
+            for (int r : replicas) {
+                pc.addIsr(r);
+                pc.addReplicas(r);
+            }
+            ct.addPartitionChanges(pc);
         }
         var record = MetadataRecord.newBuilder().setCreateTopic(ct.build()).build();
         try {

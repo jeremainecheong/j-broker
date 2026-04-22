@@ -192,7 +192,7 @@ public final class Broker implements AutoCloseable {
             raftDriver.propose(payload);
             fut.get(timeoutMs, TimeUnit.MILLISECONDS);
         };
-        var admin = new AdminHandler(topicManager, proposer, config.selfId().value());
+        var admin = new AdminHandler(topicManager, proposer, config.selfId().value(), brokerRegistry::knownBrokerIds);
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var server = NettyServerBuilder.forPort(config.brokerPort())
@@ -321,6 +321,11 @@ public final class Broker implements AutoCloseable {
 
     public jbroker.raft.core.Role role() {
         return raftDriver.role();
+    }
+
+    /** Test-only accessor for assertion-driven inspection of per-broker logs. */
+    public LogManager logManager() {
+        return logManager;
     }
 
     @Override

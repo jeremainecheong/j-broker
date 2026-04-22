@@ -18,10 +18,19 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * /wire-up IT — the Milestone 8 {@code Metadata} gRPC surface is
- * reachable on the broker. {@code DescribeCluster} is implemented as of
- * (tested in {@link DescribeClusterIT}); every other RPC continues
- * to return {@link ErrorCode#UNIMPLEMENTED} until its owning slice lands.
+ * Wire-up IT — the Milestone 8 {@code Metadata} gRPC surface is reachable on
+ * the broker. As slices land, more RPCs move off the UNIMPLEMENTED
+ * placeholder:
+ * <ul>
+ *   <li>{@code DescribeCluster} (exercised in {@link DescribeClusterIT}).</li>
+ *   <li>{@code DescribeTopicPartitions} (returns {@code UNKNOWN} for
+ *       an unknown topic).</li>
+ *   <li>{@code ListConsumerGroups} + {@code DescribeConsumerGroup}
+ *       (list returns empty OK, describe returns {@code NOT_COORDINATOR}
+ *       for unknown groups — E2E coverage in
+ *       {@link jbroker.admin.e2e.ConsumerGroupLagIT}).</li>
+ *   <li>{@code DescribeRaft} — still placeholder.</li>
+ * </ul>
  */
 class MetadataServiceWireUpIT {
 
@@ -51,15 +60,19 @@ class MetadataServiceWireUpIT {
                                     .build())
                             .getError())
                     .isEqualTo(ErrorCode.UNKNOWN);
+            // listConsumerGroups is implemented as of ; a freshly-booted
+            // broker with no members yet returns OK with an empty list.
             assertThat(stub.listConsumerGroups(
                                     ListConsumerGroupsRequest.newBuilder().build())
                             .getError())
-                    .isEqualTo(ErrorCode.UNIMPLEMENTED);
+                    .isEqualTo(ErrorCode.OK);
+            // describeConsumerGroup for an unknown group returns
+            // NOT_COORDINATOR — the admin-app fan-out uses that to iterate.
             assertThat(stub.describeConsumerGroup(DescribeConsumerGroupRequest.newBuilder()
-                                    .setGroupId("g1")
+                                    .setGroupId("does-not-exist")
                                     .build())
                             .getError())
-                    .isEqualTo(ErrorCode.UNIMPLEMENTED);
+                    .isEqualTo(ErrorCode.NOT_COORDINATOR);
             assertThat(stub.describeRaft(DescribeRaftRequest.newBuilder().build())
                             .getError())
                     .isEqualTo(ErrorCode.UNIMPLEMENTED);

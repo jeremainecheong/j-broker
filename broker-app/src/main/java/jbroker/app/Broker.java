@@ -328,7 +328,9 @@ public final class Broker implements AutoCloseable {
                 System::nanoTime,
                 MetadataServiceHandler.DEFAULT_STALENESS_NANOS,
                 topicManager,
-                logManager);
+                logManager,
+                groupCoordinator,
+                offsetCache);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))

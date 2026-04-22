@@ -12,8 +12,12 @@ import jbroker.proto.broker.DeleteTopicRequest;
 import jbroker.proto.broker.DeleteTopicResponse;
 import jbroker.proto.broker.DescribeClusterRequest;
 import jbroker.proto.broker.DescribeClusterResponse;
+import jbroker.proto.broker.DescribeConsumerGroupRequest;
+import jbroker.proto.broker.DescribeConsumerGroupResponse;
 import jbroker.proto.broker.DescribeTopicPartitionsRequest;
 import jbroker.proto.broker.DescribeTopicPartitionsResponse;
+import jbroker.proto.broker.ListConsumerGroupsRequest;
+import jbroker.proto.broker.ListConsumerGroupsResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
 import jbroker.proto.broker.MetadataGrpc;
@@ -88,6 +92,18 @@ public final class BrokerAdminClient implements AutoCloseable {
     public DeleteTopicResponse deleteTopic(String topic) {
         return admin.withDeadlineAfter(5, TimeUnit.SECONDS)
                 .deleteTopic(DeleteTopicRequest.newBuilder().setTopic(topic).build());
+    }
+
+    public ListConsumerGroupsResponse listConsumerGroups() {
+        return metadata.withDeadlineAfter(3, TimeUnit.SECONDS)
+                .listConsumerGroups(ListConsumerGroupsRequest.newBuilder().build());
+    }
+
+    public DescribeConsumerGroupResponse describeConsumerGroup(String groupId) {
+        return metadata.withDeadlineAfter(3, TimeUnit.SECONDS)
+                .describeConsumerGroup(DescribeConsumerGroupRequest.newBuilder()
+                        .setGroupId(groupId)
+                        .build());
     }
 
     public UpdateTopicConfigResponse updateTopicConfig(String topic, Map<String, String> overlay) {

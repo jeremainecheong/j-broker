@@ -86,6 +86,36 @@ public class BrokerAdminClientPool {
         return Optional.empty();
     }
 
+    /**
+     * Mutation variant: iterate every broker, return the first non-NOT_LEADER
+     * response. If every broker returns NOT_LEADER (or none is reachable),
+     * returns whatever the last broker said — preserving the hint the admin
+     * REST layer surfaces to the caller.
+     *
+     * <p>Admin-app's topic CRUD uses this: any non-leader broker knows who the
+     * Raft leader is (via `BrokerRegistry`), so two passes at worst land on
+     * the right broker. Phase 8 scope; fancier hint-following is Phase 9.
+     */
+    public <T> T firstNonNotLeader(
+            Function<BrokerAdminClient, T> op, Function<T, Integer> errorCode, int notLeaderCode) {
+        T last = null;
+        RuntimeException lastExc = null;
+        for (var c : clients) {
+            try {
+                last = op.apply(c);
+                int code = errorCode.apply(last);
+                if (code != notLeaderCode) {
+                    return last;
+                }
+            } catch (StatusRuntimeException e) {
+                log.debug("broker {} failed with {}; trying next", c.address(), e.getStatus());
+                lastExc = e;
+            }
+        }
+        if (last != null) return last; // all returned NOT_LEADER — propagate the hint upward
+        throw new IllegalStateException("every broker unreachable", lastExc);
+    }
+
     @PreDestroy
     public void shutdown() {
         for (var c : clients) {

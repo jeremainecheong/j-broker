@@ -244,7 +244,16 @@ public final class Broker implements AutoCloseable {
             raftDriver.propose(payload);
             fut.get(timeoutMs, TimeUnit.MILLISECONDS);
         };
-        var admin = new AdminHandler(topicManager, proposer, config.selfId().value(), brokerRegistry::knownBrokerIds);
+        // P8.3 — AdminHandler learns Raft leader id + registry so NOT_LEADER
+        // responses can carry suggested_leader_* hints that the admin REST
+        // layer surfaces into the error envelope.
+        var admin = new AdminHandler(
+                topicManager,
+                proposer,
+                config.selfId().value(),
+                brokerRegistry::knownBrokerIds,
+                () -> raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value),
+                brokerRegistry);
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var brokerLiveness = new jbroker.broker.BrokerLiveness();
@@ -310,7 +319,9 @@ public final class Broker implements AutoCloseable {
                 // to 0L for now. P8.5 revisits.
                 () -> 0L,
                 System::nanoTime,
-                MetadataServiceHandler.DEFAULT_STALENESS_NANOS);
+                MetadataServiceHandler.DEFAULT_STALENESS_NANOS,
+                topicManager,
+                logManager);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))

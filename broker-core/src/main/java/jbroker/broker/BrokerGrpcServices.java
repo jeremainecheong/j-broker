@@ -12,6 +12,8 @@ import jbroker.proto.broker.ConsumerGroupHeartbeatResponse;
 import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.CreateTopicRequest;
 import jbroker.proto.broker.CreateTopicResponse;
+import jbroker.proto.broker.DeleteTopicRequest;
+import jbroker.proto.broker.DeleteTopicResponse;
 import jbroker.proto.broker.DescribeClusterRequest;
 import jbroker.proto.broker.DescribeClusterResponse;
 import jbroker.proto.broker.DescribeConsumerGroupRequest;
@@ -45,6 +47,8 @@ import jbroker.proto.broker.ProducerGrpc;
 import jbroker.proto.broker.ReplicaConsumerGrpc;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
+import jbroker.proto.broker.UpdateTopicConfigRequest;
+import jbroker.proto.broker.UpdateTopicConfigResponse;
 
 /**
  * Thin wrappers that turn {@link ProduceHandler} / {@link FetchHandler} /
@@ -211,6 +215,18 @@ public final class BrokerGrpcServices {
             @Override
             public void describeTopic(DescribeTopicRequest req, StreamObserver<DescribeTopicResponse> out) {
                 out.onNext(handler.describeTopic(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void deleteTopic(DeleteTopicRequest req, StreamObserver<DeleteTopicResponse> out) {
+                out.onNext(handler.deleteTopic(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void updateTopicConfig(UpdateTopicConfigRequest req, StreamObserver<UpdateTopicConfigResponse> out) {
+                out.onNext(handler.updateTopicConfig(req));
                 out.onCompleted();
             }
         };

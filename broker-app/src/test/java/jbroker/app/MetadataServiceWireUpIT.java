@@ -43,11 +43,14 @@ class MetadataServiceWireUpIT {
                 .build();
         try {
             var stub = MetadataGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
+            // describeTopicPartitions is implemented as of P8.3; requesting
+            // an unknown topic still exercises the RPC surface and is
+            // expected to return UNKNOWN rather than UNIMPLEMENTED.
             assertThat(stub.describeTopicPartitions(DescribeTopicPartitionsRequest.newBuilder()
-                                    .setTopic("orders")
+                                    .setTopic("does-not-exist")
                                     .build())
                             .getError())
-                    .isEqualTo(ErrorCode.UNIMPLEMENTED);
+                    .isEqualTo(ErrorCode.UNKNOWN);
             assertThat(stub.listConsumerGroups(
                                     ListConsumerGroupsRequest.newBuilder().build())
                             .getError())

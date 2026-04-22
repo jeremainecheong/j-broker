@@ -16,7 +16,9 @@ import jbroker.proto.broker.DescribeTopicPartitionsRequest;
 import jbroker.proto.broker.DescribeTopicPartitionsResponse;
 import jbroker.proto.broker.ListConsumerGroupsRequest;
 import jbroker.proto.broker.ListConsumerGroupsResponse;
+import jbroker.proto.broker.PartitionStateInfo;
 import jbroker.proto.common.ErrorCode;
+import jbroker.storage.Log;
 
 /**
  * Handler for the Phase 8 {@code Metadata} gRPC service — the read-only
@@ -41,6 +43,8 @@ public final class MetadataServiceHandler {
     private final LongSupplier metadataOffset;
     private final Supplier<Long> nowNanos;
     private final long stalenessThresholdNanos;
+    private final TopicManager topicManager;
+    private final jbroker.storage.LogManager logManager;
 
     /** Default staleness threshold: matches {@code BrokerFencer}'s 3s default. */
     public static final long DEFAULT_STALENESS_NANOS = TimeUnit.SECONDS.toNanos(3);
@@ -54,7 +58,9 @@ public final class MetadataServiceHandler {
             LongSupplier currentTerm,
             LongSupplier metadataOffset,
             Supplier<Long> nowNanos,
-            long stalenessThresholdNanos) {
+            long stalenessThresholdNanos,
+            TopicManager topicManager,
+            jbroker.storage.LogManager logManager) {
         this.selfBrokerId = selfBrokerId;
         this.brokerRegistry = brokerRegistry;
         this.brokerLiveness = brokerLiveness;
@@ -64,6 +70,33 @@ public final class MetadataServiceHandler {
         this.metadataOffset = metadataOffset;
         this.nowNanos = nowNanos;
         this.stalenessThresholdNanos = stalenessThresholdNanos;
+        this.topicManager = topicManager;
+        this.logManager = logManager;
+    }
+
+    /** P8.2 back-compat overload — no TopicManager / LogManager wired. */
+    public MetadataServiceHandler(
+            int selfBrokerId,
+            BrokerRegistry brokerRegistry,
+            BrokerLiveness brokerLiveness,
+            Supplier<String> selfRole,
+            Supplier<Optional<Integer>> currentLeaderId,
+            LongSupplier currentTerm,
+            LongSupplier metadataOffset,
+            Supplier<Long> nowNanos,
+            long stalenessThresholdNanos) {
+        this(
+                selfBrokerId,
+                brokerRegistry,
+                brokerLiveness,
+                selfRole,
+                currentLeaderId,
+                currentTerm,
+                metadataOffset,
+                nowNanos,
+                stalenessThresholdNanos,
+                null,
+                null);
     }
 
     /**
@@ -133,10 +166,66 @@ public final class MetadataServiceHandler {
     }
 
     public DescribeTopicPartitionsResponse describeTopicPartitions(DescribeTopicPartitionsRequest req) {
-        return DescribeTopicPartitionsResponse.newBuilder()
-                .setError(ErrorCode.UNIMPLEMENTED)
-                .setTopic(req.getTopic())
-                .build();
+        if (topicManager == null) {
+            return DescribeTopicPartitionsResponse.newBuilder()
+                    .setError(ErrorCode.UNIMPLEMENTED)
+                    .setTopic(req.getTopic())
+                    .build();
+        }
+        var desc = topicManager.describe(req.getTopic());
+        if (desc.isEmpty()) {
+            return DescribeTopicPartitionsResponse.newBuilder()
+                    .setError(ErrorCode.UNKNOWN)
+                    .setTopic(req.getTopic())
+                    .build();
+        }
+        var td = desc.get();
+        var builder = DescribeTopicPartitionsResponse.newBuilder()
+                .setError(ErrorCode.OK)
+                .setTopic(td.topic())
+                .setPartitions(td.partitions())
+                .setReplicationFactor(td.replicationFactor())
+                .setInternal(td.internal())
+                .setCompact(td.compact())
+                .setCreatedMillis(td.createdMillis())
+                .putAllConfig(td.config());
+        for (int p = 0; p < td.partitions(); p++) {
+            var state = topicManager.partitionState(td.topic(), p).orElse(null);
+            var ps = PartitionStateInfo.newBuilder().setPartition(p);
+            long hwm = -1L;
+            long leo = -1L;
+            if (state != null) {
+                ps.setLeader(state.leader());
+                for (int b : state.isr()) {
+                    ps.addIsr(b);
+                }
+                for (int b : state.replicas()) {
+                    ps.addReplicas(b);
+                }
+                ps.setLeaderEpoch(state.leaderEpoch());
+                ps.setPartitionEpoch(state.partitionEpoch());
+                // HWM + LEO readable only if self is this partition's leader
+                // (Phase 5/6 single-leader model). Followers return -1 so
+                // the admin-app fan-out can pick the leader's answer.
+                if (logManager != null && state.leader() == selfBrokerId) {
+                    try {
+                        Log log = logManager.logFor(td.topic(), p);
+                        long next = log.nextOffset();
+                        hwm = next;
+                        leo = next;
+                    } catch (Exception ignored) {
+                        // log missing on a leader is unusual — fall through
+                        // with sentinels rather than fail the whole response
+                    }
+                }
+            } else {
+                ps.setLeader(-1);
+            }
+            ps.setHighWatermark(hwm);
+            ps.setLogEndOffset(leo);
+            builder.addPartitionStates(ps.build());
+        }
+        return builder.build();
     }
 
     public ListConsumerGroupsResponse listConsumerGroups(ListConsumerGroupsRequest req) {

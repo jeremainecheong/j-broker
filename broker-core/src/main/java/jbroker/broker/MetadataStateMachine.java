@@ -97,7 +97,8 @@ public final class MetadataStateMachine implements StateMachine {
                     t.getReplicationFactor(),
                     t.getCreatedMillis(),
                     t.getInternal(),
-                    t.getCompact());
+                    t.getCompact(),
+                    t.getConfigMap());
         } else if (record.hasPartitionChange()) {
             applyPartitionChange(record.getPartitionChange());
         } else if (record.hasCreateTopic()) {
@@ -109,7 +110,8 @@ public final class MetadataStateMachine implements StateMachine {
                     t.getReplicationFactor(),
                     t.getCreatedMillis(),
                     t.getInternal(),
-                    t.getCompact());
+                    t.getCompact(),
+                    t.getConfigMap());
             for (var p : ct.getPartitionChangesList()) {
                 applyPartitionChange(p);
             }
@@ -123,6 +125,14 @@ public final class MetadataStateMachine implements StateMachine {
             // BrokerRegistry + ReplicaFetcherManager plug in.
             var r = record.getBroker();
             brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
+        } else if (record.hasDeleteTopic()) {
+            // P8.3 — drop topic + partition catalogue entries. On-disk
+            // segment cleanup is deferred (Phase 9+); the admin DoD only
+            // requires the metadata to disappear cluster-wide.
+            topicManager.onTopicDeleted(record.getDeleteTopic().getTopic());
+        } else if (record.hasUpdateTopicConfig()) {
+            var u = record.getUpdateTopicConfig();
+            topicManager.onTopicConfigUpdated(u.getTopic(), u.getConfigMap());
         }
         // PartitionRecord: not yet dispatched — unused by any consumer.
     }
@@ -163,7 +173,8 @@ public final class MetadataStateMachine implements StateMachine {
     //  v4 (P6.3):     splits leader_epoch from partition_epoch.
     //  v5 (P6.7):     appends producer-id counter.
     //  v6 (P7.2):     per-topic internal + compact flags.
-    private static final byte SNAPSHOT_VERSION = 6;
+    //  v7 (P8.3):     per-topic config map.
+    private static final byte SNAPSHOT_VERSION = 7;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
@@ -182,6 +193,13 @@ public final class MetadataStateMachine implements StateMachine {
             // fields above; v6 readers additionally consume two bools.
             dout.writeBoolean(t.internal());
             dout.writeBoolean(t.compact());
+            // v7: config map (length-prefixed key/value pairs).
+            var config = t.config();
+            dout.writeInt(config.size());
+            for (var entry : config.entrySet()) {
+                dout.writeUTF(entry.getKey());
+                dout.writeUTF(entry.getValue());
+            }
         }
         var assignments = topicManager.allPartitionAssignments();
         dout.writeInt(assignments.size());
@@ -233,7 +251,20 @@ public final class MetadataStateMachine implements StateMachine {
                 internal = topic.startsWith("__");
                 compact = false;
             }
-            topicManager.onTopicCommitted(topic, partitions, rf, created, internal, compact);
+            java.util.Map<String, String> config;
+            if (version >= 7) {
+                int cfgSize = din.readInt();
+                var cfg = new java.util.HashMap<String, String>(cfgSize);
+                for (int j = 0; j < cfgSize; j++) {
+                    var k = din.readUTF();
+                    var v = din.readUTF();
+                    cfg.put(k, v);
+                }
+                config = cfg;
+            } else {
+                config = java.util.Map.of();
+            }
+            topicManager.onTopicCommitted(topic, partitions, rf, created, internal, compact, config);
         }
         if (version >= 2) {
             int m = din.readInt();

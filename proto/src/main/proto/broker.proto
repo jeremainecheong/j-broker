@@ -39,6 +39,9 @@ service Admin {
   rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
   rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
+  // Phase 8 — topic CRUD.
+  rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse);
+  rpc UpdateTopicConfig(UpdateTopicConfigRequest) returns (UpdateTopicConfigResponse);
 }
 
 // Phase 8 — read-only admin observability surface. All RPCs answer from
@@ -198,10 +201,31 @@ message CreateTopicRequest {
   string topic = 1;
   int32 partitions = 2;
   int32 replication_factor = 3;
+  // Phase 8 — opaque topic config map. Broker round-trips; enforcement
+  // arrives in Phase 9 (retention, compaction). Empty map is fine.
+  map<string, string> config = 4;
 }
 
 message CreateTopicResponse {
   Error error = 1;
+}
+
+message DeleteTopicRequest {
+  string topic = 1;
+}
+
+message DeleteTopicResponse {
+  Error error = 1;
+}
+
+message UpdateTopicConfigRequest {
+  string topic = 1;
+  map<string, string> config = 2;
+}
+
+message UpdateTopicConfigResponse {
+  Error error = 1;
+  map<string, string> config = 2; // merged effective config after apply
 }
 
 message ListTopicsRequest {}
@@ -224,11 +248,23 @@ message TopicDescription {
   int32 partitions = 2;
   int32 replication_factor = 3;
   int64 created_millis = 4;
+  // Phase 8 — surfaced on ListTopics + DescribeTopic so the admin UI can
+  // render internal vs user topics differently.
+  bool internal = 5;
+  bool compact = 6;
+  map<string, string> config = 7;
 }
 
 message Error {
   int32 code = 1;
   string message = 2;
+  // Phase 8 — optional flat key/value hints. Admin REST layer surfaces
+  // these into the {@code hint} object of the PRD §8.7 error envelope.
+  // Common keys:
+  //   suggested_leader_id   (int32, decimal)
+  //   suggested_leader_host (string)
+  //   suggested_leader_port (int32, decimal)
+  map<string, string> hint = 3;
 }
 
 // ===== Consumer-group RPCs (Phase 7) =====

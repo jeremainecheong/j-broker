@@ -1,0 +1,105 @@
+package jbroker.broker;
+
+import io.grpc.ManagedChannel;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
+import jbroker.proto.broker.BrokerHeartbeatRequest;
+import jbroker.proto.broker.ClusterGrpc;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Periodically broadcasts a {@code BrokerHeartbeat} RPC from {@code self}
+ * to every configured peer address. Each peer's handler updates its local
+ * {@link BrokerLiveness}; over time every broker has a consistent
+ * cluster-wide liveness view.
+ *
+ * <p>Addresses are static (from {@code Broker.Config.voters()}) rather
+ * than dynamic ({@code BrokerRegistry}) because on startup the sender
+ * must work before the registry is populated — registration itself is
+ * leader-driven and takes ~1 s to land.
+ *
+ * <p>Failures (peer down, connect refused) are logged at debug and
+ * dropped. The next tick retries.
+ */
+public final class BrokerHeartbeatSender implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(BrokerHeartbeatSender.class);
+
+    public record PeerAddress(int brokerId, String host, int port) {}
+
+    private final int selfBrokerId;
+    private final java.util.List<PeerAddress> peers;
+    private final LongSupplier metadataOffset;
+    private final long intervalMs;
+    private final ScheduledExecutorService scheduler;
+    private final Map<Integer, ManagedChannel> channels = new HashMap<>();
+    private final Map<Integer, ClusterGrpc.ClusterBlockingStub> stubs = new HashMap<>();
+
+    public BrokerHeartbeatSender(
+            int selfBrokerId, java.util.List<PeerAddress> peers, LongSupplier metadataOffset, long intervalMs) {
+        this.selfBrokerId = selfBrokerId;
+        this.peers = java.util.List.copyOf(peers);
+        this.metadataOffset = metadataOffset;
+        this.intervalMs = intervalMs;
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "broker-heartbeat-sender-" + selfBrokerId);
+            t.setDaemon(true);
+            return t;
+        });
+        for (var p : this.peers) {
+            var ch = NettyChannelBuilder.forAddress(p.host(), p.port())
+                    .usePlaintext()
+                    .build();
+            channels.put(p.brokerId(), ch);
+            stubs.put(p.brokerId(), ClusterGrpc.newBlockingStub(ch));
+        }
+    }
+
+    public void start() {
+        scheduler.scheduleWithFixedDelay(this::tick, 0, intervalMs, TimeUnit.MILLISECONDS);
+    }
+
+    private void tick() {
+        long offset = metadataOffset.getAsLong();
+        var req = BrokerHeartbeatRequest.newBuilder()
+                .setBrokerId(selfBrokerId)
+                .setCurrentMetadataOffset(offset)
+                .build();
+        for (var p : peers) {
+            var stub = stubs.get(p.brokerId());
+            if (stub == null) continue;
+            try {
+                stub.withDeadlineAfter(intervalMs, TimeUnit.MILLISECONDS).brokerHeartbeat(req);
+            } catch (Exception e) {
+                log.debug(
+                        "heartbeat to broker {} at {}:{} failed: {}", p.brokerId(), p.host(), p.port(), e.getMessage());
+            }
+        }
+    }
+
+    @Override
+    public void close() {
+        scheduler.shutdownNow();
+        try {
+            scheduler.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        for (var ch : channels.values()) {
+            ch.shutdown();
+        }
+        for (var ch : channels.values()) {
+            try {
+                ch.awaitTermination(1, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+}

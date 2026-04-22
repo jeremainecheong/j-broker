@@ -2,6 +2,9 @@ package jbroker.broker;
 
 import io.grpc.stub.StreamObserver;
 import jbroker.proto.broker.AdminGrpc;
+import jbroker.proto.broker.BrokerHeartbeatRequest;
+import jbroker.proto.broker.BrokerHeartbeatResponse;
+import jbroker.proto.broker.ClusterGrpc;
 import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.CreateTopicRequest;
 import jbroker.proto.broker.CreateTopicResponse;
@@ -71,6 +74,16 @@ public final class BrokerGrpcServices {
             public void offsetsForLeaderEpoch(
                     OffsetsForLeaderEpochRequest req, StreamObserver<OffsetsForLeaderEpochResponse> out) {
                 out.onNext(offsetsHandler.handle(req));
+                out.onCompleted();
+            }
+        };
+    }
+
+    public static ClusterGrpc.ClusterImplBase cluster(BrokerHeartbeatHandler handler) {
+        return new ClusterGrpc.ClusterImplBase() {
+            @Override
+            public void brokerHeartbeat(BrokerHeartbeatRequest req, StreamObserver<BrokerHeartbeatResponse> out) {
+                out.onNext(handler.handle(req));
                 out.onCompleted();
             }
         };

@@ -55,7 +55,13 @@ public final class BrokerApp {
         int brokerPort = Integer.parseInt(flag(args, "--broker-port", "9092"));
         int raftPort = Integer.parseInt(flag(args, "--raft-port", "9192"));
         int id = Integer.parseInt(flag(args, "--id", "1"));
-        var broker = Broker.start(new Broker.Config(new NodeId(id), Path.of(dataDir), raftPort, brokerPort));
+        // Production single-broker dev server. Opt up to the canonical 50
+        // __consumer_offsets partitions so coordinator routing reflects real
+        // multi-broker behavior — single-broker only collapses everything to
+        // partition 0, but the partition count is forward-compat for when
+        // additional brokers join.
+        var broker = Broker.start(new Broker.Config(new NodeId(id), Path.of(dataDir), raftPort, brokerPort)
+                .withConsumerOffsetsPartitions(jbroker.broker.ConsumerOffsetsTopic.PARTITION_COUNT));
         Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
         System.out.println("j-broker listening on " + brokerPort + " (id=" + id + ", data=" + dataDir + ")");
         Thread.currentThread().join();

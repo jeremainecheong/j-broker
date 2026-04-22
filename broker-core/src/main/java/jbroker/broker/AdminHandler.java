@@ -81,12 +81,17 @@ public final class AdminHandler {
         // Clamp TopicRecord.replicationFactor to the actual replicas count
         // so downstream readers (DescribeTopic, future ISR/fencer checks)
         // see a self-consistent record rather than rf=3 / replicas=[self].
+        // : topics whose name starts with "__" are auto-marked internal
+        // (they're hidden from Admin.ListTopics by TopicManager#list).
+        boolean internal = req.getTopic().startsWith("__");
         var ct = CreateTopicRecord.newBuilder()
                 .setTopic(TopicRecord.newBuilder()
                         .setTopic(req.getTopic())
                         .setPartitions(req.getPartitions())
                         .setReplicationFactor(rf)
                         .setCreatedMillis(System.currentTimeMillis())
+                        .setInternal(internal)
+                        .setCompact(internal) // first internal topic, __consumer_offsets, is compacted
                         .build());
         for (int p = 0; p < req.getPartitions(); p++) {
             var pc = PartitionChangeRecord.newBuilder()

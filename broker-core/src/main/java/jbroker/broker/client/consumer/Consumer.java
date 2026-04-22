@@ -212,8 +212,8 @@ public final class Consumer<K, V> implements AutoCloseable {
         }
         if (policy == null) {
             throw new RuntimeException(
-                    "record handler rejected " + rec.tp().getTopic() + "-" + rec.tp().getPartition()
-                            + "@" + rec.offset() + " and no DeadLetterPolicy is configured",
+                    "record handler rejected " + rec.tp().getTopic() + "-"
+                            + rec.tp().getPartition() + "@" + rec.offset() + " and no DeadLetterPolicy is configured",
                     lastCause);
         }
         produceToDlt(rec, lastCause, policy);
@@ -251,9 +251,8 @@ public final class Consumer<K, V> implements AutoCloseable {
                 .withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
                 .produce(req);
         if (resp.hasError() && resp.getError().getCode() != 0) {
-            throw new RuntimeException(
-                    "DLT produce to " + policy.dltTopic() + "-" + rec.tp().getPartition()
-                            + " failed: " + resp.getError().getMessage());
+            throw new RuntimeException("DLT produce to " + policy.dltTopic() + "-"
+                    + rec.tp().getPartition() + " failed: " + resp.getError().getMessage());
         }
     }
 

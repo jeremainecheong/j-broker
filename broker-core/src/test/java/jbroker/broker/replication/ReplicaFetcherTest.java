@@ -101,6 +101,31 @@ class ReplicaFetcherTest {
     }
 
     @Test
+    void pollOnFencedEpochTruncatesToZeroWhenLeaderReturnsUndefinedEpochOffset(@TempDir Path dir) throws Exception {
+        try (var lm = lm(dir)) {
+            // Follower has 4 records it wrote under an epoch that predates
+            // anything the leader remembers (e.g. leader's checkpoint was
+            // truncated by retention, or the follower is restoring from a
+            // very old snapshot).
+            var log = lm.logFor("orders", 0);
+            for (int i = 0; i < 4; i++) {
+                log.append(List.of(new jbroker.storage.Record(0, 0L, null, new byte[] {(byte) i})), 1_000L);
+            }
+            var peer = new StubPeer();
+            peer.enqueueError(jbroker.broker.ErrorCodes.FENCED_EPOCH, /* current epoch */ 7);
+            // Leader replies with UNDEFINED_EPOCH_OFFSET.
+            peer.enqueueOffsets(jbroker.broker.OffsetsForLeaderEpochHandler.UNDEFINED_EPOCH_OFFSET);
+
+            var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
+            var result = fetcher.pollOnce(/* follower's stale epoch */ 2);
+
+            assertThat(result).isEqualTo(ReplicaFetcher.PollResult.RECONCILED);
+            // Entire divergent log dropped — rebuild from offset 0.
+            assertThat(lm.logFor("orders", 0).nextOffset()).isZero();
+        }
+    }
+
+    @Test
     void pollUsesAppendRawToPreserveLeaderBatchMetadata(@TempDir Path dir) throws Exception {
         try (var lm = lm(dir)) {
             var peer = new StubPeer();

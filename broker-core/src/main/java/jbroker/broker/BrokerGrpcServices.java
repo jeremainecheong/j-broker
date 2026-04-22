@@ -26,6 +26,7 @@ import jbroker.proto.broker.DescribeTopicPartitionsRequest;
 import jbroker.proto.broker.DescribeTopicPartitionsResponse;
 import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.DescribeTopicResponse;
+import jbroker.proto.broker.EventMessage;
 import jbroker.proto.broker.FetchOffsetsRequest;
 import jbroker.proto.broker.FetchOffsetsResponse;
 import jbroker.proto.broker.FetchRequest;
@@ -49,6 +50,7 @@ import jbroker.proto.broker.ProducerGrpc;
 import jbroker.proto.broker.ReplicaConsumerGrpc;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
+import jbroker.proto.broker.SubscribeEventsRequest;
 import jbroker.proto.broker.UpdateTopicConfigRequest;
 import jbroker.proto.broker.UpdateTopicConfigResponse;
 
@@ -203,7 +205,60 @@ public final class BrokerGrpcServices {
                 out.onNext(handler.describeMetrics(req));
                 out.onCompleted();
             }
+
+            @Override
+            public void subscribeEvents(SubscribeEventsRequest req, StreamObserver<EventMessage> out) {
+                var publisher = handler.eventPublisher();
+                if (publisher == null) {
+                    out.onCompleted();
+                    return;
+                }
+                // Subscribe FIRST so nothing published between the replay
+                // walk and the pump thread's first take() slips through. Then
+                // replay the ring tail under after_id to cover events that
+                // landed while the subscriber was setting up.
+                var sub = publisher.subscribe();
+                try {
+                    for (var e : publisher.replayAfter(req.getAfterId())) {
+                        out.onNext(toMessage(e));
+                    }
+                } catch (Exception replayErr) {
+                    sub.close();
+                    out.onError(replayErr);
+                    return;
+                }
+                Thread.ofVirtual().name("broker-event-stream").start(() -> {
+                    try {
+                        while (true) {
+                            var event = sub.take();
+                            if (event == null) break;
+                            synchronized (out) {
+                                out.onNext(toMessage(event));
+                            }
+                        }
+                        synchronized (out) {
+                            out.onCompleted();
+                        }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
+                        synchronized (out) {
+                            out.onError(e);
+                        }
+                    } finally {
+                        sub.close();
+                    }
+                });
+            }
         };
+    }
+
+    private static EventMessage toMessage(jbroker.broker.events.BrokerEvent e) {
+        return EventMessage.newBuilder()
+                .setId(e.id())
+                .setType(e.typeName())
+                .setDataJson(jbroker.broker.events.BrokerEventJson.encode(e))
+                .build();
     }
 
     public static AdminGrpc.AdminImplBase admin(AdminHandler handler) {

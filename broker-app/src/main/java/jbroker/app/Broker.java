@@ -192,17 +192,39 @@ public final class Broker implements AutoCloseable {
                         jbroker.storage.LogSegment.DEFAULT_INDEX_INTERVAL_BYTES,
                         TimeUnit.MINUTES.toMillis(5)));
 
+        // P8.6 — per-broker event publisher for the Phase 8 SSE stream.
+        // Declared here so the leader-epoch listener (next block) can
+        // capture it. Wired into the MetadataServiceHandler at the bottom
+        // of start() where the stream RPC reads from it.
+        var eventPublisher = new jbroker.broker.events.BrokerEventPublisher();
+
         // P6.4: whenever a partition's leader_epoch bumps and self is the
         // new leader, record (epoch, current_leo) in the partition's
         // LeaderEpochCheckpoint so OffsetsForLeaderEpoch can answer.
         int selfId = config.selfId().value();
         MetadataStateMachine.LeaderEpochListener leaderEpochListener = (topic, partition, epoch, leaderId) -> {
-            if (leaderId != selfId) return;
+            if (leaderId == selfId) {
+                try {
+                    var leo = logManager.logFor(topic, partition).nextOffset();
+                    logManager.leaderEpochCheckpoint(topic, partition).assign(epoch, leo);
+                } catch (IOException e) {
+                    log.warn("failed to record leader-epoch checkpoint for {}-{}", topic, partition, e);
+                }
+            }
+            // P8.6 — emit a leader_changed event for admin SSE, regardless
+            // of whether self is the new leader. Old-leader id is unavailable
+            // at this call site (listener doesn't carry prior state) so we
+            // encode -1; admin UIs use the epoch to detect consecutive bumps.
             try {
-                var leo = logManager.logFor(topic, partition).nextOffset();
-                logManager.leaderEpochCheckpoint(topic, partition).assign(epoch, leo);
-            } catch (IOException e) {
-                log.warn("failed to record leader-epoch checkpoint for {}-{}", topic, partition, e);
+                var publisher = eventPublisher;
+                if (publisher != null) {
+                    long id = publisher.allocateId();
+                    publisher.publish(new jbroker.broker.events.BrokerEvent.LeaderChanged(
+                            id, topic, partition, -1, leaderId, epoch));
+                }
+            } catch (Exception ignored) {
+                // Event publishing is observability-only; never let a bug in
+                // the publisher block metadata apply.
             }
         };
         var brokerRegistry = new jbroker.broker.BrokerRegistry();
@@ -213,6 +235,8 @@ public final class Broker implements AutoCloseable {
         MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt) -> {
             brokerRegistry.onBrokerRegistration(bid, h, pt);
             fetcherManager.onBrokerRegistration(bid, h, pt);
+            long id = eventPublisher.allocateId();
+            eventPublisher.publish(new jbroker.broker.events.BrokerEvent.BrokerRegistered(id, bid, h, pt));
         };
         // P8.3 — on DeleteTopic, evict LogManager cache + segment files so
         // topic-recreation with the same name can't pick up stale offsets,
@@ -333,7 +357,8 @@ public final class Broker implements AutoCloseable {
                 groupCoordinator,
                 offsetCache,
                 raftDriver::observability,
-                brokerMetrics);
+                brokerMetrics,
+                eventPublisher);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))

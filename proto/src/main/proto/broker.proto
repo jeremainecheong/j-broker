@@ -59,6 +59,12 @@ service Metadata {
   rpc DescribeRaft(DescribeRaftRequest) returns (DescribeRaftResponse);
   // P8.5 — rolling throughput + latency snapshot for the admin metrics UI.
   rpc DescribeMetrics(DescribeMetricsRequest) returns (DescribeMetricsResponse);
+  // P8.6 — server streams broker-side events (leader changes, broker
+  // registrations, group rebalances, ...). Client bootstraps with
+  // {@code after_id=0} to start at the stream head; reconnects pass the
+  // last id they observed so the server replays anything newer that's
+  // still in the in-process ring buffer.
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream EventMessage);
 }
 
 // Broker-to-broker cluster management RPCs. P6.5.b adds BrokerHeartbeat
@@ -528,6 +534,23 @@ message DescribeRaftResponse {
 }
 
 message DescribeMetricsRequest {}
+
+message SubscribeEventsRequest {
+  // Events with id > after_id are streamed. 0 = start from stream head.
+  int64 after_id = 1;
+}
+
+message EventMessage {
+  // Monotonic per-broker id; the client echoes it as after_id on reconnect.
+  int64 id = 1;
+  // One of the {@code BrokerEvent} typeName() values: "leader_changed",
+  // "isr_shrink" / "isr_expand", "raft_term_change", "broker_registered",
+  // "broker_fenced", "consumer_group_rebalance".
+  string type = 2;
+  // JSON payload per PRD §8.8. Kept as a string so the SSE endpoint can
+  // pass it through unchanged; admin-app does not parse it.
+  string data_json = 3;
+}
 
 message DescribeMetricsResponse {
   jbroker.common.ErrorCode error = 1;

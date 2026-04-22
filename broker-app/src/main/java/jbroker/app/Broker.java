@@ -54,7 +54,20 @@ public final class Broker implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Broker.class);
 
-    public record Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {}
+    public record Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort, List<VoterAddress> voters) {
+        public Config {
+            voters = List.copyOf(voters);
+        }
+
+        /**
+         * Back-compat overload: single-voter config where the only voter is self,
+         * reachable at 127.0.0.1 on the provided {@code raftPort}. All existing
+         * single-broker callers keep working unchanged.
+         */
+        public Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {
+            this(selfId, dataDir, raftPort, brokerPort, List.of(new VoterAddress(selfId, "127.0.0.1", raftPort)));
+        }
+    }
 
     private final TopicManager topicManager;
     private final LogManager logManager;

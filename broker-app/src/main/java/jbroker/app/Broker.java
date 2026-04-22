@@ -28,7 +28,6 @@ import jbroker.raft.core.FilePersistentState;
 import jbroker.raft.core.FileRaftLog;
 import jbroker.raft.core.NodeId;
 import jbroker.raft.core.RaftConfig;
-import jbroker.raft.core.Role;
 import jbroker.raft.transport.RaftDriver;
 import jbroker.raft.transport.RaftPeerClient;
 import jbroker.storage.LogManager;
@@ -104,9 +103,10 @@ public final class Broker implements AutoCloseable {
         // --- Raft layer (metadata log) ---
         var raftLog = FileRaftLog.open(raftDir.resolve("log.bin"));
         var state = FilePersistentState.open(raftDir.resolve("state.bin"));
+        var voterIds = config.voters().stream().map(VoterAddress::id).toList();
         var raftConfig = new RaftConfig(
                 config.selfId(),
-                List.of(config.selfId()),
+                voterIds,
                 TimeUnit.MILLISECONDS.toNanos(500),
                 TimeUnit.MILLISECONDS.toNanos(250),
                 TimeUnit.MILLISECONDS.toNanos(100),
@@ -141,9 +141,14 @@ public final class Broker implements AutoCloseable {
         var metadataSm = new MetadataStateMachine(topicManager, producerIdRegistry, leaderEpochListener);
         var waitingSm = new WaitingStateMachine(metadataSm);
 
-        // --- Raft transport (self-only, empty peer map) ---
+        // --- Raft transport (peer map built from static voter set) ---
+        var peerMap = new java.util.HashMap<NodeId, RaftPeerClient>();
+        for (var v : config.voters()) {
+            if (v.id().equals(config.selfId())) continue;
+            peerMap.put(v.id(), new RaftPeerClient(v.id(), v.raftHost(), v.raftPort()));
+        }
         var raftDriver = new RaftDriver(
-                config.selfId(), core, waitingSm, Map.<NodeId, RaftPeerClient>of(), TimeUnit.MILLISECONDS.toNanos(30));
+                config.selfId(), core, waitingSm, Map.copyOf(peerMap), TimeUnit.MILLISECONDS.toNanos(30));
         raftDriver.start(config.raftPort());
 
         // --- Broker gRPC server ---
@@ -171,12 +176,12 @@ public final class Broker implements AutoCloseable {
                 .build()
                 .start();
 
-        // Single-node Raft elects itself as leader within one election
-        // timeout. Spin until the role settles so the first CreateTopic RPC
-        // doesn't race with election completion and get dropped as
-        // RejectClientPropose.
+        // Wait for Raft to complete a first election. In a multi-voter
+        // cluster this broker may or may not be the winner; instead of
+        // blocking on "self is LEADER", wait for the term to advance past
+        // 0, which is a cluster-wide signal that an election ran.
         long deadline = System.currentTimeMillis() + 5_000;
-        while (System.currentTimeMillis() < deadline && raftDriver.role() != Role.LEADER) {
+        while (System.currentTimeMillis() < deadline && raftDriver.currentTerm().value() == 0) {
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
@@ -225,6 +230,10 @@ public final class Broker implements AutoCloseable {
 
     public TopicManager topics() {
         return topicManager;
+    }
+
+    public jbroker.raft.core.Role role() {
+        return raftDriver.role();
     }
 
     @Override

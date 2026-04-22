@@ -108,9 +108,13 @@ public final class MetadataStateMachine implements StateMachine {
             // idempotent under replay — a duplicate or out-of-order apply
             // cannot regress the counter.
             producerIdRegistry.applyAssignment(record.getProducerIdAssignment().getNextProducerId());
+        } else if (record.hasBroker()) {
+            // P6.5.a: broker-gRPC address discovery. The listener is where
+            // BrokerRegistry + ReplicaFetcherManager plug in.
+            var r = record.getBroker();
+            brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
         }
-        // PartitionRecord / BrokerRegistrationRecord: not yet dispatched;
-        // Phase 6 later steps will consume them.
+        // PartitionRecord: not yet dispatched — unused by any consumer.
     }
 
     private void applyPartitionChange(jbroker.proto.raft.PartitionChangeRecord p) {

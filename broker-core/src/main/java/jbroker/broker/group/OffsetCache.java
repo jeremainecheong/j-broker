@@ -47,4 +47,24 @@ public final class OffsetCache {
     public int size() {
         return entries.size();
     }
+
+    /**
+     * P8.4 — snapshot every committed offset for {@code group}. Used by the
+     * admin REST layer to compute per-partition lag against the log HWM.
+     * Iteration is weakly consistent per {@link ConcurrentHashMap} — a new
+     * commit that lands mid-iteration may or may not appear.
+     */
+    public java.util.Map<TopicPartition, OffsetAndMetadata> snapshotForGroup(String group) {
+        var out = new java.util.HashMap<TopicPartition, OffsetAndMetadata>();
+        for (var e : entries.entrySet()) {
+            if (!e.getKey().group().equals(group)) continue;
+            out.put(
+                    TopicPartition.newBuilder()
+                            .setTopic(e.getKey().topic())
+                            .setPartition(e.getKey().partition())
+                            .build(),
+                    e.getValue());
+        }
+        return java.util.Map.copyOf(out);
+    }
 }

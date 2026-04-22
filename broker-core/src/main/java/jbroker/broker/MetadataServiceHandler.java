@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import jbroker.proto.broker.BrokerInfo;
+import jbroker.proto.broker.ConsumerGroupSummary;
 import jbroker.proto.broker.DescribeClusterRequest;
 import jbroker.proto.broker.DescribeClusterResponse;
 import jbroker.proto.broker.DescribeConsumerGroupRequest;
@@ -16,8 +17,12 @@ import jbroker.proto.broker.DescribeTopicPartitionsRequest;
 import jbroker.proto.broker.DescribeTopicPartitionsResponse;
 import jbroker.proto.broker.ListConsumerGroupsRequest;
 import jbroker.proto.broker.ListConsumerGroupsResponse;
+import jbroker.proto.broker.MemberInfo;
+import jbroker.proto.broker.PartitionLag;
 import jbroker.proto.broker.PartitionStateInfo;
+import jbroker.proto.broker.TopicPartitions;
 import jbroker.proto.common.ErrorCode;
+import jbroker.proto.common.TopicPartition;
 import jbroker.storage.Log;
 
 /**
@@ -45,6 +50,8 @@ public final class MetadataServiceHandler {
     private final long stalenessThresholdNanos;
     private final TopicManager topicManager;
     private final jbroker.storage.LogManager logManager;
+    private final jbroker.broker.group.GroupCoordinator groupCoordinator;
+    private final jbroker.broker.group.OffsetCache offsetCache;
 
     /** Default staleness threshold: matches {@code BrokerFencer}'s 3s default. */
     public static final long DEFAULT_STALENESS_NANOS = TimeUnit.SECONDS.toNanos(3);
@@ -61,6 +68,37 @@ public final class MetadataServiceHandler {
             long stalenessThresholdNanos,
             TopicManager topicManager,
             jbroker.storage.LogManager logManager) {
+        this(
+                selfBrokerId,
+                brokerRegistry,
+                brokerLiveness,
+                selfRole,
+                currentLeaderId,
+                currentTerm,
+                metadataOffset,
+                nowNanos,
+                stalenessThresholdNanos,
+                topicManager,
+                logManager,
+                null,
+                null);
+    }
+
+    /** P8.4 — full constructor with group coordinator + offset cache for consumer-group RPCs. */
+    public MetadataServiceHandler(
+            int selfBrokerId,
+            BrokerRegistry brokerRegistry,
+            BrokerLiveness brokerLiveness,
+            Supplier<String> selfRole,
+            Supplier<Optional<Integer>> currentLeaderId,
+            LongSupplier currentTerm,
+            LongSupplier metadataOffset,
+            Supplier<Long> nowNanos,
+            long stalenessThresholdNanos,
+            TopicManager topicManager,
+            jbroker.storage.LogManager logManager,
+            jbroker.broker.group.GroupCoordinator groupCoordinator,
+            jbroker.broker.group.OffsetCache offsetCache) {
         this.selfBrokerId = selfBrokerId;
         this.brokerRegistry = brokerRegistry;
         this.brokerLiveness = brokerLiveness;
@@ -72,6 +110,8 @@ public final class MetadataServiceHandler {
         this.stalenessThresholdNanos = stalenessThresholdNanos;
         this.topicManager = topicManager;
         this.logManager = logManager;
+        this.groupCoordinator = groupCoordinator;
+        this.offsetCache = offsetCache;
     }
 
     /** P8.2 back-compat overload — no TopicManager / LogManager wired. */
@@ -115,7 +155,11 @@ public final class MetadataServiceHandler {
                 () -> 0L,
                 () -> 0L,
                 System::nanoTime,
-                DEFAULT_STALENESS_NANOS);
+                DEFAULT_STALENESS_NANOS,
+                null,
+                null,
+                null,
+                null);
     }
 
     public DescribeClusterResponse describeCluster(DescribeClusterRequest req) {
@@ -229,16 +273,123 @@ public final class MetadataServiceHandler {
     }
 
     public ListConsumerGroupsResponse listConsumerGroups(ListConsumerGroupsRequest req) {
-        return ListConsumerGroupsResponse.newBuilder()
-                .setError(ErrorCode.UNIMPLEMENTED)
-                .build();
+        if (groupCoordinator == null) {
+            return ListConsumerGroupsResponse.newBuilder()
+                    .setError(ErrorCode.UNIMPLEMENTED)
+                    .build();
+        }
+        var builder = ListConsumerGroupsResponse.newBuilder().setError(ErrorCode.OK);
+        for (var g : groupCoordinator.listGroups()) {
+            int coordPart = -1;
+            var offsetsTopic = topicManager == null
+                    ? Optional.<TopicDescription>empty()
+                    : topicManager.describe(jbroker.broker.ConsumerOffsetsTopic.NAME);
+            if (offsetsTopic.isPresent()) {
+                coordPart =
+                        Math.floorMod(g.groupId().hashCode(), offsetsTopic.get().partitions());
+            }
+            builder.addGroups(ConsumerGroupSummary.newBuilder()
+                    .setGroupId(g.groupId())
+                    .setState(g.state())
+                    .setMemberCount(g.memberCount())
+                    .setGeneration(g.generation())
+                    .setAssignor("range")
+                    .setCoordinatorPartition(coordPart)
+                    .build());
+        }
+        return builder.build();
     }
 
     public DescribeConsumerGroupResponse describeConsumerGroup(DescribeConsumerGroupRequest req) {
-        return DescribeConsumerGroupResponse.newBuilder()
-                .setError(ErrorCode.UNIMPLEMENTED)
-                .setGroupId(req.getGroupId())
-                .build();
+        if (groupCoordinator == null) {
+            return DescribeConsumerGroupResponse.newBuilder()
+                    .setError(ErrorCode.UNIMPLEMENTED)
+                    .setGroupId(req.getGroupId())
+                    .build();
+        }
+        var detail = groupCoordinator.describeGroup(req.getGroupId());
+        if (detail.isEmpty()) {
+            // Wrong coordinator or unknown group — admin-app fan-out
+            // retries on another broker. NOT_COORDINATOR signals "keep
+            // trying elsewhere"; UNKNOWN_MEMBER_ID would be wrong here
+            // because we can't tell the two cases apart without extra
+            // state, so lean towards the routing hint.
+            return DescribeConsumerGroupResponse.newBuilder()
+                    .setError(ErrorCode.NOT_COORDINATOR)
+                    .setGroupId(req.getGroupId())
+                    .build();
+        }
+        var d = detail.get();
+        var builder = DescribeConsumerGroupResponse.newBuilder()
+                .setError(ErrorCode.OK)
+                .setGroupId(d.groupId())
+                .setGeneration(d.generation())
+                .setState(d.state())
+                .setAssignor("range");
+        // Per-member echo.
+        for (var m : d.members()) {
+            var mi = MemberInfo.newBuilder()
+                    .setMemberId(m.memberId())
+                    .setInstanceId(m.instanceId())
+                    .setMemberEpoch(m.memberEpoch());
+            for (var t : m.subscribedTopics()) {
+                mi.addSubscribedTopics(t);
+            }
+            // Group owned_partitions by topic so the UI can render them
+            // compactly. Same shape the cooperative-rebalance heartbeat
+            // uses on the wire.
+            var byTopic = new java.util.LinkedHashMap<String, java.util.List<Integer>>();
+            for (var tp : m.ownedPartitions()) {
+                byTopic.computeIfAbsent(tp.getTopic(), k -> new java.util.ArrayList<>())
+                        .add(tp.getPartition());
+            }
+            for (var e : byTopic.entrySet()) {
+                var tps = TopicPartitions.newBuilder().setTopic(e.getKey());
+                for (int p : e.getValue()) {
+                    tps.addPartitions(p);
+                }
+                mi.addOwnedPartitions(tps.build());
+            }
+            builder.addMembers(mi.build());
+        }
+        // Per-partition lag. For each committed (tp), look up HWM on self's
+        // log if this broker leads the partition; otherwise emit -1 so the
+        // admin-app can fan-out to the leader and merge.
+        if (offsetCache != null) {
+            var committed = offsetCache.snapshotForGroup(req.getGroupId());
+            // Determine owner member per (topic, partition) for the UI.
+            var ownerByTp = new java.util.HashMap<TopicPartition, String>();
+            for (var m : d.members()) {
+                for (var tp : m.ownedPartitions()) {
+                    ownerByTp.put(tp, m.memberId());
+                }
+            }
+            for (var entry : committed.entrySet()) {
+                var tp = entry.getKey();
+                long committedOff = entry.getValue().offset();
+                long hwm = -1L;
+                if (logManager != null && topicManager != null) {
+                    var ps = topicManager.partitionState(tp.getTopic(), tp.getPartition());
+                    if (ps.isPresent() && ps.get().leader() == selfBrokerId) {
+                        try {
+                            Log log = logManager.logFor(tp.getTopic(), tp.getPartition());
+                            hwm = log.nextOffset();
+                        } catch (Exception ignored) {
+                            // fall through with -1
+                        }
+                    }
+                }
+                long lag = hwm < 0 ? -1L : Math.max(0L, hwm - committedOff);
+                builder.addPartitions(PartitionLag.newBuilder()
+                        .setTp(tp)
+                        .setCommittedOffset(committedOff)
+                        .setHighWatermark(hwm)
+                        .setLag(lag)
+                        .setOwnerMemberId(ownerByTp.getOrDefault(tp, ""))
+                        .build());
+            }
+        }
+        return builder.build();
     }
 
     public DescribeRaftResponse describeRaft(DescribeRaftRequest req) {

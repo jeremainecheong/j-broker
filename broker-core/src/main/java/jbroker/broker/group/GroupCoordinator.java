@@ -421,6 +421,89 @@ public final class GroupCoordinator {
         }
     }
 
+    /** P8.4 — summary of one group for the admin {@code /consumer-groups} list view. */
+    public record GroupSummary(String groupId, String state, int memberCount, int generation) {}
+
+    /**
+     * P8.4 — per-member details the admin {@code /consumer-groups/{id}}
+     * endpoint surfaces. Snapshot is captured under the per-group lock so
+     * caller sees self-consistent state even if a rebalance is running.
+     */
+    public record MemberSnapshot(
+            String memberId,
+            String instanceId,
+            int memberEpoch,
+            List<String> subscribedTopics,
+            List<TopicPartition> ownedPartitions) {
+        public MemberSnapshot {
+            subscribedTopics = List.copyOf(subscribedTopics);
+            ownedPartitions = List.copyOf(ownedPartitions);
+        }
+    }
+
+    /** P8.4 — full per-group detail: generation + members (lag is layered on by MetadataServiceHandler). */
+    public record GroupDetail(String groupId, String state, int generation, List<MemberSnapshot> members) {
+        public GroupDetail {
+            members = List.copyOf(members);
+        }
+    }
+
+    /**
+     * P8.4 — snapshot every group this coordinator knows about. Iterates
+     * under {@link #groupsLock} so the group set doesn't shift under us;
+     * each group's member count is captured under its own lock.
+     */
+    public List<GroupSummary> listGroups() {
+        groupsLock.lock();
+        try {
+            var out = new ArrayList<GroupSummary>(groups.size());
+            for (var g : groups.values()) {
+                g.lock.lock();
+                try {
+                    out.add(new GroupSummary(
+                            g.groupId, g.members.isEmpty() ? "Empty" : "Stable", g.members.size(), g.generation));
+                } finally {
+                    g.lock.unlock();
+                }
+            }
+            return List.copyOf(out);
+        } finally {
+            groupsLock.unlock();
+        }
+    }
+
+    /**
+     * P8.4 — snapshot one group. Returns empty if the coordinator doesn't
+     * know the group (admin-app fans out across brokers; wrong-coordinator
+     * returns empty, right-coordinator returns the populated detail).
+     */
+    public Optional<GroupDetail> describeGroup(String groupId) {
+        groupsLock.lock();
+        GroupState group;
+        try {
+            group = groups.get(groupId);
+        } finally {
+            groupsLock.unlock();
+        }
+        if (group == null) return Optional.empty();
+        group.lock.lock();
+        try {
+            var members = new ArrayList<MemberSnapshot>(group.members.size());
+            for (var m : group.members.values()) {
+                members.add(new MemberSnapshot(
+                        m.memberId,
+                        m.instanceId == null ? "" : m.instanceId,
+                        m.memberEpoch,
+                        new ArrayList<>(m.subscribedTopics),
+                        m.currentAssignment));
+            }
+            String state = members.isEmpty() ? "Empty" : "Stable";
+            return Optional.of(new GroupDetail(group.groupId, state, group.generation, members));
+        } finally {
+            group.lock.unlock();
+        }
+    }
+
     private GroupState groupOf(String groupId) {
         groupsLock.lock();
         try {

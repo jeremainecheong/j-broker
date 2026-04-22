@@ -9,4 +9,5 @@ include(
     "broker-storage",
     "broker-core",
     "broker-app",
+    "admin-app",
 )

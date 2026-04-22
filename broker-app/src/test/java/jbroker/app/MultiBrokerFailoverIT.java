@@ -108,8 +108,21 @@ class MultiBrokerFailoverIT {
                     .isNotEqualTo(originalPartitionLeaderId);
 
             // Sanity: produce a fresh record against the new leader and
-            // see it succeed.
+            // see it succeed. Wait for the new leader's local state
+            // machine to have applied the fencing PartitionChangeRecord
+            // (there's propagation lag between Raft commit on the
+            // controller and apply on followers).
             var newLeaderBroker = brokerById(allBrokers, newLeaderId);
+            long pollDeadline = System.currentTimeMillis() + 5_000;
+            while (System.currentTimeMillis() < pollDeadline) {
+                int localLeader = newLeaderBroker
+                        .topics()
+                        .partitionState("critical", 0)
+                        .map(s -> s.leader())
+                        .orElse(-1);
+                if (localLeader == newLeaderId) break;
+                Thread.sleep(50);
+            }
             try (var client = new BrokerClient("127.0.0.1", newLeaderBroker.brokerPort())) {
                 client.produce("critical", 0, "after-failover".getBytes(StandardCharsets.UTF_8));
             }

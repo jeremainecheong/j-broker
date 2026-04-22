@@ -124,6 +124,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.BrokerHeartbeatSender heartbeatSender;
     private final jbroker.broker.replication.ReplicaFetcherManager fetcherManager;
     private final jbroker.broker.replication.DefaultFetcherFactory fetcherFactory;
+    private final jbroker.broker.BrokerMetrics metrics;
 
     private Broker(
             TopicManager tm,
@@ -139,7 +140,8 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.BrokerLiveness brokerLiveness,
             jbroker.broker.BrokerHeartbeatSender heartbeatSender,
             jbroker.broker.replication.ReplicaFetcherManager fetcherManager,
-            jbroker.broker.replication.DefaultFetcherFactory fetcherFactory) {
+            jbroker.broker.replication.DefaultFetcherFactory fetcherFactory,
+            jbroker.broker.BrokerMetrics metrics) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
@@ -154,6 +156,7 @@ public final class Broker implements AutoCloseable {
         this.heartbeatSender = heartbeatSender;
         this.fetcherManager = fetcherManager;
         this.fetcherFactory = fetcherFactory;
+        this.metrics = metrics;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -225,7 +228,9 @@ public final class Broker implements AutoCloseable {
         raftDriver.start(config.raftPort());
 
         // --- Broker gRPC server ---
-        var fetch = new FetchHandler(logManager, topicManager);
+        var brokerMetrics = new jbroker.broker.BrokerMetrics();
+        var fetchSessionCache = new jbroker.broker.FetchSessionCache();
+        var fetch = new FetchHandler(logManager, topicManager, fetchSessionCache, brokerMetrics);
         var followerTracker = new FollowerStateTracker();
         var produce =
                 new ProduceHandler(logManager, topicManager, config.selfId().value(), followerTracker);
@@ -500,7 +505,13 @@ public final class Broker implements AutoCloseable {
                 brokerLiveness,
                 heartbeatSender,
                 fetcherManager,
-                fetcherFactory);
+                fetcherFactory,
+                brokerMetrics);
+    }
+
+    /** P7.11 — broker-local counter bag (incremental-fetch hits, etc). */
+    public jbroker.broker.BrokerMetrics metrics() {
+        return metrics;
     }
 
     public jbroker.broker.BrokerRegistry brokerRegistry() {

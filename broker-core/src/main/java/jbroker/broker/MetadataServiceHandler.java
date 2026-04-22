@@ -56,6 +56,7 @@ public final class MetadataServiceHandler {
     private final jbroker.broker.group.OffsetCache offsetCache;
     private final Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability;
     private final BrokerMetrics brokerMetrics;
+    private final jbroker.broker.events.BrokerEventPublisher eventPublisher;
 
     /** Default staleness threshold: matches {@code BrokerFencer}'s 3s default. */
     public static final long DEFAULT_STALENESS_NANOS = TimeUnit.SECONDS.toNanos(3);
@@ -121,7 +122,7 @@ public final class MetadataServiceHandler {
                 null);
     }
 
-    /** P8.5 — full constructor with Raft observability + broker metrics for /raft + /metrics endpoints. */
+    /** P8.5 back-compat overload without event publisher. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -138,6 +139,43 @@ public final class MetadataServiceHandler {
             jbroker.broker.group.OffsetCache offsetCache,
             Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability,
             BrokerMetrics brokerMetrics) {
+        this(
+                selfBrokerId,
+                brokerRegistry,
+                brokerLiveness,
+                selfRole,
+                currentLeaderId,
+                currentTerm,
+                metadataOffset,
+                nowNanos,
+                stalenessThresholdNanos,
+                topicManager,
+                logManager,
+                groupCoordinator,
+                offsetCache,
+                raftObservability,
+                brokerMetrics,
+                null);
+    }
+
+    /** P8.6 — full constructor with event publisher for the streaming SSE RPC. */
+    public MetadataServiceHandler(
+            int selfBrokerId,
+            BrokerRegistry brokerRegistry,
+            BrokerLiveness brokerLiveness,
+            Supplier<String> selfRole,
+            Supplier<Optional<Integer>> currentLeaderId,
+            LongSupplier currentTerm,
+            LongSupplier metadataOffset,
+            Supplier<Long> nowNanos,
+            long stalenessThresholdNanos,
+            TopicManager topicManager,
+            jbroker.storage.LogManager logManager,
+            jbroker.broker.group.GroupCoordinator groupCoordinator,
+            jbroker.broker.group.OffsetCache offsetCache,
+            Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability,
+            BrokerMetrics brokerMetrics,
+            jbroker.broker.events.BrokerEventPublisher eventPublisher) {
         this.selfBrokerId = selfBrokerId;
         this.brokerRegistry = brokerRegistry;
         this.brokerLiveness = brokerLiveness;
@@ -153,6 +191,7 @@ public final class MetadataServiceHandler {
         this.offsetCache = offsetCache;
         this.raftObservability = raftObservability;
         this.brokerMetrics = brokerMetrics;
+        this.eventPublisher = eventPublisher;
     }
 
     /** P8.2 back-compat overload — no TopicManager / LogManager wired. */
@@ -197,6 +236,7 @@ public final class MetadataServiceHandler {
                 () -> 0L,
                 System::nanoTime,
                 DEFAULT_STALENESS_NANOS,
+                null,
                 null,
                 null,
                 null,
@@ -462,6 +502,11 @@ public final class MetadataServiceHandler {
      */
     public BrokerMetrics brokerMetrics() {
         return brokerMetrics;
+    }
+
+    /** P8.6 — returns the shared event publisher; null if none wired (tests). */
+    public jbroker.broker.events.BrokerEventPublisher eventPublisher() {
+        return eventPublisher;
     }
 
     public DescribeMetricsResponse describeMetrics(DescribeMetricsRequest req) {

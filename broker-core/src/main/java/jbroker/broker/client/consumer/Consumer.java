@@ -21,9 +21,12 @@ import jbroker.proto.broker.FetchOffsetsRequest;
 import jbroker.proto.broker.FetchRequest;
 import jbroker.proto.broker.FindCoordinatorRequest;
 import jbroker.proto.broker.OffsetCommit;
+import jbroker.proto.broker.ProduceRequest;
+import jbroker.proto.broker.ProducerGrpc;
 import jbroker.proto.broker.TopicPartitions;
 import jbroker.proto.common.ErrorCode;
 import jbroker.proto.common.TopicPartition;
+import jbroker.storage.Record;
 import jbroker.storage.RecordBatch;
 
 /**
@@ -81,6 +84,8 @@ public final class Consumer<K, V> implements AutoCloseable {
     // per-(topic,partition) next fetch offset; populated lazily on first
     // assignment via FetchOffsets, then advanced as records arrive.
     private final Map<TopicPartition, Long> fetchOffsets = new HashMap<>();
+    // Lazy ProducerGrpc stub over the bootstrap channel for DLT routing.
+    private ProducerGrpc.ProducerBlockingStub dltProducerStub;
     private boolean closed;
 
     public Consumer(ConsumerConfig cfg, Deserializer<K> keyDe, Deserializer<V> valueDe) {
@@ -159,6 +164,117 @@ public final class Consumer<K, V> implements AutoCloseable {
         if (currentAssignment.isEmpty()) return ConsumerRecords.empty();
 
         return fetchAssignedPartitions(stub);
+    }
+
+    /**
+     * Poll variant that runs {@code handler} on each fetched record inline.
+     * On {@link RetryableException} the record is retried up to the configured
+     * {@link DeadLetterPolicy#maxAttempts()} (sleeping {@code backoff} between
+     * attempts); on final failure it is produced to the DLT carrying an
+     * {@code X-DLT-Failure-Cause} header, and the consumer's committed offset
+     * advances past it. If no {@link DeadLetterPolicy} is configured the
+     * final {@link RetryableException} is wrapped and thrown.
+     *
+     * <p>After the tick completes, the consumer auto-commits the resulting
+     * per-partition fetch offsets — handled-successfully, handled-then-DLT'd,
+     * and anything pre-existing — via one synchronous {@code CommitOffsets}.
+     */
+    public synchronized ConsumerRecords<K, V> poll(Duration maxWait, RecordHandler<K, V> handler) {
+        if (handler == null) throw new IllegalArgumentException("handler must not be null");
+        var records = poll(maxWait);
+        if (records.isEmpty()) return records;
+        var policy = cfg.deadLetterPolicy();
+        for (var rec : records) {
+            runWithRetry(rec, handler, policy);
+        }
+        commitSync();
+        return records;
+    }
+
+    private void runWithRetry(ConsumerRecord<K, V> rec, RecordHandler<K, V> handler, DeadLetterPolicy policy) {
+        int maxAttempts = policy == null ? 1 : policy.maxAttempts();
+        RetryableException lastCause = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                handler.handle(rec);
+                return;
+            } catch (RetryableException e) {
+                lastCause = e;
+                if (attempt < maxAttempts && policy != null && !policy.backoff().isZero()) {
+                    try {
+                        Thread.sleep(policy.backoff().toMillis());
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("interrupted during DLT backoff", ie);
+                    }
+                }
+            }
+        }
+        if (policy == null) {
+            throw new RuntimeException(
+                    "record handler rejected " + rec.tp().getTopic() + "-" + rec.tp().getPartition()
+                            + "@" + rec.offset() + " and no DeadLetterPolicy is configured",
+                    lastCause);
+        }
+        produceToDlt(rec, lastCause, policy);
+    }
+
+    private void produceToDlt(ConsumerRecord<K, V> rec, RetryableException cause, DeadLetterPolicy policy) {
+        // Reuse the original record's raw headers; append X-DLT-Failure-Cause.
+        byte[][] src = rec.headers();
+        byte[][] decorated = new byte[src.length + 2][];
+        System.arraycopy(src, 0, decorated, 0, src.length);
+        decorated[src.length] = "X-DLT-Failure-Cause".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String causeText = cause.getClass().getName() + ": " + (cause.getMessage() == null ? "" : cause.getMessage());
+        decorated[src.length + 1] = causeText.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        byte[] keyBytes = rec.key() == null ? null : serializeForDlt(rec.key());
+        byte[] valueBytes = rec.value() == null ? null : serializeForDlt(rec.value());
+        var record = new Record(0, 0L, keyBytes, valueBytes, decorated);
+        var records = List.of(record);
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        long now = System.currentTimeMillis();
+        RecordBatch.encode(buf, 0L, 0, now, now, -1L, (short) -1, -1, records);
+        buf.flip();
+        byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+
+        var req = ProduceRequest.newBuilder()
+                .setTopic(policy.dltTopic())
+                .setPartition(rec.tp().getPartition())
+                .setBatch(ByteString.copyFrom(bytes))
+                .setProducerId(-1L)
+                .setBaseSequence(-1)
+                .setAcks(1)
+                .build();
+        var resp = lazyDltProducer()
+                .withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
+                .produce(req);
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException(
+                    "DLT produce to " + policy.dltTopic() + "-" + rec.tp().getPartition()
+                            + " failed: " + resp.getError().getMessage());
+        }
+    }
+
+    /**
+     * DLT produce needs the original bytes. For {@code byte[]} keys/values the
+     * deserialized form IS the wire form. For any other type the plain
+     * {@code toString().getBytes(UTF_8)} is the cheapest round-trip; callers
+     * that need exact-bytes fidelity should use {@code ByteArrayDeserializer}.
+     */
+    @SuppressWarnings("unchecked")
+    private static byte[] serializeForDlt(Object o) {
+        if (o instanceof byte[] b) return b;
+        if (o instanceof String s) return s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private ProducerGrpc.ProducerBlockingStub lazyDltProducer() {
+        if (dltProducerStub == null) {
+            dltProducerStub = ProducerGrpc.newBlockingStub(bootstrapChannel);
+        }
+        return dltProducerStub;
     }
 
     /** Commit the consumer's current per-partition fetch offsets. */
@@ -362,7 +478,7 @@ public final class Consumer<K, V> implements AutoCloseable {
                     if (absoluteOffset < startOffset) continue; // pre-fetch-offset records
                     K key = rec.key() == null ? null : keyDe.deserialize(rec.key());
                     V value = rec.value() == null ? null : valueDe.deserialize(rec.value());
-                    out.add(new ConsumerRecord<>(tp, absoluteOffset, key, value));
+                    out.add(new ConsumerRecord<>(tp, absoluteOffset, key, value, rec.headers()));
                 }
             } catch (IllegalArgumentException e) {
                 buf.position(mark);

@@ -2,6 +2,10 @@ package jbroker.broker.replication;
 
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import jbroker.broker.BrokerRegistry;
 import jbroker.broker.MetadataStateMachine;
 import jbroker.broker.PartitionState;
@@ -50,6 +54,8 @@ public final class ReplicaFetcherManager
     private record Key(String topic, int partition) {}
 
     private final ConcurrentHashMap<Key, FetcherHandle> active = new ConcurrentHashMap<>();
+    private final ExecutorService reconcileExecutor;
+    private final AtomicBoolean pending = new AtomicBoolean();
 
     public ReplicaFetcherManager(
             int selfId,
@@ -62,6 +68,11 @@ public final class ReplicaFetcherManager
         this.brokerRegistry = brokerRegistry;
         this.logManager = logManager;
         this.factory = factory;
+        this.reconcileExecutor = Executors.newSingleThreadExecutor(r -> {
+            var t = new Thread(r, "replica-fetcher-reconcile-" + selfId);
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     /**
@@ -101,19 +112,53 @@ public final class ReplicaFetcherManager
         return state.leader() != selfId && state.replicas().contains(selfId);
     }
 
+    /**
+     * Coalescing async trigger used by listener callbacks. Safe to call from
+     * the Raft apply thread — the actual reconcile runs on a dedicated
+     * single-thread executor. Multiple concurrent calls collapse to at most
+     * one queued reconcile plus at most one running one (coalescing via
+     * the {@code pending} flag).
+     */
+    public void scheduleReconcile() {
+        if (reconcileExecutor.isShutdown()) return;
+        if (!pending.compareAndSet(false, true)) return;
+        try {
+            reconcileExecutor.submit(() -> {
+                pending.set(false);
+                try {
+                    reconcile();
+                } catch (Exception e) {
+                    log.warn("async reconcile failed", e);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // Executor shut down between our isShutdown check and submit —
+            // nothing to do; close() takes over.
+            pending.set(false);
+        }
+    }
+
     @Override
     public void onPartitionChange(String topic, int partition, PartitionState state) {
-        reconcile();
+        scheduleReconcile();
     }
 
     @Override
     public void onBrokerRegistration(int brokerId, String host, int port) {
-        reconcile();
+        scheduleReconcile();
     }
 
     @Override
-    public synchronized void close() {
-        active.values().forEach(FetcherHandle::stop);
-        active.clear();
+    public void close() {
+        reconcileExecutor.shutdownNow();
+        try {
+            reconcileExecutor.awaitTermination(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        synchronized (this) {
+            active.values().forEach(FetcherHandle::stop);
+            active.clear();
+        }
     }
 }

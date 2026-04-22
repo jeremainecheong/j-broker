@@ -11,6 +11,8 @@ import jbroker.proto.broker.DescribeClusterRequest;
 import jbroker.proto.broker.DescribeClusterResponse;
 import jbroker.proto.broker.DescribeConsumerGroupRequest;
 import jbroker.proto.broker.DescribeConsumerGroupResponse;
+import jbroker.proto.broker.DescribeMetricsRequest;
+import jbroker.proto.broker.DescribeMetricsResponse;
 import jbroker.proto.broker.DescribeRaftRequest;
 import jbroker.proto.broker.DescribeRaftResponse;
 import jbroker.proto.broker.DescribeTopicPartitionsRequest;
@@ -52,6 +54,8 @@ public final class MetadataServiceHandler {
     private final jbroker.storage.LogManager logManager;
     private final jbroker.broker.group.GroupCoordinator groupCoordinator;
     private final jbroker.broker.group.OffsetCache offsetCache;
+    private final Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability;
+    private final BrokerMetrics brokerMetrics;
 
     /** Default staleness threshold: matches {@code BrokerFencer}'s 3s default. */
     public static final long DEFAULT_STALENESS_NANOS = TimeUnit.SECONDS.toNanos(3);
@@ -84,7 +88,7 @@ public final class MetadataServiceHandler {
                 null);
     }
 
-    /** full constructor with group coordinator + offset cache for consumer-group RPCs. */
+    /** back-compat overload without Raft observability / metrics. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -99,6 +103,41 @@ public final class MetadataServiceHandler {
             jbroker.storage.LogManager logManager,
             jbroker.broker.group.GroupCoordinator groupCoordinator,
             jbroker.broker.group.OffsetCache offsetCache) {
+        this(
+                selfBrokerId,
+                brokerRegistry,
+                brokerLiveness,
+                selfRole,
+                currentLeaderId,
+                currentTerm,
+                metadataOffset,
+                nowNanos,
+                stalenessThresholdNanos,
+                topicManager,
+                logManager,
+                groupCoordinator,
+                offsetCache,
+                null,
+                null);
+    }
+
+    /** full constructor with Raft observability + broker metrics for /raft + /metrics endpoints. */
+    public MetadataServiceHandler(
+            int selfBrokerId,
+            BrokerRegistry brokerRegistry,
+            BrokerLiveness brokerLiveness,
+            Supplier<String> selfRole,
+            Supplier<Optional<Integer>> currentLeaderId,
+            LongSupplier currentTerm,
+            LongSupplier metadataOffset,
+            Supplier<Long> nowNanos,
+            long stalenessThresholdNanos,
+            TopicManager topicManager,
+            jbroker.storage.LogManager logManager,
+            jbroker.broker.group.GroupCoordinator groupCoordinator,
+            jbroker.broker.group.OffsetCache offsetCache,
+            Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability,
+            BrokerMetrics brokerMetrics) {
         this.selfBrokerId = selfBrokerId;
         this.brokerRegistry = brokerRegistry;
         this.brokerLiveness = brokerLiveness;
@@ -112,6 +151,8 @@ public final class MetadataServiceHandler {
         this.logManager = logManager;
         this.groupCoordinator = groupCoordinator;
         this.offsetCache = offsetCache;
+        this.raftObservability = raftObservability;
+        this.brokerMetrics = brokerMetrics;
     }
 
     /** back-compat overload — no TopicManager / LogManager wired. */
@@ -156,6 +197,8 @@ public final class MetadataServiceHandler {
                 () -> 0L,
                 System::nanoTime,
                 DEFAULT_STALENESS_NANOS,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -393,8 +436,61 @@ public final class MetadataServiceHandler {
     }
 
     public DescribeRaftResponse describeRaft(DescribeRaftRequest req) {
+        if (raftObservability == null) {
+            return DescribeRaftResponse.newBuilder()
+                    .setError(ErrorCode.UNIMPLEMENTED)
+                    .build();
+        }
+        var o = raftObservability.get();
         return DescribeRaftResponse.newBuilder()
-                .setError(ErrorCode.UNIMPLEMENTED)
+                .setError(ErrorCode.OK)
+                .setNodeId(selfBrokerId)
+                .setRole(selfRole.get())
+                .setCurrentTerm(o.currentTerm())
+                .setCommitIndex(o.commitIndex())
+                .setLastApplied(o.lastApplied())
+                .setVotedFor(o.votedFor())
+                .setLastLogIndex(o.lastLogIndex())
+                .setLastLogTerm(o.lastLogTerm())
+                .build();
+    }
+
+    /**
+     * snapshot the broker's rolling metrics. The admin REST layer
+     * fans out across brokers and returns the union (or aggregated) view.
+     * Returns {@code null} if no {@link BrokerMetrics} is wired (tests).
+     */
+    public BrokerMetrics brokerMetrics() {
+        return brokerMetrics;
+    }
+
+    public DescribeMetricsResponse describeMetrics(DescribeMetricsRequest req) {
+        if (brokerMetrics == null) {
+            return DescribeMetricsResponse.newBuilder()
+                    .setError(ErrorCode.UNIMPLEMENTED)
+                    .setBrokerId(selfBrokerId)
+                    .build();
+        }
+        var t = brokerMetrics.throughputSnapshot();
+        var pl = brokerMetrics.produceLatencySnapshot();
+        var fl = brokerMetrics.fetchLatencySnapshot();
+        return DescribeMetricsResponse.newBuilder()
+                .setError(ErrorCode.OK)
+                .setBrokerId(selfBrokerId)
+                .setWindowSeconds(t.windowSeconds())
+                .setProduceCount(t.produceCount())
+                .setProduceBytes(t.produceBytes())
+                .setFetchCount(t.fetchCount())
+                .setFetchBytes(t.fetchBytes())
+                .setProduceBytesPerSec(t.produceBytesPerSec())
+                .setFetchBytesPerSec(t.fetchBytesPerSec())
+                .setProduceP50Nanos(pl.p50Nanos())
+                .setProduceP99Nanos(pl.p99Nanos())
+                .setProduceP999Nanos(pl.p999Nanos())
+                .setFetchP50Nanos(fl.p50Nanos())
+                .setFetchP99Nanos(fl.p99Nanos())
+                .setFetchP999Nanos(fl.p999Nanos())
+                .setIncrementalFetchHits(brokerMetrics.incrementalFetchHits())
                 .build();
     }
 

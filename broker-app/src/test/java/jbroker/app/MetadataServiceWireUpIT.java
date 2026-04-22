@@ -19,18 +19,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Wire-up IT — the Milestone 8 {@code Metadata} gRPC surface is reachable on
- * the broker. As slices land, more RPCs move off the UNIMPLEMENTED
- * placeholder:
- * <ul>
- *   <li>{@code DescribeCluster} (exercised in {@link DescribeClusterIT}).</li>
- *   <li>{@code DescribeTopicPartitions} (returns {@code UNKNOWN} for
- *       an unknown topic).</li>
- *   <li>{@code ListConsumerGroups} + {@code DescribeConsumerGroup}
- *       (list returns empty OK, describe returns {@code NOT_COORDINATOR}
- *       for unknown groups — E2E coverage in
- *       {@link jbroker.admin.e2e.ConsumerGroupLagIT}).</li>
- *   <li>{@code DescribeRaft} — still placeholder.</li>
- * </ul>
+ * the broker. As of every RPC has a real implementation; this IT
+ * just confirms the surface is registered and returns well-formed
+ * responses (deeper coverage lives in slice-specific tests).
  */
 class MetadataServiceWireUpIT {
 
@@ -73,9 +64,10 @@ class MetadataServiceWireUpIT {
                                     .build())
                             .getError())
                     .isEqualTo(ErrorCode.NOT_COORDINATOR);
+            // describeRaft is implemented as of .
             assertThat(stub.describeRaft(DescribeRaftRequest.newBuilder().build())
                             .getError())
-                    .isEqualTo(ErrorCode.UNIMPLEMENTED);
+                    .isEqualTo(ErrorCode.OK);
         } finally {
             channel.shutdown();
             channel.awaitTermination(2, TimeUnit.SECONDS);

@@ -14,6 +14,10 @@ import jbroker.proto.broker.DescribeClusterRequest;
 import jbroker.proto.broker.DescribeClusterResponse;
 import jbroker.proto.broker.DescribeConsumerGroupRequest;
 import jbroker.proto.broker.DescribeConsumerGroupResponse;
+import jbroker.proto.broker.DescribeMetricsRequest;
+import jbroker.proto.broker.DescribeMetricsResponse;
+import jbroker.proto.broker.DescribeRaftRequest;
+import jbroker.proto.broker.DescribeRaftResponse;
 import jbroker.proto.broker.DescribeTopicPartitionsRequest;
 import jbroker.proto.broker.DescribeTopicPartitionsResponse;
 import jbroker.proto.broker.ListConsumerGroupsRequest;
@@ -104,6 +108,16 @@ public final class BrokerAdminClient implements AutoCloseable {
                 .describeConsumerGroup(DescribeConsumerGroupRequest.newBuilder()
                         .setGroupId(groupId)
                         .build());
+    }
+
+    public DescribeRaftResponse describeRaft() {
+        return metadata.withDeadlineAfter(3, TimeUnit.SECONDS)
+                .describeRaft(DescribeRaftRequest.newBuilder().build());
+    }
+
+    public DescribeMetricsResponse describeMetrics() {
+        return metadata.withDeadlineAfter(3, TimeUnit.SECONDS)
+                .describeMetrics(DescribeMetricsRequest.newBuilder().build());
     }
 
     public UpdateTopicConfigResponse updateTopicConfig(String topic, Map<String, String> overlay) {

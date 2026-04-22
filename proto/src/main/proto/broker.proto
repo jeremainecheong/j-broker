@@ -57,6 +57,8 @@ service Metadata {
   rpc DescribeConsumerGroup(DescribeConsumerGroupRequest)
       returns (DescribeConsumerGroupResponse);
   rpc DescribeRaft(DescribeRaftRequest) returns (DescribeRaftResponse);
+  // rolling throughput + latency snapshot for the admin metrics UI.
+  rpc DescribeMetrics(DescribeMetricsRequest) returns (DescribeMetricsResponse);
 }
 
 // Broker-to-broker cluster management RPCs. adds BrokerHeartbeat
@@ -523,4 +525,25 @@ message DescribeRaftResponse {
   int32 voted_for = 7;
   int64 last_log_index = 8;
   int64 last_log_term = 9;
+}
+
+message DescribeMetricsRequest {}
+
+message DescribeMetricsResponse {
+  jbroker.common.ErrorCode error = 1;
+  int32 broker_id = 2;
+  double window_seconds = 3;
+  int64 produce_count = 4;
+  int64 produce_bytes = 5;
+  int64 fetch_count = 6;
+  int64 fetch_bytes = 7;
+  double produce_bytes_per_sec = 8;
+  double fetch_bytes_per_sec = 9;
+  int64 produce_p50_nanos = 10;
+  int64 produce_p99_nanos = 11;
+  int64 produce_p999_nanos = 12;
+  int64 fetch_p50_nanos = 13;
+  int64 fetch_p99_nanos = 14;
+  int64 fetch_p999_nanos = 15;
+  int64 incremental_fetch_hits = 16;
 }

@@ -36,6 +36,7 @@ public final class ProduceHandler {
     private final TopicManager topicManager;
     private final int selfBrokerId;
     private final FollowerStateTracker followerTracker;
+    private final BrokerMetrics metrics;
 
     // TODO(): idle-producer-state expiration. This map grows unbounded
     // across (topic, partition, producer_id, producer_epoch) pairs ever
@@ -44,16 +45,27 @@ public final class ProduceHandler {
     private final ConcurrentHashMap<DedupKey, DedupEntry> dedup = new ConcurrentHashMap<>();
 
     public ProduceHandler(
-            LogManager logManager, TopicManager topicManager, int selfBrokerId, FollowerStateTracker followerTracker) {
+            LogManager logManager,
+            TopicManager topicManager,
+            int selfBrokerId,
+            FollowerStateTracker followerTracker,
+            BrokerMetrics metrics) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
         this.followerTracker = followerTracker;
+        this.metrics = metrics == null ? new BrokerMetrics() : metrics;
+    }
+
+    /** Back-compat overload: omits metrics (tests that don't care). */
+    public ProduceHandler(
+            LogManager logManager, TopicManager topicManager, int selfBrokerId, FollowerStateTracker followerTracker) {
+        this(logManager, topicManager, selfBrokerId, followerTracker, null);
     }
 
     /** Back-compat: single-broker path where acks=all isn't meaningful. */
     public ProduceHandler(LogManager logManager, TopicManager topicManager, int selfBrokerId) {
-        this(logManager, topicManager, selfBrokerId, new FollowerStateTracker());
+        this(logManager, topicManager, selfBrokerId, new FollowerStateTracker(), null);
     }
 
     public ProduceResponse handle(ProduceRequest req) {
@@ -136,6 +148,7 @@ public final class ProduceHandler {
     }
 
     private ProduceResponse appendAndRespond(ProduceRequest req, RecordBatch.Parsed parsed) {
+        long startNs = System.nanoTime();
         try {
             var log = logManager.logFor(req.getTopic(), req.getPartition());
             long now = System.currentTimeMillis();
@@ -145,6 +158,7 @@ public final class ProduceHandler {
                 var wait = waitForIsrReplication(req.getTopic(), req.getPartition(), last);
                 if (wait != null) return wait;
             }
+            metrics.recordProduce(System.nanoTime() - startNs, req.getBatch().size());
             return ProduceResponse.newBuilder()
                     .setBaseOffset(first)
                     .setLastOffset(last)

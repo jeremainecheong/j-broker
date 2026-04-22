@@ -218,6 +218,11 @@ public final class RaftDriver implements AutoCloseable {
         return core.currentLeader();
     }
 
+    /** See {@link RaftCore#observability()}. Exposed for admin {@code /raft}. */
+    public jbroker.raft.core.RaftCore.Observability observability() {
+        return core.observability();
+    }
+
     public java.util.Collection<RaftPeerClient> peers() {
         return peers.values();
     }

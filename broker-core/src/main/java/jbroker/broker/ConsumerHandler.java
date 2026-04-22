@@ -14,6 +14,7 @@ import jbroker.proto.broker.ListOffsetsRequest;
 import jbroker.proto.broker.ListOffsetsResponse;
 import jbroker.proto.broker.ListOffsetsResult;
 import jbroker.proto.broker.OffsetFetchResult;
+import jbroker.proto.common.BrokerEndpoint;
 import jbroker.proto.common.ErrorCode;
 import jbroker.storage.LogManager;
 
@@ -40,8 +41,6 @@ public final class ConsumerHandler {
 
     private final TopicManager topicManager;
     private final LogManager logManager;
-
-    @SuppressWarnings("unused") // wired now so P7.3 can use it without re-touching Broker.start
     private final BrokerRegistry brokerRegistry;
 
     public ConsumerHandler(TopicManager topicManager, LogManager logManager, BrokerRegistry brokerRegistry) {
@@ -50,9 +49,52 @@ public final class ConsumerHandler {
         this.brokerRegistry = brokerRegistry;
     }
 
+    /**
+     * Routes a group to the broker that hosts its coordinator partition in
+     * {@code __consumer_offsets}. Coordinator partition is
+     * {@code Math.floorMod(group_id.hashCode(), partitionCount)}; that
+     * partition's leader is the coordinator. Returns
+     * {@link ErrorCode#COORDINATOR_NOT_AVAILABLE} when:
+     * <ul>
+     *   <li>{@code __consumer_offsets} doesn't exist yet (controller hasn't
+     *       finished auto-create — racing with broker startup), or</li>
+     *   <li>the coordinator partition's current leader is the {@code -1}
+     *       sentinel (no surviving ISR member after a fence), or</li>
+     *   <li>the leader broker has no entry in {@link BrokerRegistry} (the
+     *       controller proposed the registration but it hasn't applied on
+     *       this broker yet).</li>
+     * </ul>
+     * The client retries on this error after a short backoff.
+     */
     public FindCoordinatorResponse findCoordinator(FindCoordinatorRequest req) {
+        var topicDesc = topicManager.describe(ConsumerOffsetsTopic.NAME);
+        if (topicDesc.isEmpty()) {
+            return FindCoordinatorResponse.newBuilder()
+                    .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                    .build();
+        }
+        int partitionCount = topicDesc.get().partitions();
+        int partition = Math.floorMod(req.getKey().hashCode(), partitionCount);
+        var partitionState = topicManager.partitionState(ConsumerOffsetsTopic.NAME, partition);
+        if (partitionState.isEmpty() || partitionState.get().leader() <= 0) {
+            return FindCoordinatorResponse.newBuilder()
+                    .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                    .build();
+        }
+        int leaderId = partitionState.get().leader();
+        var address = brokerRegistry.addressFor(leaderId);
+        if (address.isEmpty()) {
+            return FindCoordinatorResponse.newBuilder()
+                    .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                    .build();
+        }
         return FindCoordinatorResponse.newBuilder()
-                .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                .setError(ErrorCode.OK)
+                .setCoordinator(BrokerEndpoint.newBuilder()
+                        .setNodeId(leaderId)
+                        .setHost(address.get().host())
+                        .setPort(address.get().port())
+                        .build())
                 .build();
     }
 

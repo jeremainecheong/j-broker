@@ -127,9 +127,98 @@ public final class ConsumerOffsetsTopic {
     }
 
     /**
-     * Placeholder value type. P7.8 (coordinator failover) replaces this
-     * record with a proto-encoded {@code GroupMetadataValue} carrying
-     * generation, members, and per-member assignment.
+     * Per-group state snapshot persisted on every membership change.
+     * Read back by the recovery walk on coordinator activation
+     * (broker becomes leader of the group's {@code __consumer_offsets}
+     * partition) to rebuild {@link jbroker.broker.group.GroupCoordinator}
+     * state.
+     *
+     * <p>Wire format (all big-endian):
+     * <pre>
+     *   int32  generation
+     *   int32  member_count
+     *   for each member:
+     *     utf8 member_id              (writeUTF: u16 length + bytes)
+     *     utf8 instance_id            ("" for dynamic members)
+     *     int32 member_epoch
+     *     int32 subscribed_topic_count
+     *     utf8[]                      subscribed topic names
+     *     int32 assignment_count      (TopicPartition pairs)
+     *     for each TP:
+     *       utf8 topic
+     *       int32 partition
+     * </pre>
      */
-    public record GroupMetadataValue(byte[] payload) {}
+    public record GroupMetadataValue(int generation, java.util.List<MemberSnapshot> members) {
+        public GroupMetadataValue {
+            members = java.util.List.copyOf(members);
+        }
+    }
+
+    public record MemberSnapshot(
+            String memberId,
+            String instanceId,
+            int memberEpoch,
+            java.util.List<String> subscribedTopics,
+            java.util.List<jbroker.proto.common.TopicPartition> assignment) {
+        public MemberSnapshot {
+            subscribedTopics = java.util.List.copyOf(subscribedTopics);
+            assignment = java.util.List.copyOf(assignment);
+        }
+    }
+
+    public static byte[] valueForGroupMetadata(GroupMetadataValue v) {
+        try (var baos = new ByteArrayOutputStream();
+                var dout = new DataOutputStream(baos)) {
+            dout.writeInt(v.generation());
+            dout.writeInt(v.members().size());
+            for (var m : v.members()) {
+                dout.writeUTF(m.memberId());
+                dout.writeUTF(m.instanceId() == null ? "" : m.instanceId());
+                dout.writeInt(m.memberEpoch());
+                dout.writeInt(m.subscribedTopics().size());
+                for (var t : m.subscribedTopics()) {
+                    dout.writeUTF(t);
+                }
+                dout.writeInt(m.assignment().size());
+                for (var tp : m.assignment()) {
+                    dout.writeUTF(tp.getTopic());
+                    dout.writeInt(tp.getPartition());
+                }
+            }
+            return baos.toByteArray();
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    public static GroupMetadataValue decodeGroupMetadataValue(byte[] bytes) {
+        try (var din = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            int generation = din.readInt();
+            int memberCount = din.readInt();
+            var members = new java.util.ArrayList<MemberSnapshot>(memberCount);
+            for (int i = 0; i < memberCount; i++) {
+                String memberId = din.readUTF();
+                String instanceId = din.readUTF();
+                int memberEpoch = din.readInt();
+                int subCount = din.readInt();
+                var subscribed = new java.util.ArrayList<String>(subCount);
+                for (int s = 0; s < subCount; s++) subscribed.add(din.readUTF());
+                int assignCount = din.readInt();
+                var assignment = new java.util.ArrayList<jbroker.proto.common.TopicPartition>(assignCount);
+                for (int a = 0; a < assignCount; a++) {
+                    String topic = din.readUTF();
+                    int partition = din.readInt();
+                    assignment.add(jbroker.proto.common.TopicPartition.newBuilder()
+                            .setTopic(topic)
+                            .setPartition(partition)
+                            .build());
+                }
+                members.add(new MemberSnapshot(memberId, instanceId, memberEpoch, subscribed, assignment));
+            }
+            return new GroupMetadataValue(generation, members);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("malformed GroupMetadataValue: " + e.getMessage(), e);
+        }
+    }
 }

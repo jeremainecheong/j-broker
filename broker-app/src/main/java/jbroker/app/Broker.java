@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import jbroker.broker.AdminHandler;
 import jbroker.broker.BrokerGrpcServices;
 import jbroker.broker.ConsumerHandler;
+import jbroker.broker.ConsumerOffsetsCreator;
 import jbroker.broker.FetchHandler;
 import jbroker.broker.InitProducerIdHandler;
 import jbroker.broker.MetadataStateMachine;
@@ -54,15 +55,42 @@ public final class Broker implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Broker.class);
 
-    public record Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort, List<VoterAddress> voters) {
+    public record Config(
+            NodeId selfId,
+            Path dataDir,
+            int raftPort,
+            int brokerPort,
+            List<VoterAddress> voters,
+            int consumerOffsetsPartitions) {
         public Config {
             voters = List.copyOf(voters);
+            if (consumerOffsetsPartitions < 1) {
+                throw new IllegalArgumentException(
+                        "consumerOffsetsPartitions must be ≥ 1, got " + consumerOffsetsPartitions);
+            }
+        }
+
+        /**
+         * Convenience overload for tests with explicit voters. Defaults
+         * {@code consumerOffsetsPartitions} to 1 so existing ITs that don't
+         * exercise consumer-group routing don't pay a 50-partition tax in
+         * BrokerFencer / replication cycles. Production multi-broker
+         * deployments should use the explicit-N constructor (or
+         * {@link #withConsumerOffsetsPartitions}) to opt up to the
+         * Kafka-convention 50.
+         */
+        public Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort, List<VoterAddress> voters) {
+            this(selfId, dataDir, raftPort, brokerPort, voters, /*consumerOffsetsPartitions*/ 1);
         }
 
         /**
          * Back-compat overload: single-voter config where the only voter is self,
          * reachable at 127.0.0.1 on the provided {@code raftPort}. All existing
          * single-broker callers keep working unchanged.
+         *
+         * <p>Defaults to a 1-partition {@code __consumer_offsets} to keep
+         * single-broker test fixtures fast — production deployments should
+         * use the explicit-voter constructor (which defaults to 50).
          */
         public Config(NodeId selfId, Path dataDir, int raftPort, int brokerPort) {
             this(
@@ -70,7 +98,12 @@ public final class Broker implements AutoCloseable {
                     dataDir,
                     raftPort,
                     brokerPort,
-                    List.of(new VoterAddress(selfId, "127.0.0.1", raftPort, brokerPort)));
+                    List.of(new VoterAddress(selfId, "127.0.0.1", raftPort, brokerPort)),
+                    /*consumerOffsetsPartitions*/ 1);
+        }
+
+        public Config withConsumerOffsetsPartitions(int n) {
+            return new Config(selfId, dataDir, raftPort, brokerPort, voters, n);
         }
     }
 
@@ -249,6 +282,17 @@ public final class Broker implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
+        // P7.2: __consumer_offsets needs to exist before any consumer-group
+        // RPC can land. The leader proposes it once after registrations
+        // settle; the creator is idempotent so re-ticking under election
+        // churn doesn't matter.
+        var consumerOffsetsCreator = new ConsumerOffsetsCreator(
+                topicManager,
+                brokerRegistry::knownBrokerIds,
+                config.selfId().value(),
+                ConsumerOffsetsCreator.fromMetadataProposer(proposer),
+                () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
+                config.consumerOffsetsPartitions());
         registrationTicker.scheduleWithFixedDelay(
                 () -> {
                     if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return;
@@ -276,6 +320,15 @@ public final class Broker implements AutoCloseable {
                         } catch (Exception e) {
                             log.debug("registration propose for broker {} failed; retrying", bid, e);
                         }
+                    }
+                    // After every registration tick, give the
+                    // __consumer_offsets creator a chance to land. Idempotent:
+                    // it self-skips when the topic already exists or when
+                    // no peers are known yet.
+                    try {
+                        consumerOffsetsCreator.ensureCreated();
+                    } catch (Exception e) {
+                        log.debug("__consumer_offsets create attempt failed; will retry next tick", e);
                     }
                 },
                 0,

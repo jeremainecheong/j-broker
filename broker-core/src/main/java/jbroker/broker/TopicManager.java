@@ -18,9 +18,31 @@ public final class TopicManager {
     /**
      * Called by the state machine when a {@code TopicRecord} commits. Idempotent —
      * re-applying the same record is a no-op.
+     *
+     * <p>Back-compat overload: defaults {@code internal} and {@code compact}
+     * to {@code false} for pre-Phase-7 callers + tests.
      */
     public void onTopicCommitted(String topic, int partitions, int replicationFactor, long createdMillis) {
-        topics.putIfAbsent(topic, new TopicDescription(topic, partitions, replicationFactor, createdMillis));
+        onTopicCommitted(topic, partitions, replicationFactor, createdMillis, false, false);
+    }
+
+    /**
+     * Phase 7 form: also accepts {@code internal} and {@code compact} flags.
+     * Topics whose name starts with {@code __} are forced to {@code internal=true}
+     * even if the caller passes {@code false}, so {@link #list()} reliably
+     * hides them.
+     */
+    public void onTopicCommitted(
+            String topic,
+            int partitions,
+            int replicationFactor,
+            long createdMillis,
+            boolean internal,
+            boolean compact) {
+        boolean effectiveInternal = internal || topic.startsWith("__");
+        topics.putIfAbsent(
+                topic,
+                new TopicDescription(topic, partitions, replicationFactor, createdMillis, effectiveInternal, compact));
     }
 
     /**
@@ -68,8 +90,30 @@ public final class TopicManager {
         return Optional.ofNullable(topics.get(topic));
     }
 
+    /**
+     * User-visible topics — internal topics ({@code __consumer_offsets}, etc.)
+     * are filtered out so {@code Admin.ListTopics} doesn't show plumbing.
+     */
     public List<TopicDescription> list() {
+        var out = new java.util.ArrayList<TopicDescription>();
+        for (var t : topics.values()) {
+            if (!t.internal()) out.add(t);
+        }
+        return List.copyOf(out);
+    }
+
+    /** All topics, internal and user-visible. */
+    public List<TopicDescription> listAll() {
         return List.copyOf(topics.values());
+    }
+
+    /** Internal topics only. */
+    public List<TopicDescription> listInternal() {
+        var out = new java.util.ArrayList<TopicDescription>();
+        for (var t : topics.values()) {
+            if (t.internal()) out.add(t);
+        }
+        return List.copyOf(out);
     }
 
     public boolean exists(String topic) {

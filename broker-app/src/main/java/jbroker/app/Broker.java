@@ -81,6 +81,7 @@ public final class Broker implements AutoCloseable {
     private final int brokerPort;
     private final ScheduledExecutorService isrTicker;
     private final ScheduledExecutorService registrationTicker;
+    private final ScheduledExecutorService fencerTicker;
     private final jbroker.broker.BrokerRegistry brokerRegistry;
     private final jbroker.broker.BrokerLiveness brokerLiveness;
     private final jbroker.broker.BrokerHeartbeatSender heartbeatSender;
@@ -96,6 +97,7 @@ public final class Broker implements AutoCloseable {
             int brokerPort,
             ScheduledExecutorService isrTicker,
             ScheduledExecutorService registrationTicker,
+            ScheduledExecutorService fencerTicker,
             jbroker.broker.BrokerRegistry brokerRegistry,
             jbroker.broker.BrokerLiveness brokerLiveness,
             jbroker.broker.BrokerHeartbeatSender heartbeatSender,
@@ -109,6 +111,7 @@ public final class Broker implements AutoCloseable {
         this.brokerPort = brokerPort;
         this.isrTicker = isrTicker;
         this.registrationTicker = registrationTicker;
+        this.fencerTicker = fencerTicker;
         this.brokerRegistry = brokerRegistry;
         this.brokerLiveness = brokerLiveness;
         this.heartbeatSender = heartbeatSender;
@@ -308,6 +311,43 @@ public final class Broker implements AutoCloseable {
                 2,
                 TimeUnit.SECONDS);
 
+        // BrokerFencer: 1s tick; on the active controller only, scan
+        // BrokerLiveness for stale partition leaders and propose a
+        // PartitionChangeRecord demoting each one. A fenced broker's
+        // partition-leaderships flip to the first surviving ISR member
+        // with a bumped leader_epoch; no surviving ISR → leader = -1
+        // sentinel.
+        jbroker.broker.replication.BrokerFencer.MetadataProposer fenceProposer = payload -> {
+            try {
+                raftDriver.propose(payload);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        var fencer = new jbroker.broker.replication.BrokerFencer(
+                config.selfId().value(),
+                topicManager,
+                brokerLiveness,
+                fenceProposer,
+                raftDriver::role,
+                TimeUnit.SECONDS.toNanos(3));
+        var fencerTicker = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "broker-fencer-" + config.selfId().value());
+            t.setDaemon(true);
+            return t;
+        });
+        fencerTicker.scheduleWithFixedDelay(
+                () -> {
+                    try {
+                        fencer.tick(System.nanoTime());
+                    } catch (Exception e) {
+                        log.debug("fencer tick failed, retrying on next tick", e);
+                    }
+                },
+                1,
+                1,
+                TimeUnit.SECONDS);
+
         // Point-to-point heartbeat sender: every broker periodically
         // pings every peer (excluding self) with its current metadata
         // offset. Receivers update their BrokerLiveness maps directly.
@@ -321,8 +361,12 @@ public final class Broker implements AutoCloseable {
         // 's fencer only looks at wall-clock, so a placeholder 0 is
         // fine here. Wire up a real applied-offset supplier if a consumer
         // needs it.
+        // 250ms heartbeat with 3s staleness threshold = 12 missed
+        // heartbeats to trigger a false-positive fence — safe under
+        // heavy GC / JVM load. Low enough traffic (6 RPCs/s per broker
+        // in a 3-broker cluster) to be negligible.
         var heartbeatSender = new jbroker.broker.BrokerHeartbeatSender(
-                config.selfId().value(), heartbeatPeers, () -> 0L, /*intervalMs*/ 1_000L);
+                config.selfId().value(), heartbeatPeers, () -> 0L, /*intervalMs*/ 250L);
         heartbeatSender.start();
 
         return new Broker(
@@ -334,6 +378,7 @@ public final class Broker implements AutoCloseable {
                 server.getPort(),
                 isrTicker,
                 registrationTicker,
+                fencerTicker,
                 brokerRegistry,
                 brokerLiveness,
                 heartbeatSender,
@@ -366,15 +411,38 @@ public final class Broker implements AutoCloseable {
         return logManager;
     }
 
+    /**
+     * Simulates {@code kill -9} in-process: shuts gRPC + Raft down with
+     * {@code shutdownNow()} and skips the graceful drain. Tests use this
+     * to prove failover from an abruptly-gone partition leader.
+     */
+    public void closeAbruptly() {
+        isrTicker.shutdownNow();
+        registrationTicker.shutdownNow();
+        fencerTicker.shutdownNow();
+        brokerServer.shutdownNow();
+        raftDriver.close();
+        heartbeatSender.close();
+        fetcherManager.close();
+        fetcherFactory.close();
+        try {
+            logManager.close();
+        } catch (IOException ignored) {
+            /* best-effort */
+        }
+    }
+
     @Override
     public void close() {
         // Shut the tickers down first and wait briefly so an in-flight
         // propose()/fut.get() chain can't race against raftDriver.close().
         isrTicker.shutdownNow();
         registrationTicker.shutdownNow();
+        fencerTicker.shutdownNow();
         try {
             isrTicker.awaitTermination(1, TimeUnit.SECONDS);
             registrationTicker.awaitTermination(1, TimeUnit.SECONDS);
+            fencerTicker.awaitTermination(1, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

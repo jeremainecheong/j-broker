@@ -12,6 +12,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import jbroker.broker.AdminHandler;
 import jbroker.broker.BrokerGrpcServices;
+import jbroker.broker.ConsumerHandler;
 import jbroker.broker.FetchHandler;
 import jbroker.broker.InitProducerIdHandler;
 import jbroker.broker.MetadataStateMachine;
@@ -207,9 +208,10 @@ public final class Broker implements AutoCloseable {
         var brokerLiveness = new jbroker.broker.BrokerLiveness();
         var heartbeatHandler = new jbroker.broker.BrokerHeartbeatHandler(brokerLiveness, System::nanoTime);
 
+        var consumerHandler = new ConsumerHandler(topicManager, logManager, brokerRegistry);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
-                .addService(BrokerGrpcServices.consumer(fetch))
+                .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
                 .addService(BrokerGrpcServices.cluster(heartbeatHandler))
                 .addService(BrokerGrpcServices.admin(admin))

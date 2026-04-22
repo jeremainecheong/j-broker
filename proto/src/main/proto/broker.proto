@@ -1,5 +1,6 @@
 syntax = "proto3";
 package jbroker.broker;
+import "common.proto";
 option java_multiple_files = true;
 option java_package = "jbroker.proto.broker";
 
@@ -13,6 +14,15 @@ service Producer {
 
 service Consumer {
   rpc Fetch(FetchRequest) returns (FetchResponse);
+  // Phase 7 — consumer groups. The first cut of these RPCs (P7.1) wires the
+  // surface; subsequent slices (P7.3..P7.7) implement the bodies. Until
+  // implemented, handlers return COORDINATOR_NOT_AVAILABLE / OFFSET_OUT_OF_RANGE.
+  rpc ListOffsets(ListOffsetsRequest) returns (ListOffsetsResponse);
+  rpc FindCoordinator(FindCoordinatorRequest) returns (FindCoordinatorResponse);
+  rpc ConsumerGroupHeartbeat(ConsumerGroupHeartbeatRequest)
+      returns (ConsumerGroupHeartbeatResponse);
+  rpc CommitOffsets(CommitOffsetsRequest) returns (CommitOffsetsResponse);
+  rpc FetchOffsets(FetchOffsetsRequest) returns (FetchOffsetsResponse);
 }
 
 // Broker-internal RPC used by followers to pull committed record batches
@@ -193,4 +203,136 @@ message TopicDescription {
 message Error {
   int32 code = 1;
   string message = 2;
+}
+
+// ===== Consumer-group RPCs (Phase 7) =====
+//
+// Wire shape mirrors PRD §8.5 with two minor adaptations:
+// 1. Co-located here in broker.proto rather than a fork consumer.proto, so
+//    BrokerClient can stay single-channel.
+// 2. TopicPartition lives in common.proto (added in P7.1); reused across
+//    the offset commit/fetch and assignment messages.
+
+message ListOffsetsRequest {
+  // -1 = consumer fetch (default); positive = follower-replica fetch.
+  int32 replica_id = 1;
+  repeated ListOffsetsPartition partitions = 2;
+}
+
+message ListOffsetsPartition {
+  jbroker.common.TopicPartition tp = 1;
+  // -1 = latest, -2 = earliest, else by-timestamp lookup.
+  int64 timestamp = 2;
+}
+
+message ListOffsetsResponse {
+  repeated ListOffsetsResult results = 1;
+}
+
+message ListOffsetsResult {
+  jbroker.common.TopicPartition tp = 1;
+  jbroker.common.ErrorCode error = 2;
+  int64 timestamp = 3;
+  int64 offset = 4;
+  int32 leader_epoch = 5;
+}
+
+message FindCoordinatorRequest {
+  // Always group_id in Phase 7. Reserved for transactional-id lookups later.
+  string key = 1;
+}
+
+message FindCoordinatorResponse {
+  jbroker.common.ErrorCode error = 1;
+  jbroker.common.BrokerEndpoint coordinator = 2;
+}
+
+// One topic + a list of partition indices. Used inside Assignment and
+// inside the heartbeat's owned_partitions echo. Defined in broker.proto so
+// consumer-group payloads stay co-located.
+message TopicPartitions {
+  string topic = 1;
+  repeated int32 partitions = 2;
+}
+
+message Assignment {
+  repeated TopicPartitions assigned_partitions = 1;
+}
+
+message ConsumerGroupHeartbeatRequest {
+  string group_id = 1;
+  // Empty on the very first heartbeat; coordinator assigns one and echoes
+  // it back. The client persists it for the rest of its lifetime.
+  string member_id = 2;
+  // 0 on join; -1 on leave; otherwise the last value the coordinator
+  // returned (proves the client has acked the latest assignment).
+  int32 member_epoch = 3;
+  // For static membership: same instance_id across restarts keeps the
+  // member's slot. Empty for dynamic members.
+  string instance_id = 4;
+  int32 rebalance_timeout_ms = 5;
+  // Sent only when the subscription set changes (or on first heartbeat).
+  repeated string subscribed_topics = 6;
+  // Optional preference; coordinator picks a server-side assignor.
+  string server_assignor = 7;
+  // Echo of the partitions the member currently owns; lets the coordinator
+  // confirm a revoke before rolling forward to the next assignment.
+  repeated TopicPartitions owned_partitions = 8;
+}
+
+message ConsumerGroupHeartbeatResponse {
+  jbroker.common.ErrorCode error = 1;
+  int32 throttle_time_ms = 2;
+  // Same as request on steady heartbeats; populated only when coordinator
+  // assigned a fresh id (first heartbeat / static-rejoin).
+  string member_id = 3;
+  int32 member_epoch = 4;
+  int32 heartbeat_interval_ms = 5;
+  // Populated only when the assignment changed since the last heartbeat.
+  Assignment assignment = 6;
+}
+
+message CommitOffsetsRequest {
+  string group_id = 1;
+  // The member's current member_epoch — coordinator rejects stale commits
+  // with FENCED_MEMBER_EPOCH.
+  int32 generation_id_or_member_epoch = 2;
+  string member_id = 3;
+  repeated OffsetCommit commits = 4;
+}
+
+message OffsetCommit {
+  jbroker.common.TopicPartition tp = 1;
+  int64 offset = 2;
+  // The leader_epoch the consumer last fetched from. Stored alongside the
+  // offset so a future log-truncation event can be detected on resume.
+  int32 leader_epoch = 3;
+  string metadata = 4;
+}
+
+message CommitOffsetsResponse {
+  repeated CommitResult results = 1;
+}
+
+message CommitResult {
+  jbroker.common.TopicPartition tp = 1;
+  jbroker.common.ErrorCode error = 2;
+}
+
+message FetchOffsetsRequest {
+  string group_id = 1;
+  repeated jbroker.common.TopicPartition tps = 2;
+}
+
+message FetchOffsetsResponse {
+  repeated OffsetFetchResult results = 1;
+}
+
+message OffsetFetchResult {
+  jbroker.common.TopicPartition tp = 1;
+  // -1 if no offset has ever been committed for (group, tp).
+  int64 offset = 2;
+  int32 leader_epoch = 3;
+  string metadata = 4;
+  jbroker.common.ErrorCode error = 5;
 }

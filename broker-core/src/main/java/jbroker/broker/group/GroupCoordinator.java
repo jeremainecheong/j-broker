@@ -100,7 +100,17 @@ public final class GroupCoordinator {
         long lastHeartbeatNs;
         long sessionTimeoutNs;
         int rebalanceTimeoutMs;
+        // What the member currently owns (and what the coordinator has
+        // already advertised). This may be a strict subset of the eventual
+        // target during cooperative incremental rebalance — see pendingTarget.
         List<TopicPartition> currentAssignment;
+        // non-null while a cooperative rebalance is mid-flight.
+        // currentAssignment carries the "kept" set during stage 1; once the
+        // member confirms it has revoked the lost partitions (its next
+        // heartbeat carries owned_partitions == currentAssignment), the
+        // coordinator advances currentAssignment to pendingTarget (stage 2)
+        // and clears pendingTarget.
+        List<TopicPartition> pendingTarget;
 
         MemberState(
                 String memberId,
@@ -119,6 +129,7 @@ public final class GroupCoordinator {
             this.sessionTimeoutNs = sessionTimeoutNs;
             this.rebalanceTimeoutMs = rebalanceTimeoutMs;
             this.currentAssignment = List.copyOf(currentAssignment);
+            this.pendingTarget = null;
         }
     }
 
@@ -235,10 +246,15 @@ public final class GroupCoordinator {
                         HEARTBEAT_INTERVAL_MS);
             }
             member.lastHeartbeatNs = nowNs;
-            if (memberEpoch < member.memberEpoch) {
-                // Member is behind — coordinator recomputed assignment since
-                // its last heartbeat. Surface the new assignment + bumped
-                // epoch so the client catches up without a full rejoin.
+            // if the client reports it owns exactly the (stage-1)
+            // kept set we advertised, and a pendingTarget is queued,
+            // advance to stage 2 now.
+            boolean advanced = advanceCooperativeIfReady(member, ownedPartitions);
+            if (memberEpoch < member.memberEpoch || advanced) {
+                // Member is behind — either a membership change recomputed
+                // the assignment since its last heartbeat, or we just
+                // advanced past the staged revoke. Either way, surface the
+                // new assignment + bumped epoch.
                 return new HeartbeatResult(
                         HeartbeatOutcome.OK,
                         member.memberEpoch,
@@ -387,12 +403,83 @@ public final class GroupCoordinator {
         }
         var assignment = assignor.assign(sortedIds, subscriptions, partitionsByTopic);
         for (var m : group.members.values()) {
-            var newSet = assignment.getOrDefault(m.memberId, List.of());
-            if (!sameAssignment(m.currentAssignment, newSet)) {
-                m.currentAssignment = List.copyOf(newSet);
-                m.memberEpoch++;
-            }
+            var target = assignment.getOrDefault(m.memberId, List.of());
+            applyTargetCooperatively(m, target);
         }
+    }
+
+    /**
+     * cooperative incremental rebalance step. Given a freshly-computed
+     * {@code target} for the member:
+     * <ul>
+     *   <li>If the member loses no partitions (target ⊇ current OR member is
+     *       brand new), advance directly to {@code target} — no staging
+     *       needed because no other member is waiting on this one to release
+     *       anything.</li>
+     *   <li>Otherwise stage: advertise {@code current ∩ target} (the "kept"
+     *       set) as the new {@code currentAssignment} and stash {@code target}
+     *       in {@code pendingTarget}. The member acks the revoke by sending
+     *       {@code owned_partitions == currentAssignment} on its next
+     *       heartbeat; {@link #advanceCooperativeIfReady} then promotes
+     *       currentAssignment to pendingTarget.</li>
+     * </ul>
+     * In both branches {@code memberEpoch} is bumped only when
+     * {@code currentAssignment} actually changes (the assignor produced a
+     * new set), so a no-op recompute under churn doesn't churn epochs.
+     */
+    private static void applyTargetCooperatively(MemberState m, List<TopicPartition> target) {
+        var currentSet = new HashSet<>(m.currentAssignment);
+        var targetSet = new HashSet<>(target);
+        var lost = new HashSet<>(currentSet);
+        lost.removeAll(targetSet);
+
+        List<TopicPartition> newCurrent;
+        List<TopicPartition> pending;
+        if (lost.isEmpty()) {
+            // Pure additions (or no change) — go straight to target.
+            newCurrent = target;
+            pending = null;
+        } else {
+            // Staging: advertise the kept set first; member must ack before
+            // we hand over the additions (if any).
+            var kept = new ArrayList<TopicPartition>();
+            for (var tp : m.currentAssignment) {
+                if (targetSet.contains(tp)) kept.add(tp);
+            }
+            newCurrent = kept;
+            // Only stash a pendingTarget if there are additions — if target
+            // == kept (member only loses), staging completes in one round
+            // (member acks the revoke, no follow-up needed).
+            pending = sameAssignment(kept, target) ? null : target;
+        }
+
+        if (!sameAssignment(m.currentAssignment, newCurrent)) {
+            m.currentAssignment = List.copyOf(newCurrent);
+            m.memberEpoch++;
+        }
+        // pendingTarget swap doesn't bump epoch on its own — only when the
+        // advertised currentAssignment changes does the client need to react.
+        m.pendingTarget = pending == null ? null : List.copyOf(pending);
+    }
+
+    /**
+     * Called from {@link #heartbeat} when a member reports
+     * {@code ownedPartitions} matching its currently-advertised assignment.
+     * If a {@code pendingTarget} is queued, advance to it (the member has
+     * confirmed it released the revoked partitions) and bump epoch so the
+     * heartbeat response carries the new assignment.
+     *
+     * @return {@code true} if currentAssignment changed (caller should
+     *     return the new assignment in the heartbeat response).
+     */
+    private static boolean advanceCooperativeIfReady(MemberState m, List<TopicPartition> ownedPartitions) {
+        if (m.pendingTarget == null) return false;
+        if (!sameAssignment(ownedPartitions, m.currentAssignment)) return false;
+        // Member acked revoke (owned_partitions matches what we advertised).
+        m.currentAssignment = m.pendingTarget;
+        m.pendingTarget = null;
+        m.memberEpoch++;
+        return true;
     }
 
     private static boolean sameAssignment(Collection<TopicPartition> a, Collection<TopicPartition> b) {

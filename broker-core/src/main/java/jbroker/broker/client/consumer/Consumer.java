@@ -86,6 +86,12 @@ public final class Consumer<K, V> implements AutoCloseable {
     private final Map<TopicPartition, Long> fetchOffsets = new HashMap<>();
     // Lazy ProducerGrpc stub over the bootstrap channel for DLT routing.
     private ProducerGrpc.ProducerBlockingStub dltProducerStub;
+    // incremental fetch session. 0 = no session; any positive value
+    // is echoed on subsequent Fetch requests so the broker can reuse cached
+    // per-partition state. Reset to 0 on FETCH_SESSION_ID_NOT_FOUND (LRU
+    // eviction or broker restart).
+    private int fetchSessionId;
+    private int fetchSessionEpoch;
     private boolean closed;
 
     public Consumer(ConsumerConfig cfg, Deserializer<K> keyDe, Deserializer<V> valueDe) {
@@ -451,9 +457,26 @@ public final class Consumer<K, V> implements AutoCloseable {
                             .setPartition(tp.getPartition())
                             .setOffset(offset)
                             .setMaxBytes(cfg.fetchMaxBytes())
+                            .setSessionId(fetchSessionId)
+                            .setSessionEpoch(fetchSessionEpoch)
                             .build());
             if (resp.hasError() && resp.getError().getCode() != 0) {
+                // Broker evicted (or never knew) our session — fall back to
+                // a fresh bootstrap request on the next call.
+                if (resp.getError().getCode() == ErrorCode.FETCH_SESSION_ID_NOT_FOUND.getNumber()) {
+                    fetchSessionId = 0;
+                    fetchSessionEpoch = 0;
+                }
                 continue; // skip this partition this tick — try next poll
+            }
+            // Echo the broker-assigned session id on subsequent requests;
+            // bump epoch monotonically so the broker can order in-flight
+            // (single-threaded client, so always trivially ordered).
+            if (resp.getSessionId() != 0) {
+                if (fetchSessionId == 0) {
+                    fetchSessionId = resp.getSessionId();
+                }
+                fetchSessionEpoch++;
             }
             var records = decodeBatch(resp.getRecords(), tp, offset);
             if (!records.isEmpty()) {

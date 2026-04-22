@@ -99,6 +99,14 @@ message FetchRequest {
   int32 partition = 2;
   int64 offset = 3;
   int32 max_bytes = 4;
+  // incremental fetch sessions. Clients bootstrap with session_id=0;
+  // the broker allocates a fresh session id and echoes it in the response.
+  // On subsequent calls the client sends the returned session_id (with an
+  // ever-incrementing session_epoch) so the broker can cache per-(topic,
+  // partition) state across calls. The pair is optional — omitting both is
+  // equivalent to a legacy stateless fetch.
+  int32 session_id = 5;
+  int32 session_epoch = 6;
 }
 
 message FetchResponse {
@@ -107,6 +115,9 @@ message FetchResponse {
   bytes records = 1;
   int64 high_watermark = 2;
   Error error = 3;
+  // Echoes (for session_id>0 requests) or allocates (for session_id=0) the
+  // session id the client should send on its next Fetch.
+  int32 session_id = 4;
 }
 
 // ===== ReplicaFetch (follower -> leader) =====

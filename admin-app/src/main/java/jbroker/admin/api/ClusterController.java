@@ -56,7 +56,7 @@ public class ClusterController {
                 .body(RestError.of("UNKNOWN_NODE", "no broker with id " + id));
     }
 
-    static ClusterSummary toSummary(DescribeClusterResponse resp) {
+    public static ClusterSummary toSummary(DescribeClusterResponse resp) {
         if (resp.getError() != ErrorCode.OK) {
             throw new IllegalStateException(
                     "describeCluster returned error " + resp.getError().name());

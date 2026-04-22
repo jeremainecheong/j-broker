@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Cluster')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1>Cluster</h1>
+      <div class="card">
+        <div>
+          <strong>Controller:</strong>
+          <span th:text="${cluster.controllerId()}"
+                th:attr="data-controller-id=${cluster.controllerId()}">--</span>
+          ·
+          <strong>Term:</strong> <span th:text="${cluster.term()}">0</span>
+          ·
+          <strong>Metadata offset:</strong> <span th:text="${cluster.metadataOffset()}">0</span>
+        </div>
+      </div>
+
+      <div class="card topology">
+        <svg th:attr="width=${500}, height=${260}, viewBox='0 0 500 260'"
+             xmlns="http://www.w3.org/2000/svg">
+          <!-- Render one circle per broker positioned on a circle. Each
+               node carries data-broker-id + data-broker-role attributes so
+               the E2E HTML-assertion can find the controller unambiguously. -->
+          <g th:each="n, it : ${cluster.nodes()}"
+             th:with="count=${cluster.nodes().size()}, angle=${it.index * (2 * 3.141592653589793 / (count > 0 ? count : 1))},
+                      cx=${250 + 110 * T(java.lang.Math).cos(angle)},
+                      cy=${130 + 90 * T(java.lang.Math).sin(angle)},
+                      isController=${cluster.controllerId() == n.brokerId()},
+                      cssClass=${!n.alive() ? 'node-dead' : (isController ? 'node-controller' : 'node-follower')}">
+            <circle th:attr="cx=${cx}, cy=${cy}, r=${32}, class=${cssClass},
+                              data-broker-id=${n.brokerId()},
+                              data-broker-role=${n.role()},
+                              data-broker-alive=${n.alive()}"></circle>
+            <text th:attr="x=${cx}, y=${cy + 4}, class='node-label', text-anchor='middle'"
+                  th:text="|b${n.brokerId()}|">b1</text>
+          </g>
+        </svg>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0; font-size:1.05rem;">Nodes</h2>
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Host:Port</th><th>Role</th><th>Alive</th><th>Last seen</th></tr>
+          </thead>
+          <tbody>
+            <tr th:each="n : ${cluster.nodes()}"
+                th:attr="data-broker-id=${n.brokerId()}, data-broker-role=${n.role()}">
+              <td th:text="${n.brokerId()}">1</td>
+              <td th:text="|${n.host()}:${n.port()}|">-</td>
+              <td>
+                <span class="pill"
+                      th:classappend="${n.role() == 'LEADER' ? 'leader' : (n.role() == 'FOLLOWER' ? 'follower' : 'unknown')}"
+                      th:text="${n.role()}">UNKNOWN</span>
+              </td>
+              <td>
+                <span class="pill" th:classappend="${n.alive() ? 'alive' : 'dead'}"
+                      th:text="${n.alive() ? 'alive' : 'dead'}">alive</span>
+              </td>
+              <td th:text="${n.lastSeenMillis()}">-</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+    <footer>j-broker admin — Milestone 8</footer>
+  </body>
+</html>

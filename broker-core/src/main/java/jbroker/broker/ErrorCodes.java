@@ -10,6 +10,8 @@ public final class ErrorCodes {
     public static final int IO_ERROR = 6;
     public static final int FENCED_EPOCH = 7;
     public static final int OUT_OF_ORDER_SEQUENCE = 8;
+    /** P6.6 acks=all: HWM did not reach the produced offset within the timeout. */
+    public static final int NOT_ENOUGH_REPLICAS = 9;
 
     private ErrorCodes() {}
 }

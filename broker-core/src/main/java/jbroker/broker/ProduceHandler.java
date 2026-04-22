@@ -3,6 +3,8 @@ package jbroker.broker;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.proto.broker.ProduceRequest;
 import jbroker.proto.broker.ProduceResponse;
 import jbroker.storage.LogManager;
@@ -26,9 +28,14 @@ import jbroker.storage.RecordBatch;
  */
 public final class ProduceHandler {
 
+    private static final int ACKS_ALL = -1;
+    private static final long ACKS_ALL_TIMEOUT_MS = 5_000L;
+    private static final long ACKS_ALL_POLL_MS = 10L;
+
     private final LogManager logManager;
     private final TopicManager topicManager;
     private final int selfBrokerId;
+    private final FollowerStateTracker followerTracker;
 
     // TODO(P6.8): idle-producer-state expiration. This map grows unbounded
     // across (topic, partition, producer_id, producer_epoch) pairs ever
@@ -36,10 +43,17 @@ public final class ProduceHandler {
     // memory; chaos scripts in P6.8 will need an LRU cap.
     private final ConcurrentHashMap<DedupKey, DedupEntry> dedup = new ConcurrentHashMap<>();
 
-    public ProduceHandler(LogManager logManager, TopicManager topicManager, int selfBrokerId) {
+    public ProduceHandler(
+            LogManager logManager, TopicManager topicManager, int selfBrokerId, FollowerStateTracker followerTracker) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
+        this.followerTracker = followerTracker;
+    }
+
+    /** Back-compat: single-broker path where acks=all isn't meaningful. */
+    public ProduceHandler(LogManager logManager, TopicManager topicManager, int selfBrokerId) {
+        this(logManager, topicManager, selfBrokerId, new FollowerStateTracker());
     }
 
     public ProduceResponse handle(ProduceRequest req) {
@@ -127,12 +141,52 @@ public final class ProduceHandler {
             long now = System.currentTimeMillis();
             long last = log.append(parsed.records(), now);
             long first = last - (parsed.records().size() - 1);
+            if (req.getAcks() == ACKS_ALL) {
+                var wait = waitForIsrReplication(req.getTopic(), req.getPartition(), last);
+                if (wait != null) return wait;
+            }
             return ProduceResponse.newBuilder()
                     .setBaseOffset(first)
                     .setLastOffset(last)
                     .build();
         } catch (IllegalArgumentException | IOException e) {
             return err(ErrorCodes.CORRUPT_BATCH, e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+    }
+
+    /**
+     * Poll until the partition's HWM advances past {@code producedLastOffset},
+     * bounded by {@link #ACKS_ALL_TIMEOUT_MS}. Returns {@code null} on
+     * success; on timeout or leadership loss returns an error response.
+     */
+    private ProduceResponse waitForIsrReplication(String topic, int partition, long producedLastOffset)
+            throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ACKS_ALL_TIMEOUT_MS);
+        while (true) {
+            var state = topicManager.partitionState(topic, partition);
+            if (state.isEmpty() || state.get().leader() != selfBrokerId) {
+                return err(
+                        ErrorCodes.NOT_LEADER,
+                        "lost leadership for " + topic + "-" + partition + " while waiting on acks=all");
+            }
+            long leaderLeo = logManager.logFor(topic, partition).nextOffset();
+            long hwm = followerTracker.computeHwm(topic, partition, state.get().isr(), selfBrokerId, leaderLeo);
+            // HWM convention: the first offset NOT yet durably replicated.
+            // producedLastOffset is the highest offset in the produced batch,
+            // so acks=all is satisfied when HWM > producedLastOffset.
+            if (hwm > producedLastOffset) return null;
+            if (System.nanoTime() >= deadline) {
+                return err(
+                        ErrorCodes.NOT_ENOUGH_REPLICAS,
+                        "ISR did not replicate up to offset " + producedLastOffset + " within " + ACKS_ALL_TIMEOUT_MS
+                                + "ms");
+            }
+            try {
+                Thread.sleep(ACKS_ALL_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return err(ErrorCodes.IO_ERROR, "interrupted while waiting on acks=all");
+            }
         }
     }
 

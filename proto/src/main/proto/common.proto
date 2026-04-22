@@ -18,6 +18,9 @@ enum ErrorCode {
   // P7.11 — incremental fetch session was evicted from the server-side cache
   // (LRU full or broker restart). Client should reset session_id=0 and retry.
   FETCH_SESSION_ID_NOT_FOUND = 85;
+  // Phase 8 — admin surface skeleton placeholder. An RPC whose body is not
+  // yet wired (P8.1 lands the proto surface; later slices fill bodies).
+  UNIMPLEMENTED = 99;
 }
 
 message BrokerEndpoint {

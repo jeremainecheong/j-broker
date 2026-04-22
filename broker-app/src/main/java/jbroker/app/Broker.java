@@ -16,6 +16,7 @@ import jbroker.broker.ConsumerHandler;
 import jbroker.broker.ConsumerOffsetsCreator;
 import jbroker.broker.FetchHandler;
 import jbroker.broker.InitProducerIdHandler;
+import jbroker.broker.MetadataServiceHandler;
 import jbroker.broker.MetadataStateMachine;
 import jbroker.broker.OffsetsForLeaderEpochHandler;
 import jbroker.broker.ProduceHandler;
@@ -282,12 +283,17 @@ public final class Broker implements AutoCloseable {
                 config.selfId().value(),
                 System::nanoTime,
                 System::currentTimeMillis);
+        // P8.1 — Metadata service skeleton. Handler bodies are
+        // UNIMPLEMENTED placeholders replaced in later P8 slices
+        // (DescribeCluster in P8.2, DescribeTopicPartitions in P8.3, etc.).
+        var metadataHandler = new MetadataServiceHandler();
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
                 .addService(BrokerGrpcServices.cluster(heartbeatHandler))
                 .addService(BrokerGrpcServices.admin(admin))
+                .addService(BrokerGrpcServices.metadata(metadataHandler))
                 .build()
                 .start();
 

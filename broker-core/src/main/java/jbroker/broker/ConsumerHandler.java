@@ -1,8 +1,11 @@
 package jbroker.broker;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.HashSet;
+import java.util.List;
 import jbroker.broker.group.GroupCoordinator;
+import jbroker.broker.group.OffsetCache;
 import jbroker.proto.broker.Assignment;
 import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.CommitOffsetsResponse;
@@ -21,6 +24,8 @@ import jbroker.proto.broker.TopicPartitions;
 import jbroker.proto.common.BrokerEndpoint;
 import jbroker.proto.common.ErrorCode;
 import jbroker.storage.LogManager;
+import jbroker.storage.Record;
+import jbroker.storage.RecordBatch;
 
 /**
  * Routes the Milestone 7 consumer-group RPCs ({@code FindCoordinator},
@@ -47,8 +52,10 @@ public final class ConsumerHandler {
     private final LogManager logManager;
     private final BrokerRegistry brokerRegistry;
     private final GroupCoordinator groupCoordinator;
+    private final OffsetCache offsetCache;
     private final int selfBrokerId;
     private final java.util.function.LongSupplier nanoClock;
+    private final java.util.function.LongSupplier wallClockMillis;
 
     /**
      * Milestone 7.1 / 7.3 form — no group coordinator. Coordinator-routed RPCs
@@ -59,12 +66,15 @@ public final class ConsumerHandler {
         this(
                 topicManager,
                 logManager,
-                brokerRegistry, /*groupCoordinator*/
-                null, /*selfBrokerId*/
-                -1,
-                System::nanoTime);
+                brokerRegistry,
+                /*groupCoordinator*/ null,
+                /*offsetCache*/ null,
+                /*selfBrokerId*/ -1,
+                System::nanoTime,
+                System::currentTimeMillis);
     }
 
+    /** form — kept for tests that don't exercise offset persistence. */
     public ConsumerHandler(
             TopicManager topicManager,
             LogManager logManager,
@@ -72,12 +82,34 @@ public final class ConsumerHandler {
             GroupCoordinator groupCoordinator,
             int selfBrokerId,
             java.util.function.LongSupplier nanoClock) {
+        this(
+                topicManager,
+                logManager,
+                brokerRegistry,
+                groupCoordinator,
+                /*offsetCache*/ null,
+                selfBrokerId,
+                nanoClock,
+                System::currentTimeMillis);
+    }
+
+    public ConsumerHandler(
+            TopicManager topicManager,
+            LogManager logManager,
+            BrokerRegistry brokerRegistry,
+            GroupCoordinator groupCoordinator,
+            OffsetCache offsetCache,
+            int selfBrokerId,
+            java.util.function.LongSupplier nanoClock,
+            java.util.function.LongSupplier wallClockMillis) {
         this.topicManager = topicManager;
         this.logManager = logManager;
         this.brokerRegistry = brokerRegistry;
         this.groupCoordinator = groupCoordinator;
+        this.offsetCache = offsetCache;
         this.selfBrokerId = selfBrokerId;
         this.nanoClock = nanoClock;
+        this.wallClockMillis = wallClockMillis;
     }
 
     /**
@@ -256,12 +288,89 @@ public final class ConsumerHandler {
         return b.build();
     }
 
+    /**
+     * Persist a batch of (tp, offset) commits for {@code group_id}.      * implementation:
+     * <ol>
+     *   <li>Routing guard — same three-way as the heartbeat path.</li>
+     *   <li>Membership validation — caller must own a current member_id +
+     *       member_epoch (UNKNOWN_MEMBER_ID / FENCED_MEMBER_EPOCH applied
+     *       per-tp).</li>
+     *   <li>For each commit, encode an offset record into the group's
+     *       coordinator partition of {@code __consumer_offsets} (one log
+     *       append per request — multiple commits in one request batch
+     *       together).</li>
+     *   <li>Update {@link OffsetCache} so the next {@code FetchOffsets}
+     *       reads the new value without a round-trip through the log.</li>
+     * </ol>
+     */
     public CommitOffsetsResponse commitOffsets(CommitOffsetsRequest req) {
         var b = CommitOffsetsResponse.newBuilder();
+        if (groupCoordinator == null || offsetCache == null) {
+            for (var commit : req.getCommitsList()) {
+                b.addResults(CommitResult.newBuilder()
+                        .setTp(commit.getTp())
+                        .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                        .build());
+            }
+            return b.build();
+        }
+        var routing = coordinatorRoutingFor(req.getGroupId());
+        if (routing != ErrorCode.OK) {
+            for (var commit : req.getCommitsList()) {
+                b.addResults(CommitResult.newBuilder()
+                        .setTp(commit.getTp())
+                        .setError(routing)
+                        .build());
+            }
+            return b.build();
+        }
+        var membership = groupCoordinator.validateMember(
+                req.getGroupId(), req.getMemberId(), req.getGenerationIdOrMemberEpoch());
+        if (membership != GroupCoordinator.HeartbeatOutcome.OK) {
+            var code = membership == GroupCoordinator.HeartbeatOutcome.UNKNOWN_MEMBER_ID
+                    ? ErrorCode.UNKNOWN_MEMBER_ID
+                    : ErrorCode.FENCED_MEMBER_EPOCH;
+            for (var commit : req.getCommitsList()) {
+                b.addResults(CommitResult.newBuilder()
+                        .setTp(commit.getTp())
+                        .setError(code)
+                        .build());
+            }
+            return b.build();
+        }
+
+        long now = wallClockMillis.getAsLong();
+        int coordinatorPartition = coordinatorPartitionFor(req.getGroupId());
+        var records = new java.util.ArrayList<Record>(req.getCommitsCount());
+        for (int i = 0; i < req.getCommitsCount(); i++) {
+            var commit = req.getCommits(i);
+            byte[] key = ConsumerOffsetsTopic.keyForOffset(
+                    req.getGroupId(), commit.getTp().getTopic(), commit.getTp().getPartition());
+            byte[] value = ConsumerOffsetsTopic.valueForOffset(
+                    commit.getOffset(), commit.getLeaderEpoch(), commit.getMetadata(), now);
+            records.add(new Record(/*offsetDelta*/ i, /*timestampDelta*/ 0L, key, value));
+        }
+        try {
+            appendOffsetBatch(coordinatorPartition, records, now);
+        } catch (IOException e) {
+            for (var commit : req.getCommitsList()) {
+                b.addResults(CommitResult.newBuilder()
+                        .setTp(commit.getTp())
+                        .setError(ErrorCode.UNKNOWN)
+                        .build());
+            }
+            return b.build();
+        }
+        // Update cache + emit per-tp success.
         for (var commit : req.getCommitsList()) {
+            offsetCache.put(
+                    req.getGroupId(),
+                    commit.getTp(),
+                    new OffsetCache.OffsetAndMetadata(
+                            commit.getOffset(), commit.getLeaderEpoch(), commit.getMetadata(), now));
             b.addResults(CommitResult.newBuilder()
                     .setTp(commit.getTp())
-                    .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                    .setError(ErrorCode.OK)
                     .build());
         }
         return b.build();
@@ -269,14 +378,72 @@ public final class ConsumerHandler {
 
     public FetchOffsetsResponse fetchOffsets(FetchOffsetsRequest req) {
         var b = FetchOffsetsResponse.newBuilder();
+        if (groupCoordinator == null || offsetCache == null) {
+            for (var tp : req.getTpsList()) {
+                b.addResults(OffsetFetchResult.newBuilder()
+                        .setTp(tp)
+                        .setOffset(-1L)
+                        .setError(ErrorCode.OFFSET_OUT_OF_RANGE)
+                        .build());
+            }
+            return b.build();
+        }
+        var routing = coordinatorRoutingFor(req.getGroupId());
+        if (routing != ErrorCode.OK) {
+            for (var tp : req.getTpsList()) {
+                b.addResults(OffsetFetchResult.newBuilder()
+                        .setTp(tp)
+                        .setOffset(-1L)
+                        .setError(routing)
+                        .build());
+            }
+            return b.build();
+        }
         for (var tp : req.getTpsList()) {
-            b.addResults(OffsetFetchResult.newBuilder()
-                    .setTp(tp)
-                    .setOffset(-1L)
-                    .setError(ErrorCode.OFFSET_OUT_OF_RANGE)
-                    .build());
+            var entry = offsetCache.get(req.getGroupId(), tp);
+            if (entry.isEmpty()) {
+                b.addResults(OffsetFetchResult.newBuilder()
+                        .setTp(tp)
+                        .setOffset(-1L)
+                        .setError(ErrorCode.OFFSET_OUT_OF_RANGE)
+                        .build());
+            } else {
+                var oam = entry.get();
+                b.addResults(OffsetFetchResult.newBuilder()
+                        .setTp(tp)
+                        .setOffset(oam.offset())
+                        .setLeaderEpoch(oam.leaderEpoch())
+                        .setMetadata(oam.metadata())
+                        .setError(ErrorCode.OK)
+                        .build());
+            }
         }
         return b.build();
+    }
+
+    private int coordinatorPartitionFor(String groupId) {
+        var topicDesc = topicManager.describe(ConsumerOffsetsTopic.NAME).orElseThrow();
+        return Math.floorMod(groupId.hashCode(), topicDesc.partitions());
+    }
+
+    private void appendOffsetBatch(int partition, List<Record> records, long nowMillis) throws IOException {
+        var log = logManager.logFor(ConsumerOffsetsTopic.NAME, partition);
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        long baseOffset = log.nextOffset();
+        RecordBatch.encode(
+                buf,
+                baseOffset,
+                /*partitionLeaderEpoch*/ 0,
+                /*firstTimestamp*/ nowMillis,
+                /*maxTimestamp*/ nowMillis,
+                /*producerId*/ -1L,
+                /*producerEpoch*/ (short) -1,
+                /*baseSequence*/ -1,
+                records);
+        buf.flip();
+        byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+        log.appendRaw(bytes, baseOffset);
     }
 
     public ListOffsetsResponse listOffsets(ListOffsetsRequest req) {

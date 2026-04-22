@@ -7,13 +7,10 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
-import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.ConsumerGrpc;
-import jbroker.proto.broker.FetchOffsetsRequest;
 import jbroker.proto.broker.FindCoordinatorRequest;
 import jbroker.proto.broker.ListOffsetsPartition;
 import jbroker.proto.broker.ListOffsetsRequest;
-import jbroker.proto.broker.OffsetCommit;
 import jbroker.proto.common.ErrorCode;
 import jbroker.proto.common.TopicPartition;
 import jbroker.raft.core.NodeId;
@@ -41,7 +38,7 @@ class ConsumerProtoWireUpIT {
     }
 
     @Test
-    void newConsumerGroupRpcsReturnPlaceholderErrors(@TempDir Path dir) throws Exception {
+    void findCoordinatorReturnsCoordinatorNotAvailableBeforeTopicLands(@TempDir Path dir) throws Exception {
         int brokerPort = freePort();
         int raftPort = freePort();
         var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
@@ -50,47 +47,14 @@ class ConsumerProtoWireUpIT {
                 .build();
         try {
             var stub = ConsumerGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-
-            // Without waiting for __consumer_offsets / broker registration to
-            // land, FindCoordinator legitimately returns CNA. The IT
-            // intentionally hits the broker before either has applied to
-            // exercise the placeholder path that's still in place for
-            // CommitOffsets / FetchOffsets after .
+            // Before __consumer_offsets auto-creates, FindCoordinator
+            // legitimately returns CNA. After / the heartbeat,
+            // commit, and fetch RPCs all moved off the placeholder path
+            // and have proper coverage in GroupHeartbeatEndToEndIT and
+            // OffsetCommitFetchEndToEndIT.
             var find = stub.findCoordinator(
                     FindCoordinatorRequest.newBuilder().setKey("g1").build());
             assertThat(find.getError()).isEqualTo(ErrorCode.COORDINATOR_NOT_AVAILABLE);
-
-            // CommitOffsets handler still returns the per-tp
-            // COORDINATOR_NOT_AVAILABLE placeholder until plugs in
-            // the offset persistence path.
-            var commit = stub.commitOffsets(CommitOffsetsRequest.newBuilder()
-                    .setGroupId("g1")
-                    .addCommits(OffsetCommit.newBuilder()
-                            .setTp(TopicPartition.newBuilder()
-                                    .setTopic("orders")
-                                    .setPartition(0)
-                                    .build())
-                            .setOffset(7L)
-                            .build())
-                    .build());
-            assertThat(commit.getResults(0).getError()).isEqualTo(ErrorCode.COORDINATOR_NOT_AVAILABLE);
-
-            // FetchOffsets handler still returns the per-tp
-            // OFFSET_OUT_OF_RANGE placeholder until .
-            var fetchOff = stub.fetchOffsets(FetchOffsetsRequest.newBuilder()
-                    .setGroupId("g1")
-                    .addTps(TopicPartition.newBuilder()
-                            .setTopic("orders")
-                            .setPartition(0)
-                            .build())
-                    .build());
-            assertThat(fetchOff.getResults(0).getError()).isEqualTo(ErrorCode.OFFSET_OUT_OF_RANGE);
-            assertThat(fetchOff.getResults(0).getOffset()).isEqualTo(-1L);
-
-            // Note: ConsumerGroupHeartbeat moved off the placeholder path in
-            // it now hits GroupCoordinator and joins members
-            // successfully. GroupHeartbeatEndToEndIT covers the post-            // semantics; this IT keeps assertions only on RPCs whose
-            // placeholders are still in place.
         } finally {
             channel.shutdown();
             channel.awaitTermination(2, TimeUnit.SECONDS);

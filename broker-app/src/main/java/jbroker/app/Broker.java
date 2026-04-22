@@ -24,6 +24,7 @@ import jbroker.broker.ReplicaFetchHandler;
 import jbroker.broker.TopicManager;
 import jbroker.broker.WaitingStateMachine;
 import jbroker.broker.group.GroupCoordinator;
+import jbroker.broker.group.OffsetCache;
 import jbroker.broker.group.RangeAssignor;
 import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.broker.replication.IsrManager;
@@ -248,13 +249,20 @@ public final class Broker implements AutoCloseable {
         // listener so coordinator failover rebuilds state.
         var groupCoordinator = new GroupCoordinator(
                 topic -> topicManager.describe(topic).map(td -> td.partitions()).orElse(0), new RangeAssignor());
+        // in-memory offset commit/fetch cache. The recovery walk
+        // (below, after gRPC server start) re-reads any __consumer_offsets
+        // partitions this broker leads after Raft replay finishes;
+        // coordinator-failover-time recovery is .
+        var offsetCache = new OffsetCache();
         var consumerHandler = new ConsumerHandler(
                 topicManager,
                 logManager,
                 brokerRegistry,
                 groupCoordinator,
+                offsetCache,
                 config.selfId().value(),
-                System::nanoTime);
+                System::nanoTime,
+                System::currentTimeMillis);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
@@ -290,6 +298,9 @@ public final class Broker implements AutoCloseable {
         // port they advertised back to us in their voter entry — tests
         // construct voters with bound ports to guarantee this.
         final int selfIdVal = config.selfId().value();
+        // partitions whose offset log has already been replayed into
+        // the OffsetCache. Set guards against re-walking on every tick.
+        var recoveredPartitions = new java.util.concurrent.ConcurrentHashMap<Integer, Boolean>();
         var registrationTicker = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "broker-registration-" + selfIdVal);
             t.setDaemon(true);
@@ -342,6 +353,16 @@ public final class Broker implements AutoCloseable {
                         consumerOffsetsCreator.ensureCreated();
                     } catch (Exception e) {
                         log.debug("__consumer_offsets create attempt failed; will retry next tick", e);
+                    }
+                    // for each __consumer_offsets partition this
+                    // broker leads, walk the log once into the OffsetCache.
+                    // Coordinator-failover-time recovery (post-leadership
+                    // change) is .
+                    try {
+                        recoverNewlyOwnedOffsetPartitions(
+                                topicManager, logManager, offsetCache, recoveredPartitions, selfIdVal);
+                    } catch (Exception e) {
+                        log.debug("offset cache recovery failed; will retry next tick", e);
                     }
                 },
                 0,
@@ -486,6 +507,31 @@ public final class Broker implements AutoCloseable {
     /** Test-only accessor for assertion-driven inspection of per-broker logs. */
     public LogManager logManager() {
         return logManager;
+    }
+
+    /**
+     * for each {@code __consumer_offsets} partition this broker
+     * leads, walk the log into the {@link OffsetCache} once. Subsequent
+     * ticks skip recovered partitions; coordinator-failover handling that
+     * re-recovers on leadership change is .
+     */
+    private static void recoverNewlyOwnedOffsetPartitions(
+            jbroker.broker.TopicManager topicManager,
+            LogManager logManager,
+            OffsetCache offsetCache,
+            java.util.Map<Integer, Boolean> recovered,
+            int selfBrokerId)
+            throws IOException {
+        var topicDesc = topicManager.describe(jbroker.broker.ConsumerOffsetsTopic.NAME);
+        if (topicDesc.isEmpty()) return;
+        int partitionCount = topicDesc.get().partitions();
+        for (int p = 0; p < partitionCount; p++) {
+            if (recovered.containsKey(p)) continue;
+            var ps = topicManager.partitionState(jbroker.broker.ConsumerOffsetsTopic.NAME, p);
+            if (ps.isEmpty() || ps.get().leader() != selfBrokerId) continue;
+            jbroker.broker.group.OffsetCacheRecovery.rebuild(logManager, p, offsetCache);
+            recovered.put(p, Boolean.TRUE);
+        }
     }
 
     /**

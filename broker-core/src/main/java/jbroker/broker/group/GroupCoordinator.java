@@ -301,6 +301,31 @@ public final class GroupCoordinator {
     }
 
     /**
+     * Side-effect-free member validation used by RPCs that need to gate on
+     * group membership (CommitOffsets, FetchOffsets) without bumping the
+     * member's lastHeartbeatNs. Returns:
+     * <ul>
+     *   <li>{@link HeartbeatOutcome#UNKNOWN_MEMBER_ID} — no such member.</li>
+     *   <li>{@link HeartbeatOutcome#FENCED_MEMBER_EPOCH} — epoch mismatch (either direction).</li>
+     *   <li>{@link HeartbeatOutcome#OK} — member exists and epoch matches.</li>
+     * </ul>
+     */
+    public HeartbeatOutcome validateMember(String groupId, String memberId, int memberEpoch) {
+        var group = groupOf(groupId);
+        group.lock.lock();
+        try {
+            var member = group.members.get(memberId);
+            if (member == null) return HeartbeatOutcome.UNKNOWN_MEMBER_ID;
+            // CommitOffsets accepts epoch-behind (member is catching up) the
+            // same way heartbeat does — only stale-future epochs are fenced.
+            if (memberEpoch > member.memberEpoch) return HeartbeatOutcome.FENCED_MEMBER_EPOCH;
+            return HeartbeatOutcome.OK;
+        } finally {
+            group.lock.unlock();
+        }
+    }
+
+    /**
      * Test/debug accessor — returns the live assignment for a member, or
      * empty if the member doesn't exist.
      */

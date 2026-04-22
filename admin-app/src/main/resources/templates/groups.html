@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Consumer groups')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1>Consumer groups</h1>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Group ID</th>
+              <th>State</th>
+              <th>Members</th>
+              <th>Generation</th>
+              <th>Assignor</th>
+              <th>Coordinator partition</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr th:each="g : ${groups}" th:attr="data-group-id=${g.groupId()}">
+              <td><a th:href="@{/groups/{id}(id=${g.groupId()})}" th:text="${g.groupId()}">g1</a></td>
+              <td>
+                <span class="pill"
+                      th:classappend="${g.state() == 'Stable' ? 'alive' : 'unknown'}"
+                      th:text="${g.state()}">Stable</span>
+              </td>
+              <td th:text="${g.memberCount()}">-</td>
+              <td th:text="${g.generation()}">-</td>
+              <td th:text="${g.assignor()}">range</td>
+              <td th:text="${g.coordinatorPartition()}">0</td>
+              <td>
+                <a class="btn secondary" th:href="@{/groups/{id}(id=${g.groupId()})}">details</a>
+              </td>
+            </tr>
+            <tr th:if="${groups.size() == 0}">
+              <td colspan="7" style="color: var(--muted);">No consumer groups yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+    <footer>j-broker admin — Phase 8</footer>
+  </body>
+</html>

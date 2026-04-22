@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Group not found')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1>Consumer group not found</h1>
+      <div class="card">
+        <p>No group with id <code th:text="${groupId}">?</code> is known to any broker.</p>
+        <p><a class="btn secondary" href="/groups">← Back to groups</a></p>
+      </div>
+    </main>
+    <footer>j-broker admin — Phase 8</footer>
+  </body>
+</html>

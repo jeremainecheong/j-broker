@@ -181,6 +181,11 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     @Override
+    public Optional<NodeId> currentLeader() {
+        return leaderId;
+    }
+
+    @Override
     public List<RaftEffect> step(RaftEvent event) {
         var effects = new ArrayList<RaftEffect>();
         switch (event) {

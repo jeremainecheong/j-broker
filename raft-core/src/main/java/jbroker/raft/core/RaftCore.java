@@ -1,6 +1,7 @@
 package jbroker.raft.core;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Pure Raft state machine. {@link #step} is deterministic: given the same
@@ -25,4 +26,16 @@ public interface RaftCore {
 
     /** Current term, exposed for observability only. */
     Term currentTerm();
+
+    /**
+     * The leader this node currently recognises, if any — the {@code leaderId}
+     * field Raft maintains on every follower as {@code AppendEntries} arrive
+     * and on every leader as it starts a term. Empty during elections and on
+     * freshly-started nodes that haven't heard from a leader yet.
+     *
+     * <p>Exposed for observability only. In particular, an admin REST layer
+     * uses this to report {@code controllerId} for the spec {@code /cluster}
+     * without round-tripping through the Raft protocol.
+     */
+    Optional<NodeId> currentLeader();
 }

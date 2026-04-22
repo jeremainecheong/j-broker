@@ -213,6 +213,11 @@ public final class RaftDriver implements AutoCloseable {
         return core.role();
     }
 
+    /** See {@link RaftCore#currentLeader()}. Exposed for admin observability. */
+    public java.util.Optional<NodeId> currentLeader() {
+        return core.currentLeader();
+    }
+
     public java.util.Collection<RaftPeerClient> peers() {
         return peers.values();
     }

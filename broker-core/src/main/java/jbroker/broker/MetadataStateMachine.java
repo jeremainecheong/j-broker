@@ -45,11 +45,29 @@ public final class MetadataStateMachine implements StateMachine {
         void onBrokerRegistration(int brokerId, String host, int port);
     }
 
+    /**
+     * fires after a {@code DeleteTopicRecord} applies. Consumers:
+     * <ul>
+     *   <li>{@code ReplicaFetcherManager.scheduleReconcile()} so in-flight
+     *       fetchers on a deleted topic stop promptly rather than waiting
+     *       on the next unrelated listener event.</li>
+     *   <li>{@code LogManager.deleteTopicDir} so segment files + cached
+     *       {@link jbroker.storage.Log} handles do not outlive the topic.
+     *       This closes the data-leak window where a topic recreated with
+     *       the same name would otherwise see old offsets.</li>
+     * </ul>
+     */
+    @FunctionalInterface
+    public interface TopicDeletionListener {
+        void onTopicDeleted(String topic);
+    }
+
     private final TopicManager topicManager;
     private final ProducerIdRegistry producerIdRegistry;
     private final LeaderEpochListener leaderEpochListener;
     private final BrokerRegistrationListener brokerRegistrationListener;
     private final PartitionChangeListener partitionChangeListener;
+    private final TopicDeletionListener topicDeletionListener;
 
     public MetadataStateMachine(TopicManager topicManager) {
         this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt) -> {}, (t, p, s) -> {});
@@ -70,11 +88,28 @@ public final class MetadataStateMachine implements StateMachine {
             LeaderEpochListener leaderEpochListener,
             BrokerRegistrationListener brokerRegistrationListener,
             PartitionChangeListener partitionChangeListener) {
+        this(
+                topicManager,
+                producerIdRegistry,
+                leaderEpochListener,
+                brokerRegistrationListener,
+                partitionChangeListener,
+                t -> {});
+    }
+
+    public MetadataStateMachine(
+            TopicManager topicManager,
+            ProducerIdRegistry producerIdRegistry,
+            LeaderEpochListener leaderEpochListener,
+            BrokerRegistrationListener brokerRegistrationListener,
+            PartitionChangeListener partitionChangeListener,
+            TopicDeletionListener topicDeletionListener) {
         this.topicManager = topicManager;
         this.producerIdRegistry = producerIdRegistry;
         this.leaderEpochListener = leaderEpochListener;
         this.brokerRegistrationListener = brokerRegistrationListener;
         this.partitionChangeListener = partitionChangeListener;
+        this.topicDeletionListener = topicDeletionListener;
     }
 
     @Override
@@ -97,7 +132,8 @@ public final class MetadataStateMachine implements StateMachine {
                     t.getReplicationFactor(),
                     t.getCreatedMillis(),
                     t.getInternal(),
-                    t.getCompact());
+                    t.getCompact(),
+                    t.getConfigMap());
         } else if (record.hasPartitionChange()) {
             applyPartitionChange(record.getPartitionChange());
         } else if (record.hasCreateTopic()) {
@@ -109,7 +145,8 @@ public final class MetadataStateMachine implements StateMachine {
                     t.getReplicationFactor(),
                     t.getCreatedMillis(),
                     t.getInternal(),
-                    t.getCompact());
+                    t.getCompact(),
+                    t.getConfigMap());
             for (var p : ct.getPartitionChangesList()) {
                 applyPartitionChange(p);
             }
@@ -123,6 +160,19 @@ public final class MetadataStateMachine implements StateMachine {
             // BrokerRegistry + ReplicaFetcherManager plug in.
             var r = record.getBroker();
             brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
+        } else if (record.hasDeleteTopic()) {
+            // drop the topic from the metadata catalogue, then let
+            // the broker-level listener evict LogManager cache entries,
+            // delete on-disk segments, and kick the replica-fetcher
+            // reconcile loop so any in-flight fetch against the now-gone
+            // partitions stops promptly rather than waiting on the next
+            // unrelated metadata event.
+            var deletedTopic = record.getDeleteTopic().getTopic();
+            topicManager.onTopicDeleted(deletedTopic);
+            topicDeletionListener.onTopicDeleted(deletedTopic);
+        } else if (record.hasUpdateTopicConfig()) {
+            var u = record.getUpdateTopicConfig();
+            topicManager.onTopicConfigUpdated(u.getTopic(), u.getConfigMap());
         }
         // PartitionRecord: not yet dispatched — unused by any consumer.
     }
@@ -163,7 +213,8 @@ public final class MetadataStateMachine implements StateMachine {
     //  v4 ():     splits leader_epoch from partition_epoch.
     //  v5 ():     appends producer-id counter.
     //  v6 ():     per-topic internal + compact flags.
-    private static final byte SNAPSHOT_VERSION = 6;
+    //  v7 ():     per-topic config map.
+    private static final byte SNAPSHOT_VERSION = 7;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
@@ -182,6 +233,13 @@ public final class MetadataStateMachine implements StateMachine {
             // fields above; v6 readers additionally consume two bools.
             dout.writeBoolean(t.internal());
             dout.writeBoolean(t.compact());
+            // v7: config map (length-prefixed key/value pairs).
+            var config = t.config();
+            dout.writeInt(config.size());
+            for (var entry : config.entrySet()) {
+                dout.writeUTF(entry.getKey());
+                dout.writeUTF(entry.getValue());
+            }
         }
         var assignments = topicManager.allPartitionAssignments();
         dout.writeInt(assignments.size());
@@ -233,7 +291,20 @@ public final class MetadataStateMachine implements StateMachine {
                 internal = topic.startsWith("__");
                 compact = false;
             }
-            topicManager.onTopicCommitted(topic, partitions, rf, created, internal, compact);
+            java.util.Map<String, String> config;
+            if (version >= 7) {
+                int cfgSize = din.readInt();
+                var cfg = new java.util.HashMap<String, String>(cfgSize);
+                for (int j = 0; j < cfgSize; j++) {
+                    var k = din.readUTF();
+                    var v = din.readUTF();
+                    cfg.put(k, v);
+                }
+                config = cfg;
+            } else {
+                config = java.util.Map.of();
+            }
+            topicManager.onTopicCommitted(topic, partitions, rf, created, internal, compact, config);
         }
         if (version >= 2) {
             int m = din.readInt();

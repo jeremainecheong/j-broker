@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import jbroker.proto.broker.AdminGrpc;
 import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.CreateTopicRequest;
+import jbroker.proto.broker.DeleteTopicRequest;
 import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.FetchRequest;
 import jbroker.proto.broker.InitProducerIdRequest;
@@ -17,6 +18,7 @@ import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ProduceRequest;
 import jbroker.proto.broker.ProducerGrpc;
 import jbroker.proto.broker.TopicDescription;
+import jbroker.proto.broker.UpdateTopicConfigRequest;
 import jbroker.storage.Record;
 import jbroker.storage.RecordBatch;
 
@@ -68,6 +70,40 @@ public final class BrokerClient implements AutoCloseable {
                     "describeTopic failed: " + resp.getError().getMessage());
         }
         return resp.getTopic();
+    }
+
+    /** Milestone 8 — delete a topic cluster-wide. Raises on NOT_LEADER / IO / UNKNOWN_TOPIC. */
+    public void deleteTopic(String topic) {
+        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .deleteTopic(DeleteTopicRequest.newBuilder().setTopic(topic).build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("deleteTopic failed: " + resp.getError().getMessage());
+        }
+    }
+
+    /** Milestone 8 — merge a config overlay into an existing topic. Returns the merged map. */
+    public java.util.Map<String, String> updateTopicConfig(String topic, java.util.Map<String, String> config) {
+        var b = UpdateTopicConfigRequest.newBuilder().setTopic(topic);
+        b.putAllConfig(config);
+        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS).updateTopicConfig(b.build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException(
+                    "updateTopicConfig failed: " + resp.getError().getMessage());
+        }
+        return resp.getConfigMap();
+    }
+
+    /** Milestone 8 — create a topic with a config map. */
+    public void createTopicWithConfig(String topic, int partitions, int rf, java.util.Map<String, String> config) {
+        var b = CreateTopicRequest.newBuilder()
+                .setTopic(topic)
+                .setPartitions(partitions)
+                .setReplicationFactor(rf);
+        b.putAllConfig(config);
+        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS).createTopic(b.build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("createTopic failed: " + resp.getError().getMessage());
+        }
     }
 
     /**

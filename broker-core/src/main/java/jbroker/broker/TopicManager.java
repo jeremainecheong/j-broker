@@ -39,10 +39,42 @@ public final class TopicManager {
             long createdMillis,
             boolean internal,
             boolean compact) {
+        onTopicCommitted(topic, partitions, replicationFactor, createdMillis, internal, compact, java.util.Map.of());
+    }
+
+    /** Milestone 8 form: also captures a {@code config} map. */
+    public void onTopicCommitted(
+            String topic,
+            int partitions,
+            int replicationFactor,
+            long createdMillis,
+            boolean internal,
+            boolean compact,
+            java.util.Map<String, String> config) {
         boolean effectiveInternal = internal || topic.startsWith("__");
         topics.putIfAbsent(
                 topic,
-                new TopicDescription(topic, partitions, replicationFactor, createdMillis, effectiveInternal, compact));
+                new TopicDescription(
+                        topic, partitions, replicationFactor, createdMillis, effectiveInternal, compact, config));
+    }
+
+    /**
+     * Milestone 8 — drop a topic + every partition entry keyed on it. Called from
+     * the state machine when a {@code DeleteTopicRecord} commits. Idempotent;
+     * re-deleting an unknown topic is a no-op.
+     */
+    public void onTopicDeleted(String topic) {
+        topics.remove(topic);
+        partitions.keySet().removeIf(k -> k.topic().equals(topic));
+    }
+
+    /**
+     * Milestone 8 — merge a config overlay into an existing topic. Missing topic
+     * is a no-op (the state machine logs and skips; apply() is idempotent and
+     * a snapshot might still contain the update after the topic was deleted).
+     */
+    public void onTopicConfigUpdated(String topic, java.util.Map<String, String> overlay) {
+        topics.computeIfPresent(topic, (k, existing) -> existing.withMergedConfig(overlay));
     }
 
     /**

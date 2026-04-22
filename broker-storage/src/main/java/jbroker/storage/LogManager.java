@@ -84,6 +84,66 @@ public final class LogManager implements AutoCloseable {
         }
     }
 
+    /**
+     * Milestone 8 — evict every {@code (topic, *)} entry from the in-memory cache,
+     * close the underlying {@link Log} handles, and best-effort delete the
+     * on-disk partition directories. Used by
+     * {@link jbroker.broker.MetadataStateMachine} on {@code DeleteTopicRecord}
+     * so a topic recreated with the same name does not pick up a stale
+     * {@code Log} handle whose offsets point at the old data.
+     *
+     * <p>Best-effort on disk: we swallow {@link IOException}s on individual
+     * segment deletes so a deleted topic does not block the apply path. If
+     * the directory outlives this call, the next restart's Log recovery
+     * still treats it as a fresh partition once metadata says the topic
+     * exists again — but the data-leak window is closed by evicting the
+     * cache entry.
+     */
+    public synchronized void deleteTopicDir(String topic) {
+        var prefix = topic + "-";
+        var toRemove = new java.util.ArrayList<String>();
+        for (var key : logs.keySet()) {
+            if (key.startsWith(prefix)) toRemove.add(key);
+        }
+        for (var key : toRemove) {
+            var log = logs.remove(key);
+            if (log != null) {
+                try {
+                    log.close();
+                } catch (IOException ignored) {
+                    // best-effort — cleaner tick still iterates live logs only
+                }
+            }
+            var dir = rootDir.resolve(key);
+            deleteDirectoryTree(dir);
+        }
+        // Mirror epoch-checkpoint eviction so the leader-epoch file doesn't
+        // survive topic recreation.
+        var ckptRemove = new java.util.ArrayList<String>();
+        for (var key : epochCheckpoints.keySet()) {
+            if (key.startsWith(prefix)) ckptRemove.add(key);
+        }
+        for (var key : ckptRemove) {
+            epochCheckpoints.remove(key);
+        }
+    }
+
+    private static void deleteDirectoryTree(Path dir) {
+        if (!Files.exists(dir)) return;
+        try (var stream = Files.walk(dir)) {
+            stream.sorted((a, b) -> b.getNameCount() - a.getNameCount()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException ignored) {
+                    // best-effort — orphan files get cleaned up by operator
+                    // or on the next broker restart's segment scan.
+                }
+            });
+        } catch (IOException ignored) {
+            // best-effort
+        }
+    }
+
     private void runCleaner() {
         long cutoff = System.currentTimeMillis() - config.retentionMillis();
         for (var log : logs.values()) {

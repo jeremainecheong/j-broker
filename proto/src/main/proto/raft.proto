@@ -99,6 +99,10 @@ message TopicRecord {
   // on-disk compaction is a Milestone 9+ concern; in P7 this only flags topics
   // whose recovery scan should compact in memory.
   bool compact = 6;
+  // Milestone 8 — opaque topic configuration map. Broker does not read values
+  // today; the admin API round-trips them unchanged so operators can see
+  // what was configured. Milestone 9 wires enforcement (retention, compaction).
+  map<string, string> config = 7;
 }
 
 message PartitionRecord {
@@ -167,6 +171,23 @@ message ProducerIdAssignmentRecord {
   int64 next_producer_id = 3;
 }
 
+// Milestone 8 — deletes a topic cluster-wide. The state machine drops the
+// topic + every PartitionState keyed on it; on-disk segment cleanup is
+// best-effort via LogManager.deleteTopicDir.
+message DeleteTopicRecord {
+  string topic = 1;
+}
+
+// Milestone 8 — merges a config map into an existing topic. Values are opaque
+// strings today; the broker does not read them (Milestone 9 wires enforcement).
+// Missing keys in the record leave the existing config value in place;
+// passing an empty string value does NOT delete the key (use a future
+// RemoveConfigRecord for that).
+message UpdateTopicConfigRecord {
+  string topic = 1;
+  map<string, string> config = 2;
+}
+
 // Tagged union of metadata records; the Raft state machine tags payloads
 // with this wrapper so it can dispatch.
 message MetadataRecord {
@@ -177,5 +198,7 @@ message MetadataRecord {
     PartitionChangeRecord partition_change = 4;
     CreateTopicRecord create_topic = 5;
     ProducerIdAssignmentRecord producer_id_assignment = 6;
+    DeleteTopicRecord delete_topic = 7;
+    UpdateTopicConfigRecord update_topic_config = 8;
   }
 }

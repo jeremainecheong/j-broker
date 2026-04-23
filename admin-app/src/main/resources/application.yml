@@ -4,6 +4,12 @@ server:
 spring:
   application:
     name: jbroker-admin
+  jackson:
+    # every /api/v1/* response + request body uses snake_case. Affects
+    # both serialization and deserialization, so form-style `CreateTopicBody`
+    # JSON must arrive as {"replication_factor": N}. Java DTOs keep camelCase
+    # accessors so Thymeleaf + server-internal code are unaffected.
+    property-naming-strategy: SNAKE_CASE
   threads:
     virtual:
       # Milestone 8 targets virtual threads for SseEmitter fan-out (§8.8) and

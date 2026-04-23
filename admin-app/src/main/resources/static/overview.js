@@ -67,8 +67,11 @@
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (!d) return;
-        var p = d.produceBytesPerSec || 0;
-        var f = d.fetchBytesPerSec || 0;
+        // REST envelope is snake_case; camelCase aliases let this
+        // file keep working against an older, un-migrated admin build
+        // (e.g. when testing upgrades locally).
+        var p = d.produce_bytes_per_sec || d.produceBytesPerSec || 0;
+        var f = d.fetch_bytes_per_sec || d.fetchBytesPerSec || 0;
         pushSample("produce", p);
         pushSample("fetch", f);
         updateCurrent("produce", p);

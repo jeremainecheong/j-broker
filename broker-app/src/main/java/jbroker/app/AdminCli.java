@@ -70,10 +70,11 @@ public final class AdminCli {
                     System.err.println("--topic required");
                     return;
                 }
+                // admin REST envelope is snake_case.
                 postJson(
                         adminUrl + "/api/v1/topics",
                         String.format(
-                                "{\"name\":\"%s\",\"partitions\":%d,\"replicationFactor\":%d,\"config\":{}}",
+                                "{\"name\":\"%s\",\"partitions\":%d,\"replication_factor\":%d,\"config\":{}}",
                                 t, p, rf));
             }
             case "delete" -> {

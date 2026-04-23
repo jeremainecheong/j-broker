@@ -16,11 +16,16 @@
     for (var i = 0; i < links.length; i++) {
       var href = links[i].getAttribute("href");
       if (!href) continue;
-      if (href === "/" ? path === "/" : path.indexOf(href) === 0) {
-        if (href.length > bestLen) {
-          bestLen = href.length;
-          bestLink = links[i];
-        }
+      // Boundary-aware prefix match: /topics must match /topics or
+      // /topics/<anything> but NOT /topics-archive. "/" is the root — exact
+      // match only, otherwise it would shadow every nested route.
+      var matches =
+        href === "/"
+          ? path === "/"
+          : path === href || path.indexOf(href + "/") === 0;
+      if (matches && href.length > bestLen) {
+        bestLen = href.length;
+        bestLink = links[i];
       }
     }
     if (bestLink) bestLink.classList.add("active");

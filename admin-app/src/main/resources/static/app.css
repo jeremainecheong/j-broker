@@ -13,6 +13,9 @@
   --bg-subtle: #fafbfc;
   --fg: #1b2431;
   --fg-muted: #65748b;
+  /* Back-compat alias — pre-P11.2 templates inline `style="color: var(--muted)"`.
+     Keep both in sync until the pages migrate to --fg-muted explicitly. */
+  --muted: var(--fg-muted);
   --fg-inverse: #ffffff;
   --accent: #0a66c2;
   --accent-subtle: #e7f5ff;

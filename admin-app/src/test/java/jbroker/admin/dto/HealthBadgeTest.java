@@ -51,5 +51,6 @@ final class HealthBadgeTest {
     void redWhenNoNodesAtAll() {
         var badge = HealthBadge.from(new ClusterSummary(-1, 0L, 0L, List.of()));
         assertThat(badge.status()).isEqualTo("red");
+        assertThat(badge.reason()).isEqualTo("no brokers registered");
     }
 }

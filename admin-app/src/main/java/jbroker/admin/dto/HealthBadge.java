@@ -23,8 +23,13 @@ package jbroker.admin.dto;
 public record HealthBadge(String status, String reason) {
     public static HealthBadge from(ClusterSummary cluster) {
         int total = cluster.nodes().size();
+        if (total == 0) {
+            // Distinct from "below majority": a registered-but-dead cluster is
+            // a different operator signal than "no cluster yet".
+            return new HealthBadge("red", "no brokers registered");
+        }
         int alive = (int) cluster.nodes().stream().filter(NodeInfo::alive).count();
-        int quorum = total == 0 ? 1 : (total / 2) + 1;
+        int quorum = (total / 2) + 1;
         boolean hasController = cluster.controllerId() > 0;
 
         if (!hasController || alive < quorum) {

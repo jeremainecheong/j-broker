@@ -126,6 +126,20 @@ public final class BrokerAdminClient implements AutoCloseable {
         return admin.withDeadlineAfter(5, TimeUnit.SECONDS).updateTopicConfig(b.build());
     }
 
+    /**
+     * P13.1 — synchronous compaction on this broker's local log for
+     * {@code (topic, partition)}. Non-hosting brokers return
+     * {@code records_kept = -1}; the admin-app fans out across brokers and
+     * sums survivor counts from hosting replicas.
+     */
+    public jbroker.proto.broker.ForceCompactPartitionResponse forceCompactPartition(String topic, int partition) {
+        return admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .forceCompactPartition(jbroker.proto.broker.ForceCompactPartitionRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .build());
+    }
+
     /** P12.7 — admin-initiated consumer-group removal. */
     public jbroker.proto.broker.DeleteConsumerGroupResponse deleteConsumerGroup(String groupId) {
         return admin.withDeadlineAfter(5, TimeUnit.SECONDS)

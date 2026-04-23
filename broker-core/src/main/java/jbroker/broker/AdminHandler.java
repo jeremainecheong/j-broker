@@ -2,6 +2,7 @@ package jbroker.broker;
 
 import java.util.ArrayList;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -11,6 +12,8 @@ import jbroker.proto.broker.DeleteTopicRequest;
 import jbroker.proto.broker.DeleteTopicResponse;
 import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.DescribeTopicResponse;
+import jbroker.proto.broker.ForceCompactPartitionRequest;
+import jbroker.proto.broker.ForceCompactPartitionResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
 import jbroker.proto.broker.UpdateTopicConfigRequest;
@@ -44,12 +47,24 @@ public final class AdminHandler {
         Optional<Integer> currentLeaderId();
     }
 
+    /**
+     * P13.1 — abstracts the LogManager handle so AdminHandler can trigger a
+     * synchronous compaction without depending on {@code broker-storage}
+     * directly. Returns {@link OptionalInt#empty()} when the target log
+     * isn't open on this broker (non-hosting replica, or cold handle).
+     */
+    @FunctionalInterface
+    public interface Compactor {
+        OptionalInt compactLogNowIfPresent(String topic, int partition) throws java.io.IOException;
+    }
+
     private final TopicManager topicManager;
     private final MetadataProposer proposer;
     private final int selfBrokerId;
     private final Supplier<Set<Integer>> knownBrokers;
     private final LeaderIdLookup leaderLookup;
     private final BrokerRegistry addressBook;
+    private final Compactor compactor;
 
     public AdminHandler(
             TopicManager topicManager,
@@ -57,13 +72,26 @@ public final class AdminHandler {
             int selfBrokerId,
             Supplier<Set<Integer>> knownBrokers,
             LeaderIdLookup leaderLookup,
-            BrokerRegistry addressBook) {
+            BrokerRegistry addressBook,
+            Compactor compactor) {
         this.topicManager = topicManager;
         this.proposer = proposer;
         this.selfBrokerId = selfBrokerId;
         this.knownBrokers = knownBrokers;
         this.leaderLookup = leaderLookup;
         this.addressBook = addressBook;
+        this.compactor = compactor;
+    }
+
+    /** P13.1 pre-existing-call-sites overload: no compactor wired. */
+    public AdminHandler(
+            TopicManager topicManager,
+            MetadataProposer proposer,
+            int selfBrokerId,
+            Supplier<Set<Integer>> knownBrokers,
+            LeaderIdLookup leaderLookup,
+            BrokerRegistry addressBook) {
+        this(topicManager, proposer, selfBrokerId, knownBrokers, leaderLookup, addressBook, null);
     }
 
     /** Back-compat overload: no leader hint / address book (tests only). */
@@ -183,6 +211,41 @@ public final class AdminHandler {
             b.addTopics(toDescriptionProto(t));
         }
         return b.build();
+    }
+
+    /**
+     * P13.1 — synchronously compact this broker's local log for
+     * {@code (topic, partition)}. Topic-level validations (unknown topic,
+     * out-of-range partition) return a populated {@code error}; a missing
+     * local log (non-hosting broker) returns {@code records_kept = -1}
+     * with no error so the admin-app can fan out safely.
+     */
+    public ForceCompactPartitionResponse forceCompactPartition(ForceCompactPartitionRequest req) {
+        var b = ForceCompactPartitionResponse.newBuilder().setRecordsKept(-1);
+        if (compactor == null) {
+            return b.setError(buildError(ErrorCodes.UNIMPLEMENTED, "compactor not wired"))
+                    .build();
+        }
+        var desc = topicManager.describe(req.getTopic());
+        if (desc.isEmpty()) {
+            return b.setError(buildError(ErrorCodes.UNKNOWN_TOPIC, "unknown topic: " + req.getTopic()))
+                    .build();
+        }
+        int partitions = desc.get().partitions();
+        if (req.getPartition() < 0 || req.getPartition() >= partitions) {
+            return b.setError(buildError(
+                            ErrorCodes.INVALID_PARTITION,
+                            "partition out of range: " + req.getPartition() + " (topic has " + partitions + ")"))
+                    .build();
+        }
+        try {
+            var kept = compactor.compactLogNowIfPresent(req.getTopic(), req.getPartition());
+            return b.setRecordsKept(kept.orElse(-1)).build();
+        } catch (java.io.IOException e) {
+            return b.setError(buildError(
+                            ErrorCodes.IO_ERROR, e.getMessage() == null ? e.toString() : e.getMessage()))
+                    .build();
+        }
     }
 
     public DescribeTopicResponse describeTopic(DescribeTopicRequest req) {

@@ -601,9 +601,17 @@ public final class Broker implements AutoCloseable {
                         log.debug("group eviction tick failed, retrying on next tick", e);
                     }
                 },
-                1,
-                1,
-                TimeUnit.SECONDS);
+                /*initialDelay*/ 250,
+                // P10-flake-fix: 250ms tick (was 1s). Failover detection
+                // latency budget = last-heartbeat-age (≤250ms) +
+                // staleness-threshold (3s) + next-tick (≤250ms) = ≤3.5s.
+                // MultiBrokerFailoverIT's 5s budget then has 1.5s of
+                // headroom for PartitionChangeRecord propose + commit +
+                // apply, which is comfortable even on slow CI fsync.
+                // The 1s cadence left only 0.75s headroom, which CI
+                // runners routinely blew through.
+                /*period*/ 250,
+                TimeUnit.MILLISECONDS);
 
         // Point-to-point heartbeat sender: every broker periodically
         // pings every peer (excluding self) with its current metadata

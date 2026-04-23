@@ -852,9 +852,18 @@ public final class DefaultRaftCore implements RaftCore {
         boolean logUpToDate = candidateLogUpToDate(req.lastLogIndex(), req.lastLogTerm());
         boolean grant = role != Role.LEADER && termOk && noCurrentLeader && logUpToDate;
         effects.add(new RaftEffect.SendPreVoteResp(req.candidateId(), currentTerm, grant));
-        // Critically, no state mutation — no term bump, no votedFor write. That's the
-        // whole point of pre-vote: a disruptive node that fails pre-vote has not
-        // perturbed the cluster.
+        // Critically, no state mutation — no term bump, no votedFor
+        // write, no deadline reset. That's the whole point of pre-vote:
+        // a disruptive node that fails pre-vote has not perturbed the
+        // cluster. A tempting "reset deadline on grant" optimisation
+        // introduces a liveness bug in exactly this scenario: if the
+        // pre-voter's responses keep getting lost (one-way network
+        // fault, OS socket-buffer drop), the granting node keeps
+        // resetting its own deadline and never runs its own election.
+        // Observed concretely on CI: broker 2 did not start pre-vote
+        // for >5s after the Raft leader died because it kept granting
+        // the dead peer's retries while its own responses never
+        // reached the caller.
     }
 
     private void onPreVoteResp(RaftEvent.PreVoteResp resp, List<RaftEffect> effects) {

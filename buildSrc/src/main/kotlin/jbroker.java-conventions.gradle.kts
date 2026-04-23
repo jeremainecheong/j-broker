@@ -16,7 +16,16 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 tasks.withType<Test>().configureEach {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        // Hardware-dependent throughput micro-benchmarks are tagged
+        // `perf` and excluded from default `./gradlew test`. They still
+        // run under `-PincludeTags=perf` or env JBROKER_RUN_PERF=1.
+        val runPerf = project.findProperty("includeTags")?.toString()?.contains("perf") == true
+                || System.getenv("JBROKER_RUN_PERF") == "1"
+        if (!runPerf) {
+            excludeTags("perf")
+        }
+    }
     testLogging {
         events("passed", "skipped", "failed")
         showStandardStreams = false

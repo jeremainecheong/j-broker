@@ -6,7 +6,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import jbroker.broker.client.BrokerClient;
 import jbroker.raft.core.NodeId;
 
@@ -98,9 +100,24 @@ public final class BrokerApp {
      * {@code raftPort} and {@code brokerPort} are the ports each voter binds
      * for Raft peer RPC and broker gRPC respectively — the host:port pair the
      * rest of the cluster uses to dial them.
+     *
+     * <p>Validations enforced:
+     *
+     * <ul>
+     *   <li>Entry shape must match {@code ID@HOST:RAFT:BROKER}.
+     *   <li>Host must be non-blank (empty host silently misroutes the cluster).
+     *   <li>All three integers (id, raftPort, brokerPort) must parse; bad ints
+     *       turn into {@link IllegalArgumentException} with the full spec for
+     *       easy debugging instead of a bare {@link NumberFormatException}.
+     *   <li>Voter ids must be unique across the list.
+     * </ul>
+     *
+     * <p>IPv6 literals are not supported (future work — would require
+     * bracketed-host parsing {@code [::1]:9192:9092}). Tests pin this shape.
      */
     static List<VoterAddress> parseVoters(String spec) {
         var out = new ArrayList<VoterAddress>();
+        Set<Integer> seenIds = new HashSet<>();
         for (var entry : spec.split(",")) {
             var trimmed = entry.trim();
             if (trimmed.isEmpty()) continue;
@@ -108,21 +125,35 @@ public final class BrokerApp {
             if (at <= 0 || at == trimmed.length() - 1) {
                 throw new IllegalArgumentException("voter spec must be ID@HOST:RAFT:BROKER, got: " + trimmed);
             }
-            int vid = Integer.parseInt(trimmed.substring(0, at));
+            int vid = parseIntOrReject(trimmed.substring(0, at), "voter id", trimmed);
             var hostPorts = trimmed.substring(at + 1).split(":");
             if (hostPorts.length != 3) {
                 throw new IllegalArgumentException("voter spec must be ID@HOST:RAFT:BROKER, got: " + trimmed);
             }
-            out.add(new VoterAddress(
-                    new NodeId(vid),
-                    hostPorts[0],
-                    Integer.parseInt(hostPorts[1]),
-                    Integer.parseInt(hostPorts[2])));
+            String host = hostPorts[0];
+            if (host.isBlank()) {
+                throw new IllegalArgumentException("voter spec host must be non-blank, got: " + trimmed);
+            }
+            int raftPort = parseIntOrReject(hostPorts[1], "raft port", trimmed);
+            int brokerPort = parseIntOrReject(hostPorts[2], "broker port", trimmed);
+            if (!seenIds.add(vid)) {
+                throw new IllegalArgumentException("duplicate voter id " + vid + " in --voters spec");
+            }
+            out.add(new VoterAddress(new NodeId(vid), host, raftPort, brokerPort));
         }
         if (out.isEmpty()) {
             throw new IllegalArgumentException("--voters must contain at least one entry");
         }
         return List.copyOf(out);
+    }
+
+    private static int parseIntOrReject(String s, String field, String entry) {
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    field + " must be an integer in voter spec, got: " + entry + " (offending token: '" + s + "')", e);
+        }
     }
 
     private static void runTopics(String[] args) throws Exception {

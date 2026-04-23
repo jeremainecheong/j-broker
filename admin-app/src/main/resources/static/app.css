@@ -463,6 +463,90 @@ tr:hover td {
   flex: 1;
 }
 
+/* Offset-fill colour variants (P11.5 — lag progress bars share the meter) */
+.offset-fill.ok {
+  background: var(--ok);
+}
+.offset-fill.warn {
+  background: var(--warn);
+}
+.offset-fill.bad {
+  background: var(--bad);
+}
+
+/* Consumer-group member cards (P11.5) ---------------------------------- */
+
+.member-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.member-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.member-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.member-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-subs,
+.member-owned {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+}
+
+.member-subs-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.member-owned-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.partition-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.4rem;
+  padding: 0 0.45rem;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.76rem;
+  font-feature-settings: "tnum" 1;
+}
+
 /* Footer ---------------------------------------------------------------- */
 
 footer {

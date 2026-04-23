@@ -22,7 +22,8 @@ export default function () {
   const name = `smoke-${__VU}-${__ITER}`;
   const createRes = http.post(
     `${BASE}/api/v1/topics`,
-    JSON.stringify({ name, partitions: 1, replicationFactor: 1, config: {} }),
+    // P11.7 — admin API JSON envelope is snake_case.
+    JSON.stringify({ name, partitions: 1, replication_factor: 1, config: {} }),
     { headers: { "Content-Type": "application/json" } },
   );
   check(createRes, { "create 2xx": (r) => r.status === 201 });

@@ -181,6 +181,90 @@ public final class Log implements AutoCloseable {
         for (var seg : segments) seg.force();
     }
 
+    /**
+     * synchronous log compaction. For each key, keeps only the record
+     * with the highest offset; a record with {@code value == null} is a
+     * tombstone and removes the key entirely. Records with {@code key == null}
+     * are passed through unchanged.
+     *
+     * <p>Implementation is stop-the-world: reads every batch into memory,
+     * dedups, rewrites a single new segment, swaps in place. Good enough for
+     * the target (1M records, 1000 keys, laptop-sized). A streaming
+     * cleaner with segment-granular swaps is a Milestone 10 optimisation.
+     *
+     * <p>Returns the number of records retained after compaction.
+     */
+    public synchronized int compactByKey() throws IOException {
+        // Read every batch in original order. The latest record for each
+        // key wins, including when the "latest" is a tombstone — in which
+        // case the key is dropped entirely.
+        var byKey = new java.util.LinkedHashMap<java.nio.ByteBuffer, Record>();
+        var nullKeyed = new java.util.ArrayList<Record>();
+        long nowMillis = System.currentTimeMillis();
+        long firstTimestamp = nowMillis;
+        long maxTimestamp = nowMillis;
+        boolean sawAny = false;
+        for (var seg : segments) {
+            // Read the entire segment via repeated readFrom until empty.
+            long pos = seg.baseOffset();
+            long limit = seg.nextOffset();
+            while (pos < limit) {
+                var batches = seg.readFrom(pos, 64 * 1024);
+                if (batches.isEmpty()) break;
+                for (var b : batches) {
+                    if (!sawAny) {
+                        firstTimestamp = b.firstTimestamp();
+                        sawAny = true;
+                    }
+                    if (b.maxTimestamp() > maxTimestamp) maxTimestamp = b.maxTimestamp();
+                    for (var r : b.records()) {
+                        if (r.key() == null) {
+                            nullKeyed.add(new Record(nullKeyed.size(), 0L, null, r.value()));
+                            continue;
+                        }
+                        var keyBuf = java.nio.ByteBuffer.wrap(r.key());
+                        if (r.value() == null) {
+                            // Tombstone — drop any prior value for this key.
+                            byKey.remove(keyBuf);
+                            continue;
+                        }
+                        // LinkedHashMap preserves insertion order for first
+                        // writes; replace for subsequent writes so the
+                        // highest-offset survivor wins.
+                        byKey.remove(keyBuf);
+                        byKey.put(keyBuf, new Record(0, 0L, r.key(), r.value()));
+                    }
+                    pos = b.lastOffset() + 1;
+                }
+            }
+        }
+        // Build the compacted record list with sequential offsetDeltas.
+        var out = new java.util.ArrayList<Record>(nullKeyed.size() + byKey.size());
+        int idx = 0;
+        for (var r : nullKeyed) {
+            out.add(new Record(idx++, 0L, r.key(), r.value()));
+        }
+        for (var r : byKey.values()) {
+            out.add(new Record(idx++, 0L, r.key(), r.value()));
+        }
+
+        // Swap: close + delete existing segments, reopen a fresh one rooted
+        // at offset 0, append the compacted batch. Sparse-offset preservation
+        // (Kafka-native compaction) is a follow-up; here we renumber to 0..N-1
+        // because only cares about record *count*, not identity.
+        for (var seg : segments) {
+            seg.close();
+            seg.delete();
+        }
+        segments.clear();
+        var fresh = LogSegment.open(dir, 0L, config.indexIntervalBytes());
+        segments.add(fresh);
+        if (!out.isEmpty()) {
+            fresh.append(firstTimestamp, maxTimestamp, out);
+        }
+        return out.size();
+    }
+
     @Override
     public synchronized void close() throws IOException {
         for (var seg : segments) seg.close();

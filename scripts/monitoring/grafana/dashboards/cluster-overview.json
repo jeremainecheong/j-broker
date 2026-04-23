@@ -1,0 +1,88 @@
+{
+  "title": "j-broker Cluster Overview",
+  "uid": "jbroker-cluster",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Produce throughput per broker (B/s)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "jbroker_produce_bytes_per_second",
+          "legendFormat": "broker {{broker_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Fetch throughput per broker (B/s)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "jbroker_fetch_bytes_per_second",
+          "legendFormat": "broker {{broker_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Produce latency percentiles (seconds)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "jbroker_produce_latency_seconds",
+          "legendFormat": "broker {{broker_id}} p{{quantile}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Fetch latency percentiles (seconds)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "jbroker_fetch_latency_seconds",
+          "legendFormat": "broker {{broker_id}} p{{quantile}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Raft commit index per broker",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "jbroker_raft_commit_index",
+          "legendFormat": "broker {{broker_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Raft current term per broker",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {
+          "expr": "jbroker_raft_current_term",
+          "legendFormat": "broker {{broker_id}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+# P9.7 — monitoring stack. Bring up with:
+#   docker compose -f docker-compose.monitoring.yml --profile monitoring up
+#
+# Prometheus scrapes the admin-app's /actuator/prometheus endpoint
+# (which merges broker metrics via MetricsScraper). Grafana is
+# auto-provisioned from scripts/monitoring/grafana/ — edits to the
+# JSON dashboards become visible after a container restart.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["monitoring"]
+    container_name: jbroker-prometheus
+    ports:
+      - "9091:9090"  # 9091 host → 9090 container (admin-app uses 9090)
+    volumes:
+      - ./scripts/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    # The admin-app + brokers run outside this compose stack — they live
+    # on the host or in a sibling dev-compose. Use host.docker.internal
+    # so the Prometheus job picks them up on macOS / Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:10.4.5
+    profiles: ["monitoring"]
+    container_name: jbroker-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ADMIN_PASSWORD: "jbroker"
+    volumes:
+      - ./scripts/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./scripts/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus

@@ -1,0 +1,14 @@
+# P9.7 — Grafana auto-loads every dashboard JSON under the mounted
+# /var/lib/grafana/dashboards volume.
+apiVersion: 1
+
+providers:
+  - name: "j-broker"
+    orgId: 1
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

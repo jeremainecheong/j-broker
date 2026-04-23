@@ -1,0 +1,20 @@
+# P9.7 — Prometheus scrape config. The admin-app merges per-broker
+# metrics via its MetricsScraper (pulling DescribeMetrics over gRPC)
+# and exposes the merged view at /actuator/prometheus.
+#
+# When you scale to multiple admin-apps or want direct per-broker
+# scraping (for better fault-tolerance), add one target per admin-app
+# instance here.
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: jbroker-admin
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # docker-compose.monitoring.yml uses host.docker.internal to reach
+      # an admin-app running on the host. Swap for a service name when
+      # admin-app is containerised in the same compose.
+      - targets: ["host.docker.internal:9090"]

@@ -1,28 +1,100 @@
 <!DOCTYPE html>
 <html xmlns:th="http://www.thymeleaf.org">
-  <head th:replace="~{fragments/shell :: head ('j-broker admin — Cluster')}"></head>
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Overview')}"></head>
   <body>
     <nav th:replace="~{fragments/shell :: topnav}"></nav>
     <main>
-      <h1>Cluster</h1>
-      <div class="card">
-        <div>
-          <strong>Controller:</strong>
-          <span th:text="${cluster.controllerId()}"
-                th:attr="data-controller-id=${cluster.controllerId()}">--</span>
-          ·
-          <strong>Term:</strong> <span th:text="${cluster.term()}">0</span>
-          ·
-          <strong>Metadata offset:</strong> <span th:text="${cluster.metadataOffset()}">0</span>
-        </div>
+      <h1>Overview</h1>
+
+      <!--/*
+        alert strip. Renders only when the cluster-health pill
+        would be yellow or red, so a healthy cluster shows no banner at
+        all. Reuses the HealthBadge DTO to keep the logic single-sourced.
+      */-->
+      <div th:if="${badge.status() != 'green'}"
+           class="alert-strip"
+           th:classappend="${badge.status()}">
+        <strong th:text="${badge.status() == 'red' ? '⚠ Critical' : '⚠ Degraded'}">⚠</strong>
+        <span th:text="${badge.reason()}">…</span>
       </div>
 
+      <!--/*
+        Summary-card grid. Four tiles: brokers / topics / groups / Raft
+        term+metadata-offset. Each tile shows a big headline number plus a
+        sub-line of context.
+      */-->
+      <div class="summary-grid">
+        <article class="summary-card" data-summary="brokers">
+          <span class="summary-label">Brokers</span>
+          <span class="summary-value"
+                th:with="alive=${#lists.size(cluster.nodes().?[alive])}, total=${cluster.nodes().size()}"
+                th:text="|${alive}/${total}|">3/3</span>
+          <span class="summary-sub"
+                th:with="controller=${cluster.controllerId()}"
+                th:text="${controller >= 0 ? 'controller ' + controller : 'no leader yet'}">controller 1</span>
+        </article>
+
+        <article class="summary-card" data-summary="topics">
+          <span class="summary-label">Topics</span>
+          <span class="summary-value" th:text="${topicCount < 0 ? '—' : topicCount}">0</span>
+          <span class="summary-sub" th:if="${topicCount < 0}">broker unreachable</span>
+          <span class="summary-sub" th:unless="${topicCount < 0}">defined across cluster</span>
+        </article>
+
+        <article class="summary-card" data-summary="groups">
+          <span class="summary-label">Consumer groups</span>
+          <span class="summary-value" th:text="${groupCount < 0 ? '—' : groupCount}">0</span>
+          <span class="summary-sub" th:if="${groupCount < 0}">broker unreachable</span>
+          <span class="summary-sub" th:unless="${groupCount < 0}">tracked by coordinator</span>
+        </article>
+
+        <article class="summary-card" data-summary="raft">
+          <span class="summary-label">Raft</span>
+          <span class="summary-value" th:text="|t${cluster.term()}|">t0</span>
+          <span class="summary-sub" th:text="|metadata offset ${cluster.metadataOffset()}|">metadata offset 0</span>
+        </article>
+      </div>
+
+      <!--/*
+        Throughput sparklines. The server renders the shells + current
+        instant values; the client-side overview.js polls
+        /api/v1/metrics/throughput every 2s, keeps a rolling ring of 30
+        samples per metric, and redraws the inline SVG paths. No
+        historical state on the server.
+      */-->
+      <div class="spark-grid">
+        <article class="spark-card">
+          <header>
+            <span class="summary-label">Produce throughput</span>
+            <span class="spark-current" data-spark-current="produce">0</span>
+            <span class="muted spark-unit">B/s</span>
+          </header>
+          <svg class="sparkline" data-sparkline="produce"
+               viewBox="0 0 300 60" preserveAspectRatio="none">
+            <path class="sparkline-fill"   d="M0,60 L300,60 L300,60 L0,60 Z"></path>
+            <path class="sparkline-stroke" d="M0,60"></path>
+          </svg>
+        </article>
+        <article class="spark-card">
+          <header>
+            <span class="summary-label">Fetch throughput</span>
+            <span class="spark-current" data-spark-current="fetch">0</span>
+            <span class="muted spark-unit">B/s</span>
+          </header>
+          <svg class="sparkline" data-sparkline="fetch"
+               viewBox="0 0 300 60" preserveAspectRatio="none">
+            <path class="sparkline-fill"   d="M0,60 L300,60 L300,60 L0,60 Z"></path>
+            <path class="sparkline-stroke" d="M0,60"></path>
+          </svg>
+        </article>
+      </div>
+
+      <h2 style="margin: 1.5rem 0 0.5rem; font-size:1.05rem;">Topology</h2>
       <div class="card topology">
         <svg th:attr="width=${500}, height=${260}, viewBox='0 0 500 260'"
              xmlns="http://www.w3.org/2000/svg">
-          <!-- Render one circle per broker positioned on a circle. Each
-               node carries data-broker-id + data-broker-role attributes so
-               the E2E HTML-assertion can find the controller unambiguously. -->
+          <!-- one circle per broker on a ring. data-broker-role
+               is load-bearing for the controller-marker E2E. -->
           <g th:each="n, it : ${cluster.nodes()}"
              th:with="count=${cluster.nodes().size()}, angle=${it.index * (2 * 3.141592653589793 / (count > 0 ? count : 1))},
                       cx=${250 + 110 * T(java.lang.Math).cos(angle)},
@@ -65,6 +137,7 @@
         </table>
       </div>
     </main>
-    <footer>j-broker admin — Milestone 8</footer>
+    <footer>j-broker admin</footer>
+    <script th:src="@{/overview.js}" defer></script>
   </body>
 </html>

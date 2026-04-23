@@ -145,11 +145,34 @@ public final class LogManager implements AutoCloseable {
         }
     }
 
+    /** P9.5 — topic → compact flag. Populated by the broker when a topic is created. */
+    private final ConcurrentHashMap<String, Boolean> compactTopics = new ConcurrentHashMap<>();
+
+    public void markTopicCompact(String topic, boolean compact) {
+        compactTopics.put(topic, compact);
+    }
+
+    /** P9.5 — synchronous compaction trigger, primarily for tests + admin tooling. */
+    public int compactLogNow(String topic, int partition) throws IOException {
+        return logFor(topic, partition).compactByKey();
+    }
+
     private void runCleaner() {
         long cutoff = System.currentTimeMillis() - config.retentionMillis();
-        for (var log : logs.values()) {
+        for (var entry : logs.entrySet()) {
+            var log = entry.getValue();
             try {
                 log.retain(cutoff);
+                // P9.5 — also compact logs belonging to compact-policy topics.
+                // Key on the topic portion of the "<topic>-<partition>" map key;
+                // the partition suffix follows the last dash on a numeric.
+                String key = entry.getKey();
+                int dash = key.lastIndexOf('-');
+                if (dash <= 0) continue;
+                String topic = key.substring(0, dash);
+                if (Boolean.TRUE.equals(compactTopics.get(topic))) {
+                    log.compactByKey();
+                }
             } catch (IOException ignored) {
                 /* log line in a later observability pass */
             }

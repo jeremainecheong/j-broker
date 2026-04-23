@@ -55,6 +55,30 @@ public class AdminEventBus {
     private final ConcurrentHashMap<String, Subscriber> subscribers = new ConcurrentHashMap<>();
     private volatile boolean running = true;
 
+    /**
+     * optional side-channel publisher, invoked for every event the
+     * bus ingests (both from broker subscriptions and from
+     * {@link #injectExternal}-cycled Redis echoes are intentionally NOT
+     * re-published; see {@code injectExternal}). When null the bus runs
+     * in pure in-process mode.
+     */
+    private volatile java.util.function.Consumer<LocalEvent> externalPublisher;
+
+    /**
+     * dedupe set keyed on {@code (brokerEndpoint, brokerEventId)}.
+     * Shared by direct broker ingestion and external Redis injection so a
+     * pod never double-broadcasts the same broker event regardless of
+     * whether it arrived via its own gRPC stream or via another pod's
+     * Redis publish.
+     */
+    private final java.util.Set<String> seenBrokerEvents = java.util.Collections.newSetFromMap(
+            new java.util.LinkedHashMap<>() {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
+                    return size() > RING_CAPACITY;
+                }
+            });
+
     @Autowired
     public AdminEventBus(BrokerAdminClientPool pool) {
         this.pool = pool;
@@ -128,10 +152,57 @@ public class AdminEventBus {
     }
 
     private void ingest(String brokerEndpoint, EventMessage msg) {
+        // dedupe before allocating a LocalEvent so we don't bump
+        // nextId for events the bus has already broadcast (either from a
+        // redundant broker stream or from a Redis echo).
+        String dedupeKey = brokerEndpoint + "#" + msg.getId();
+        synchronized (seenBrokerEvents) {
+            if (!seenBrokerEvents.add(dedupeKey)) return;
+        }
         long id = nextId.getAndIncrement();
         var e = new LocalEvent(id, brokerEndpoint, msg.getType(), msg.getDataJson(), msg.getId());
+        broadcast(e);
+        // Publish to the external (Redis) channel AFTER local broadcast so
+        // local subscribers always see fresh events first.
+        var pub = externalPublisher;
+        if (pub != null) {
+            try {
+                pub.accept(e);
+            } catch (Exception err) {
+                log.debug("external publisher threw; dropping: {}", err.getMessage());
+            }
+        }
+    }
+
+    /**
+     * inject an event delivered via the external pub/sub channel
+     * (typically Redis pub/sub from a peer admin pod). De-duplicates on
+     * {@code (brokerEndpoint, brokerEventId)} so the same broker event
+     * arriving via a peer's Redis publish AND this pod's direct gRPC
+     * subscription is broadcast exactly once. Does NOT bounce back out
+     * to the external publisher — the peer already published it.
+     */
+    public void injectExternal(String brokerEndpoint, String type, String dataJson, long brokerEventId) {
+        String dedupeKey = brokerEndpoint + "#" + brokerEventId;
+        synchronized (seenBrokerEvents) {
+            if (!seenBrokerEvents.add(dedupeKey)) return;
+        }
+        long id = nextId.getAndIncrement();
+        broadcast(new LocalEvent(id, brokerEndpoint, type, dataJson, brokerEventId));
+    }
+
+    /**
+     * install a fan-out hook. Invoked for every new event the
+     * bus emits locally. Passing null disables the hook (tests use this
+     * to tear down the Redis wiring in {@code PreDestroy}).
+     */
+    public void setExternalPublisher(java.util.function.Consumer<LocalEvent> publisher) {
+        this.externalPublisher = publisher;
+    }
+
+    private void broadcast(LocalEvent e) {
         synchronized (ringLock) {
-            ring[(int) (id % RING_CAPACITY)] = e;
+            ring[(int) (e.id() % RING_CAPACITY)] = e;
         }
         for (var s : subscribers.values()) {
             try {

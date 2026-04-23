@@ -177,6 +177,14 @@ public final class Log implements AutoCloseable {
             if (seg.baseOffset() <= offset) candidate = seg;
             else break;
         }
+        // if the requested offset is below every segment's base
+        // (e.g. after sparse-offset compaction a consumer still holds a
+        // pre-compaction offset), return the earliest available segment
+        // instead of nothing so the fetch path surfaces records from the
+        // new logStartOffset rather than silently returning empty.
+        if (candidate == null && !segments.isEmpty()) {
+            candidate = segments.get(0);
+        }
         return candidate;
     }
 
@@ -240,17 +248,30 @@ public final class Log implements AutoCloseable {
     }
 
     private int compactByKeyLocked() throws IOException {
-        // Read every batch in original order. The latest record for each
-        // key wins, including when the "latest" is a tombstone — in which
-        // case the key is dropped entirely.
-        var byKey = new java.util.LinkedHashMap<java.nio.ByteBuffer, Record>();
-        var nullKeyed = new java.util.ArrayList<Record>();
+        // Kafka-spec sparse-offset compaction. Scan every batch in
+        // original order tracking the ABSOLUTE offset of each record. For
+        // keyed records, keep the latest surviving offset per key; a
+        // tombstone drops the key entirely. Null-keyed records are
+        // pass-through and preserve their original offset. The resulting
+        // compacted batch retains each survivor at its original absolute
+        // offset by encoding the right offsetDelta values — consumers
+        // requesting a compacted-away offset will land on the next batch
+        // whose lastOffset ≥ target (standard Kafka fetch semantics).
+        //
+        // Concretely: if offsets 0,1,2,3,4 had keys A,B,A,C,B then
+        // survivors are {2:A, 3:C, 4:B}; the compacted single-batch log has
+        // base=2 and records with deltas [0,1,2] → absolute offsets 2,3,4.
+        // If offsets were 0,1,5 with keys A,A,B then survivors are {1:A,
+        // 5:B}; compacted batch has base=1 and deltas [0,4] — the gap at
+        // offsets 2–4 is real, readers fetching offset=3 land on the batch
+        // at base=1 (whose lastOffset=5).
+        var byKey = new java.util.HashMap<java.nio.ByteBuffer, Long>(); // keyBytes -> abs offset of current winner
+        var survivors = new java.util.TreeMap<Long, Record>(); // abs offset -> surviving record (naked, no offset delta)
         long nowMillis = System.currentTimeMillis();
         long firstTimestamp = nowMillis;
         long maxTimestamp = nowMillis;
         boolean sawAny = false;
         for (var seg : segments) {
-            // Read the entire segment via repeated readFrom until empty.
             long pos = seg.baseOffset();
             long limit = seg.nextOffset();
             while (pos < limit) {
@@ -262,52 +283,62 @@ public final class Log implements AutoCloseable {
                         sawAny = true;
                     }
                     if (b.maxTimestamp() > maxTimestamp) maxTimestamp = b.maxTimestamp();
+                    long batchBase = b.baseOffset();
                     for (var r : b.records()) {
+                        long absOff = batchBase + r.offsetDelta();
                         if (r.key() == null) {
-                            nullKeyed.add(new Record(nullKeyed.size(), 0L, null, r.value()));
+                            // Null-keyed passthrough — retained at original offset.
+                            survivors.put(absOff, new Record(0, 0L, null, r.value()));
                             continue;
                         }
                         var keyBuf = java.nio.ByteBuffer.wrap(r.key());
                         if (r.value() == null) {
-                            // Tombstone — drop any prior value for this key.
-                            byKey.remove(keyBuf);
+                            // Tombstone — drop any prior winner for this key.
+                            var prior = byKey.remove(keyBuf);
+                            if (prior != null) survivors.remove(prior);
                             continue;
                         }
-                        // LinkedHashMap preserves insertion order for first
-                        // writes; replace for subsequent writes so the
-                        // highest-offset survivor wins.
-                        byKey.remove(keyBuf);
-                        byKey.put(keyBuf, new Record(0, 0L, r.key(), r.value()));
+                        var prior = byKey.get(keyBuf);
+                        if (prior != null) survivors.remove(prior);
+                        byKey.put(keyBuf, absOff);
+                        survivors.put(absOff, new Record(0, 0L, r.key(), r.value()));
                     }
                     pos = b.lastOffset() + 1;
                 }
             }
         }
-        // Build the compacted record list with sequential offsetDeltas.
-        var out = new java.util.ArrayList<Record>(nullKeyed.size() + byKey.size());
-        int idx = 0;
-        for (var r : nullKeyed) {
-            out.add(new Record(idx++, 0L, r.key(), r.value()));
-        }
-        for (var r : byKey.values()) {
-            out.add(new Record(idx++, 0L, r.key(), r.value()));
-        }
 
-        // Swap: close + delete existing segments, reopen a fresh one rooted
-        // at offset 0, append the compacted batch. Sparse-offset preservation
-        // (Kafka-native compaction) is a follow-up; here we renumber to 0..N-1
-        // because only cares about record *count*, not identity.
+        // Swap: close + delete existing segments, then build the replacement
+        // segment at the first-surviving absolute offset.
         for (var seg : segments) {
             seg.close();
             seg.delete();
         }
         segments.clear();
-        var fresh = LogSegment.open(dir, 0L, config.indexIntervalBytes());
-        segments.add(fresh);
-        if (!out.isEmpty()) {
-            fresh.append(firstTimestamp, maxTimestamp, out);
+
+        if (survivors.isEmpty()) {
+            // No records survived. Fresh empty segment at offset 0; nextOffset
+            // resets to 0 (loss of historical offsets is acceptable when the
+            // partition is empty — there are no consumers to surprise).
+            segments.add(LogSegment.open(dir, 0L, config.indexIntervalBytes()));
+            return 0;
         }
-        return out.size();
+
+        long firstOff = survivors.firstKey();
+        var fresh = LogSegment.open(dir, firstOff, config.indexIntervalBytes());
+        segments.add(fresh);
+        // Encode as a single batch whose base is the first surviving offset.
+        // Records carry (absOff - firstOff) as their offsetDelta — sparse
+        // gaps within a batch are well-formed per the RecordBatch spec and
+        // survive the decode round-trip.
+        var encoded = new java.util.ArrayList<Record>(survivors.size());
+        for (var entry : survivors.entrySet()) {
+            long absOff = entry.getKey();
+            var r = entry.getValue();
+            encoded.add(new Record((int) (absOff - firstOff), 0L, r.key(), r.value()));
+        }
+        fresh.append(firstTimestamp, maxTimestamp, encoded);
+        return survivors.size();
     }
 
     @Override

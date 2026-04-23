@@ -89,9 +89,47 @@ final class LogCompactionTest {
         log.append(List.of(new Record(0, 0L, null, "v3".getBytes())), 1_000L);
 
         int kept = log.compactByKey();
-        // 2 null-keyed + 1 k1 = 3.
+        // 2 null-keyed + 1 k1 = 3. Survivors live at their original
+        // absolute offsets: null@0, k1@2 (latest), null@3. logEndOffset
+        // is then max(offset) + 1 = 4 — sparse-offset preservation
+        // replaces the pre-v1.1 renumber-from-0 behavior.
         assertThat(kept).isEqualTo(3);
-        assertThat(log.nextOffset()).isEqualTo(3L);
+        assertThat(log.nextOffset()).isEqualTo(4L);
+    }
+
+    @Test
+    void sparseOffsetsPreservedPostCompaction() throws Exception {
+        // 5 records: keys A,B,A,C,B at offsets 0,1,2,3,4. Survivors should
+        // be at absolute offsets 2 (A), 3 (C), 4 (B) — not renumbered.
+        log.append(List.of(rec("A", "v0")), 1_000L);
+        log.append(List.of(rec("B", "v1")), 1_000L);
+        log.append(List.of(rec("A", "v2")), 1_000L);
+        log.append(List.of(rec("C", "v3")), 1_000L);
+        log.append(List.of(rec("B", "v4")), 1_000L);
+
+        int kept = log.compactByKey();
+        assertThat(kept).isEqualTo(3);
+        // nextOffset is max surviving offset + 1 = 5.
+        assertThat(log.nextOffset()).isEqualTo(5L);
+
+        // Reading from offset 2 yields the compacted batch with 3 records
+        // at absolute offsets 2, 3, 4.
+        var batches = log.read(2, 64 * 1024);
+        assertThat(batches).hasSize(1);
+        var b = batches.get(0);
+        assertThat(b.baseOffset()).isEqualTo(2L);
+        assertThat(b.lastOffset()).isEqualTo(4L);
+        assertThat(b.records()).extracting(r -> new String(r.key(), StandardCharsets.UTF_8))
+                .containsExactly("A", "C", "B");
+        assertThat(b.records()).extracting(r -> new String(r.value(), StandardCharsets.UTF_8))
+                .containsExactly("v2", "v3", "v4");
+        assertThat(b.records()).extracting(Record::offsetDelta).containsExactly(0, 1, 2);
+
+        // Reading from a pre-compaction offset (0) falls forward to the
+        // first available batch — standard "old offset" behaviour.
+        var fromZero = log.read(0, 64 * 1024);
+        assertThat(fromZero).hasSize(1);
+        assertThat(fromZero.get(0).baseOffset()).isEqualTo(2L);
     }
 
     private static Record rec(String key, String value) {

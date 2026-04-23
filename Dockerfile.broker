@@ -22,9 +22,13 @@ LABEL org.opencontainers.image.source="https://github.com/jeremainecheong/j-brok
 WORKDIR /opt/jbroker
 COPY --from=builder /src/broker-app/build/install/broker-app/ /opt/jbroker/
 
-# Data dir lives outside the image so a bind-mount or named volume preserves
-# Raft state + partition logs across container restarts.
-RUN mkdir -p /var/lib/jbroker
+# Non-root runtime: the broker never needs privileged capabilities. Host
+# bind-mounts onto /var/lib/jbroker need to be chown'd to uid 1001 or have
+# world-writable perms; named volumes inherit this directive's owner.
+RUN groupadd --system --gid 1001 jbroker \
+    && useradd --system --uid 1001 --gid jbroker --home-dir /opt/jbroker --shell /usr/sbin/nologin jbroker \
+    && mkdir -p /var/lib/jbroker \
+    && chown -R jbroker:jbroker /opt/jbroker /var/lib/jbroker
 VOLUME /var/lib/jbroker
 
 # 9092 — broker gRPC (producer/consumer/admin/metadata services)
@@ -32,6 +36,7 @@ VOLUME /var/lib/jbroker
 # 9100 — optional chaos HTTP control plane (only bound when --chaos-port ≥ 0)
 EXPOSE 9092 9192 9100
 
+USER jbroker
 ENTRYPOINT ["/opt/jbroker/bin/broker-app"]
 # Default command: single-broker server on the conventional ports. The
 # compose file overrides this to pass --voters + --id + --chaos-port for the

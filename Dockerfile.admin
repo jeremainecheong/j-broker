@@ -18,9 +18,16 @@ LABEL org.opencontainers.image.source="https://github.com/jeremainecheong/j-brok
 WORKDIR /opt/jbroker
 COPY --from=builder /src/admin-app/build/libs/admin-app.jar /opt/jbroker/admin-app.jar
 
+# Non-root runtime. Admin-app is a read-mostly REST/Thymeleaf frontend
+# against the broker cluster — no persistent data dir needed.
+RUN groupadd --system --gid 1001 jbroker \
+    && useradd --system --uid 1001 --gid jbroker --home-dir /opt/jbroker --shell /usr/sbin/nologin jbroker \
+    && chown -R jbroker:jbroker /opt/jbroker
+
 # RabbitMQ's management plugin listens on 15672 — we adopt the same port so
 # people looking for "the management UI" find it on the port they expect.
 ENV SERVER_PORT=15672
 EXPOSE 15672
 
+USER jbroker
 ENTRYPOINT ["java", "-jar", "/opt/jbroker/admin-app.jar"]

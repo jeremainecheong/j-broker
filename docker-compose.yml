@@ -28,6 +28,10 @@ x-broker-common: &broker-common
   restart: unless-stopped
   networks: [jbroker]
 
+# YAML anchor — all three brokers advertise this same voter set. Changing
+# cluster size or renaming a broker is a single-line edit here.
+x-voters: &voters "1@broker1:9192:9092,2@broker2:9192:9092,3@broker3:9192:9092"
+
 services:
   broker1:
     <<: *broker-common
@@ -38,14 +42,20 @@ services:
       - "9100:9100"
     volumes:
       - broker1-data:/var/lib/jbroker
-    command: >
-      server
-      --id 1
-      --data-dir /var/lib/jbroker
-      --broker-port 9092
-      --raft-port 9192
-      --voters 1@broker1:9192:9092,2@broker2:9192:9092,3@broker3:9192:9092
-      --chaos-port ${JBROKER_CHAOS_PORT:--1}
+    command:
+      - server
+      - --id
+      - "1"
+      - --data-dir
+      - /var/lib/jbroker
+      - --broker-port
+      - "9092"
+      - --raft-port
+      - "9192"
+      - --voters
+      - *voters
+      - --chaos-port
+      - ${JBROKER_CHAOS_PORT:--1}
 
   broker2:
     <<: *broker-common
@@ -56,14 +66,20 @@ services:
       - "9101:9100"
     volumes:
       - broker2-data:/var/lib/jbroker
-    command: >
-      server
-      --id 2
-      --data-dir /var/lib/jbroker
-      --broker-port 9092
-      --raft-port 9192
-      --voters 1@broker1:9192:9092,2@broker2:9192:9092,3@broker3:9192:9092
-      --chaos-port ${JBROKER_CHAOS_PORT:--1}
+    command:
+      - server
+      - --id
+      - "2"
+      - --data-dir
+      - /var/lib/jbroker
+      - --broker-port
+      - "9092"
+      - --raft-port
+      - "9192"
+      - --voters
+      - *voters
+      - --chaos-port
+      - ${JBROKER_CHAOS_PORT:--1}
 
   broker3:
     <<: *broker-common
@@ -74,14 +90,20 @@ services:
       - "9102:9100"
     volumes:
       - broker3-data:/var/lib/jbroker
-    command: >
-      server
-      --id 3
-      --data-dir /var/lib/jbroker
-      --broker-port 9092
-      --raft-port 9192
-      --voters 1@broker1:9192:9092,2@broker2:9192:9092,3@broker3:9192:9092
-      --chaos-port ${JBROKER_CHAOS_PORT:--1}
+    command:
+      - server
+      - --id
+      - "3"
+      - --data-dir
+      - /var/lib/jbroker
+      - --broker-port
+      - "9092"
+      - --raft-port
+      - "9192"
+      - --voters
+      - *voters
+      - --chaos-port
+      - ${JBROKER_CHAOS_PORT:--1}
 
   admin:
     build:

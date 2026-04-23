@@ -26,9 +26,17 @@ class ThreeNodeRaftIT {
                     .orElseThrow();
             cluster.killNode(victim.id());
 
-            Thread.sleep(1_500);
-
-            assertThat(leader.driver().role()).isEqualTo(jbroker.raft.core.Role.LEADER);
+            // 1.5× election-timeout ceiling so a quiescent leader has
+            // time to notice the dead peer via missed heartbeat ACKs
+            // but shouldn't itself lose leadership. Post-settle assert
+            // repeats the check until the observation window closes
+            // rather than a blind sleep — prevents CI-load-induced
+            // scheduler starvation from skipping the assertion.
+            long deadline = System.currentTimeMillis() + 1_500;
+            while (System.currentTimeMillis() < deadline) {
+                assertThat(leader.driver().role()).isEqualTo(jbroker.raft.core.Role.LEADER);
+                Thread.sleep(100);
+            }
         }
     }
 

@@ -339,6 +339,8 @@ public final class Broker implements AutoCloseable {
             }
             return raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value);
         };
+        var partitionMetricsProvider = new jbroker.broker.metrics.DefaultPartitionMetricsProvider(
+                selfBrokerIdForMeta, topicManager, logManager, followerTracker);
         var metadataHandler = new MetadataServiceHandler(
                 selfBrokerIdForMeta,
                 brokerRegistry,
@@ -358,7 +360,8 @@ public final class Broker implements AutoCloseable {
                 offsetCache,
                 raftDriver::observability,
                 brokerMetrics,
-                eventPublisher);
+                eventPublisher,
+                partitionMetricsProvider);
         var server = NettyServerBuilder.forPort(config.brokerPort())
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))

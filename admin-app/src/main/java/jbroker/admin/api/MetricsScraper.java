@@ -1,0 +1,97 @@
+package jbroker.admin.api;
+
+import io.grpc.StatusRuntimeException;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import jbroker.admin.client.BrokerAdminClientPool;
+import jbroker.proto.broker.DescribeMetricsResponse;
+import jbroker.proto.common.ErrorCode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+/**
+ * P9.1 — background scraper that fans out {@code DescribeMetrics} across
+ * brokers and exposes the latest snapshot to {@link PrometheusMetricsBinder}.
+ *
+ * <p>Each cycle pulls every reachable broker; unreachable brokers drop
+ * out of the snapshot for that cycle, which makes their Prometheus
+ * gauges "go stale" — Grafana can show this as a data gap, which is the
+ * desired behaviour for alerting.
+ */
+@Component
+public class MetricsScraper {
+
+    private static final Logger log = LoggerFactory.getLogger(MetricsScraper.class);
+
+    private final BrokerAdminClientPool pool;
+    private final PrometheusMetricsBinder binder;
+    private final int intervalSeconds;
+    private final AtomicReference<Snapshot> latest = new AtomicReference<>(Snapshot.empty());
+    private ScheduledExecutorService exec;
+
+    public MetricsScraper(
+            BrokerAdminClientPool pool,
+            PrometheusMetricsBinder binder,
+            @Value("${jbroker.metrics.scrape.intervalSeconds:5}") int intervalSeconds) {
+        this.pool = pool;
+        this.binder = binder;
+        this.intervalSeconds = intervalSeconds;
+    }
+
+    @PostConstruct
+    public void start() {
+        exec = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = Thread.ofVirtual().name("metrics-scraper").unstarted(r);
+            t.setDaemon(true);
+            return t;
+        });
+        exec.scheduleWithFixedDelay(this::tick, 0, intervalSeconds, TimeUnit.SECONDS);
+    }
+
+    @PreDestroy
+    public void stop() {
+        if (exec != null) exec.shutdownNow();
+    }
+
+    void tick() {
+        try {
+            var byBroker = new HashMap<Integer, DescribeMetricsResponse>();
+            for (var c : pool.clients()) {
+                try {
+                    var r = c.describeMetrics();
+                    if (r.getError() == ErrorCode.OK) byBroker.put(r.getBrokerId(), r);
+                } catch (StatusRuntimeException e) {
+                    log.debug("broker {} unreachable during scrape: {}", c.address(), e.getStatus());
+                }
+            }
+            var snap = new Snapshot(Map.copyOf(byBroker));
+            latest.set(snap);
+            binder.refresh(snap);
+        } catch (Exception e) {
+            log.warn("metrics scrape cycle failed", e);
+        }
+    }
+
+    public Snapshot snapshot() {
+        return latest.get();
+    }
+
+    public record Snapshot(Map<Integer, DescribeMetricsResponse> byBroker) {
+        public static Snapshot empty() {
+            return new Snapshot(Map.of());
+        }
+
+        public List<DescribeMetricsResponse> responses() {
+            return List.copyOf(byBroker.values());
+        }
+    }
+}

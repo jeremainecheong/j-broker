@@ -158,7 +158,18 @@ public final class ProduceHandler {
                 var wait = waitForIsrReplication(req.getTopic(), req.getPartition(), last);
                 if (wait != null) return wait;
             }
-            metrics.recordProduce(System.nanoTime() - startNs, req.getBatch().size());
+            long latencyNanos = System.nanoTime() - startNs;
+            int bytes = req.getBatch().size();
+            metrics.recordProduce(latencyNanos, bytes);
+            var jfr = new jbroker.broker.jfr.ProduceLatencyEvent();
+            if (jfr.shouldCommit()) {
+                jfr.topic = req.getTopic();
+                jfr.partition = req.getPartition();
+                jfr.latencyNanos = latencyNanos;
+                jfr.bytes = bytes;
+                jfr.acks = req.getAcks();
+                jfr.commit();
+            }
             return ProduceResponse.newBuilder()
                     .setBaseOffset(first)
                     .setLastOffset(last)

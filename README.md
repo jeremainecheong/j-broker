@@ -9,6 +9,26 @@ Learning project: a log-structured distributed message broker with a hand-rolled
 - [ ] Milestone 2 — Raft snapshots, membership changes, leadership transfer, pre-vote, read-index
 - [ ] Milestone 3–10 — see the spec
 
+## Quick start (Docker)
+
+```
+docker compose up
+```
+
+Brings up a 3-broker cluster + admin UI in an isolated bridge network:
+
+- **Admin UI** → <http://localhost:15672> (RabbitMQ-management-plugin convention)
+- **Broker gRPC** → `localhost:9092` (broker 1), `localhost:9093` (broker 2), `localhost:9094` (broker 3)
+- **Chaos HTTP** — disabled by default; `JBROKER_CHAOS_PORT=9100 docker compose up` binds it on host ports 9100/9101/9102
+
+Broker data (Raft state + partition logs) persists in named volumes `broker{1,2,3}-data`. Wipe with `docker compose down -v`.
+
+Prometheus + Grafana live in `docker-compose.monitoring.yml`:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up
+```
+
 ## Build
 
 ```

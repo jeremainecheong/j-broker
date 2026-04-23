@@ -4,7 +4,11 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import jbroker.broker.client.BrokerClient;
 import jbroker.raft.core.NodeId;
 
@@ -13,6 +17,8 @@ import jbroker.raft.core.NodeId;
  *
  * <pre>
  *   j-broker server --data-dir DIR --broker-port P [--raft-port P2] [--id N]
+ *                   [--voters ID@HOST:RAFT:BROKER,...] [--chaos-port P]
+ *                   [--consumer-offsets-partitions N]
  *   j-broker topics create|list|describe|...  --broker HOST:PORT --topic T ...
  *   j-broker produce --broker HOST:PORT --topic T --partition N   (stdin = one message per line)
  *   j-broker console-consumer --broker HOST:PORT --topic T --partition N [--from-beginning]
@@ -56,16 +62,98 @@ public final class BrokerApp {
         int brokerPort = Integer.parseInt(flag(args, "--broker-port", "9092"));
         int raftPort = Integer.parseInt(flag(args, "--raft-port", "9192"));
         int id = Integer.parseInt(flag(args, "--id", "1"));
-        // Production single-broker dev server. Opt up to the canonical 50
-        // __consumer_offsets partitions so coordinator routing reflects real
-        // multi-broker behavior — single-broker only collapses everything to
-        // partition 0, but the partition count is forward-compat for when
-        // additional brokers join.
-        var broker = Broker.start(new Broker.Config(new NodeId(id), Path.of(dataDir), raftPort, brokerPort)
-                .withConsumerOffsetsPartitions(jbroker.broker.ConsumerOffsetsTopic.PARTITION_COUNT));
+        String votersSpec = flag(args, "--voters", null);
+        int chaosPort = Integer.parseInt(flag(args, "--chaos-port", "-1"));
+        int consumerOffsetsPartitions = Integer.parseInt(flag(
+                args,
+                "--consumer-offsets-partitions",
+                String.valueOf(jbroker.broker.ConsumerOffsetsTopic.PARTITION_COUNT)));
+
+        List<VoterAddress> voters;
+        if (votersSpec == null || votersSpec.isBlank()) {
+            // Single-broker dev server: self is the sole voter. Preserves the
+            // pre-v1.1 default so existing ./gradlew :broker-app:run flows
+            // keep working.
+            voters = List.of(new VoterAddress(new NodeId(id), "127.0.0.1", raftPort, brokerPort));
+        } else {
+            voters = parseVoters(votersSpec);
+            if (voters.stream().noneMatch(v -> v.id().value() == id)) {
+                throw new IllegalArgumentException(
+                        "--voters must include self (id=" + id + "), got: " + votersSpec);
+            }
+        }
+
+        var config = new Broker.Config(
+                        new NodeId(id), Path.of(dataDir), raftPort, brokerPort, voters, consumerOffsetsPartitions)
+                .withChaosPort(chaosPort);
+        var broker = Broker.start(config);
         Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
-        System.out.println("j-broker listening on " + brokerPort + " (id=" + id + ", data=" + dataDir + ")");
+        System.out.println("j-broker listening on " + brokerPort
+                + " (id=" + id + ", raft=" + raftPort + ", data=" + dataDir
+                + ", voters=" + voters.size() + (chaosPort >= 0 ? ", chaos=" + chaosPort : "")
+                + ")");
         Thread.currentThread().join();
+    }
+
+    /**
+     * Parses a voter list like {@code 1@broker1:9192:9092,2@broker2:9192:9092}.
+     * {@code raftPort} and {@code brokerPort} are the ports each voter binds
+     * for Raft peer RPC and broker gRPC respectively — the host:port pair the
+     * rest of the cluster uses to dial them.
+     *
+     * <p>Validations enforced:
+     *
+     * <ul>
+     *   <li>Entry shape must match {@code ID@HOST:RAFT:BROKER}.
+     *   <li>Host must be non-blank (empty host silently misroutes the cluster).
+     *   <li>All three integers (id, raftPort, brokerPort) must parse; bad ints
+     *       turn into {@link IllegalArgumentException} with the full spec for
+     *       easy debugging instead of a bare {@link NumberFormatException}.
+     *   <li>Voter ids must be unique across the list.
+     * </ul>
+     *
+     * <p>IPv6 literals are not supported (future work — would require
+     * bracketed-host parsing {@code [::1]:9192:9092}). Tests pin this shape.
+     */
+    static List<VoterAddress> parseVoters(String spec) {
+        var out = new ArrayList<VoterAddress>();
+        Set<Integer> seenIds = new HashSet<>();
+        for (var entry : spec.split(",")) {
+            var trimmed = entry.trim();
+            if (trimmed.isEmpty()) continue;
+            int at = trimmed.indexOf('@');
+            if (at <= 0 || at == trimmed.length() - 1) {
+                throw new IllegalArgumentException("voter spec must be ID@HOST:RAFT:BROKER, got: " + trimmed);
+            }
+            int vid = parseIntOrReject(trimmed.substring(0, at), "voter id", trimmed);
+            var hostPorts = trimmed.substring(at + 1).split(":");
+            if (hostPorts.length != 3) {
+                throw new IllegalArgumentException("voter spec must be ID@HOST:RAFT:BROKER, got: " + trimmed);
+            }
+            String host = hostPorts[0];
+            if (host.isBlank()) {
+                throw new IllegalArgumentException("voter spec host must be non-blank, got: " + trimmed);
+            }
+            int raftPort = parseIntOrReject(hostPorts[1], "raft port", trimmed);
+            int brokerPort = parseIntOrReject(hostPorts[2], "broker port", trimmed);
+            if (!seenIds.add(vid)) {
+                throw new IllegalArgumentException("duplicate voter id " + vid + " in --voters spec");
+            }
+            out.add(new VoterAddress(new NodeId(vid), host, raftPort, brokerPort));
+        }
+        if (out.isEmpty()) {
+            throw new IllegalArgumentException("--voters must contain at least one entry");
+        }
+        return List.copyOf(out);
+    }
+
+    private static int parseIntOrReject(String s, String field, String entry) {
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    field + " must be an integer in voter spec, got: " + entry + " (offending token: '" + s + "')", e);
+        }
     }
 
     private static void runTopics(String[] args) throws Exception {

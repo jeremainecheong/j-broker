@@ -473,6 +473,25 @@ public final class GroupCoordinator {
     }
 
     /**
+     * P12.7 — admin-initiated removal. Deletes the group's in-memory state
+     * (members, generation, snapshot-listener subscription). Returns true
+     * if the group existed, false otherwise.
+     *
+     * <p>Offset commits in {@code __consumer_offsets} are NOT rewritten here
+     * (that's log-compaction's concern). If a new member joins later with
+     * the same group id, it gets a fresh generation — so "deleted" means
+     * "resetting group state" in practice.
+     */
+    public boolean removeGroup(String groupId) {
+        groupsLock.lock();
+        try {
+            return groups.remove(groupId) != null;
+        } finally {
+            groupsLock.unlock();
+        }
+    }
+
+    /**
      * P8.4 — snapshot one group. Returns empty if the coordinator doesn't
      * know the group (admin-app fans out across brokers; wrong-coordinator
      * returns empty, right-coordinator returns the populated detail).

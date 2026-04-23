@@ -49,6 +49,19 @@ public final class OffsetCache {
     }
 
     /**
+     * P12.7 — remove every cached offset for {@code group}. Called as part
+     * of admin-initiated group deletion so a subsequent FetchOffsets
+     * returns OFFSET_OUT_OF_RANGE instead of stale values.
+     *
+     * <p>The durable {@code __consumer_offsets} log records are not
+     * rewritten here; log compaction GCs them eventually or a future join
+     * with the same group id can overwrite.
+     */
+    public void dropGroup(String group) {
+        entries.keySet().removeIf(k -> k.group().equals(group));
+    }
+
+    /**
      * P8.4 — snapshot every committed offset for {@code group}. Used by the
      * admin REST layer to compute per-partition lag against the log HWM.
      * Iteration is weakly consistent per {@link ConcurrentHashMap} — a new

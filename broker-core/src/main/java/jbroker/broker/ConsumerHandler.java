@@ -458,6 +458,79 @@ public final class ConsumerHandler {
         log.appendRaw(bytes, baseOffset);
     }
 
+    /**
+     * P12.7 — admin-initiated consumer-group removal. Returns one of:
+     * <ul>
+     *   <li>{@code OK} — group existed and was removed from in-memory state.
+     *       Offset commits in {@code __consumer_offsets} are left intact
+     *       (sparse-offset compaction will eventually GC them if a new
+     *       tombstone row arrives); they become invisible because the
+     *       group is no longer listed.
+     *   <li>{@code NOT_COORDINATOR} — self doesn't lead the group's
+     *       coordinator partition.
+     *   <li>{@code UNKNOWN_GROUP} — group isn't registered on this broker.
+     * </ul>
+     */
+    public ErrorCode deleteConsumerGroupAdmin(String groupId) {
+        if (groupCoordinator == null) return ErrorCode.COORDINATOR_NOT_AVAILABLE;
+        var routing = coordinatorRoutingFor(groupId);
+        if (routing != ErrorCode.OK) return routing;
+        boolean removed = groupCoordinator.removeGroup(groupId);
+        if (offsetCache != null) offsetCache.dropGroup(groupId);
+        return removed ? ErrorCode.OK : ErrorCode.UNKNOWN_GROUP;
+    }
+
+    /**
+     * P12.7 — admin-initiated offset reset. Skips the member-validation
+     * step of {@link #commitOffsets} because admin operators aren't group
+     * members. Returns one per-tp {@link ErrorCode} alongside the top-level
+     * routing code.
+     */
+    public java.util.List<ErrorCode> resetConsumerGroupOffsetsAdmin(
+            String groupId, java.util.List<jbroker.proto.broker.OffsetReset> resets, ErrorCode[] topLevelOut)
+            throws IOException {
+        if (groupCoordinator == null || offsetCache == null) {
+            topLevelOut[0] = ErrorCode.COORDINATOR_NOT_AVAILABLE;
+            return java.util.Collections.nCopies(resets.size(), ErrorCode.COORDINATOR_NOT_AVAILABLE);
+        }
+        var routing = coordinatorRoutingFor(groupId);
+        if (routing != ErrorCode.OK) {
+            topLevelOut[0] = routing;
+            return java.util.Collections.nCopies(resets.size(), routing);
+        }
+        topLevelOut[0] = ErrorCode.OK;
+
+        long now = wallClockMillis.getAsLong();
+        int coordinatorPartition = coordinatorPartitionFor(groupId);
+        var records = new java.util.ArrayList<Record>(resets.size());
+        for (int i = 0; i < resets.size(); i++) {
+            var r = resets.get(i);
+            byte[] key = ConsumerOffsetsTopic.keyForOffset(
+                    groupId, r.getTp().getTopic(), r.getTp().getPartition());
+            // metadata intentionally empty — admin-driven resets are
+            // operator actions, not member commits. "" distinguishes them
+            // in downstream audits.
+            byte[] value = ConsumerOffsetsTopic.valueForOffset(r.getOffset(), r.getLeaderEpoch(), "", now);
+            records.add(new Record(i, 0L, key, value));
+        }
+        try {
+            appendOffsetBatch(coordinatorPartition, records, now);
+        } catch (IOException e) {
+            var err = new java.util.ArrayList<ErrorCode>(resets.size());
+            for (int i = 0; i < resets.size(); i++) err.add(ErrorCode.UNKNOWN);
+            return err;
+        }
+        var result = new java.util.ArrayList<ErrorCode>(resets.size());
+        for (var r : resets) {
+            offsetCache.put(
+                    groupId,
+                    r.getTp(),
+                    new OffsetCache.OffsetAndMetadata(r.getOffset(), r.getLeaderEpoch(), "", now));
+            result.add(ErrorCode.OK);
+        }
+        return result;
+    }
+
     public ListOffsetsResponse listOffsets(ListOffsetsRequest req) {
         var b = ListOffsetsResponse.newBuilder();
         for (var part : req.getPartitionsList()) {

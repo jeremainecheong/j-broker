@@ -5,14 +5,18 @@
     <nav th:replace="~{fragments/shell :: topnav}"></nav>
     <main>
       <h1 th:text="|Topic: ${topic.name()}|">Topic</h1>
+
       <div class="card">
-        <strong>Partitions:</strong> <span th:text="${topic.partitions()}">-</span> ·
-        <strong>Replication factor:</strong> <span th:text="${topic.replicationFactor()}">-</span> ·
-        <strong>Internal:</strong> <span th:text="${topic.internal() ? 'yes' : 'no'}">-</span> ·
-        <strong>Compact:</strong> <span th:text="${topic.compact() ? 'yes' : 'no'}">-</span>
-        <form method="post" th:action="@{/ui/topics/{name}/delete(name=${topic.name()})}" style="float:right;">
-          <button class="btn danger" type="submit" onclick="return confirm('Delete topic?');">Delete</button>
-        </form>
+        <div class="kv-row">
+          <span><strong>Partitions:</strong> <span th:text="${topic.partitions()}">-</span></span>
+          <span><strong>Replication factor:</strong> <span th:text="${topic.replicationFactor()}">-</span></span>
+          <span><strong>Internal:</strong> <span th:text="${topic.internal() ? 'yes' : 'no'}">-</span></span>
+          <span><strong>Compact:</strong> <span th:text="${topic.compact() ? 'yes' : 'no'}">-</span></span>
+          <span class="spacer"></span>
+          <form method="post" th:action="@{/ui/topics/{name}/delete(name=${topic.name()})}">
+            <button class="btn danger" type="submit" onclick="return confirm('Delete topic?');">Delete</button>
+          </form>
+        </div>
       </div>
 
       <div class="card" th:if="${!topic.config().isEmpty()}">
@@ -28,31 +32,60 @@
         </table>
       </div>
 
-      <div class="card">
-        <h2 style="margin-top:0; font-size:1.05rem;">Partitions</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>#</th><th>Leader</th><th>ISR</th><th>Replicas</th><th>Leader epoch</th>
-              <th>High watermark</th><th>Log end offset</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr th:each="p : ${topic.partitionStates()}" th:attr="data-partition=${p.partition()}">
-              <td th:text="${p.partition()}">0</td>
-              <td th:text="${p.leader()}">-</td>
-              <td th:text="${#strings.listJoin(p.isr(), ',')}">-</td>
-              <td th:text="${#strings.listJoin(p.replicas(), ',')}">-</td>
-              <td th:text="${p.leaderEpoch()}">0</td>
-              <td th:text="${p.highWatermark() < 0 ? '—' : p.highWatermark()}">0</td>
-              <td th:text="${p.logEndOffset() < 0 ? '—' : p.logEndOffset()}">0</td>
-            </tr>
-          </tbody>
-        </table>
+      <h2 style="margin: 1rem 0 0.5rem; font-size:1.05rem;">Partitions</h2>
+      <div class="partitions-grid">
+        <!--/*
+          one card per partition. `data-partition` is load-bearing
+          for E2E tests (UiTopologyPageIT etc.). ISR dots are one
+          per replica: green if that replica is in ISR, red otherwise.
+          HWM/LEO bars: HWM fills the inner bar; LEO is the outer bound.
+          When both are sentinels (-1, still-electing partition) we render
+          em-dashes and skip the bar.
+        */-->
+        <article
+          class="partition-card"
+          th:each="p : ${topic.partitionStates()}"
+          th:attr="data-partition=${p.partition()}, data-leader=${p.leader()}"
+          th:with="isSentinel=${p.highWatermark() < 0 or p.logEndOffset() < 0},
+                   leo=${p.logEndOffset() < 0 ? 0 : p.logEndOffset()},
+                   hwm=${p.highWatermark() < 0 ? 0 : p.highWatermark()},
+                   hwmPct=${leo > 0 ? (hwm * 100.0 / leo) : 0}">
+          <header class="partition-card-head">
+            <span class="partition-id" th:text="|p${p.partition()}|">p0</span>
+            <span class="pill leader" th:if="${p.leader() >= 0}" th:text="|leader b${p.leader()}|">leader b0</span>
+            <span class="pill dead" th:if="${p.leader() < 0}">no leader</span>
+            <span class="spacer"></span>
+            <span class="muted" th:text="|epoch ${p.leaderEpoch()}|">epoch 0</span>
+          </header>
+
+          <div class="isr-row">
+            <span class="muted isr-label">ISR</span>
+            <span
+              class="isr-dot"
+              th:each="r : ${p.replicas()}"
+              th:classappend="${p.isr().contains(r) ? 'in' : 'out'}"
+              th:attr="title=|broker ${r} — ${p.isr().contains(r) ? 'in ISR' : 'out of ISR'}|"
+              th:text="${r}"
+              >1</span>
+          </div>
+
+          <div class="offset-row" th:if="${!isSentinel}">
+            <div class="offset-meter" th:attr="aria-label=|high watermark ${p.highWatermark()} of ${p.logEndOffset()}|">
+              <div class="offset-fill" th:attr="style=|width: ${hwmPct}%|"></div>
+            </div>
+            <div class="offset-labels">
+              <span><span class="muted">HWM</span> <strong th:text="${p.highWatermark()}">0</strong></span>
+              <span><span class="muted">LEO</span> <strong th:text="${p.logEndOffset()}">0</strong></span>
+            </div>
+          </div>
+          <div class="offset-row sentinel" th:if="${isSentinel}">
+            <span class="muted">HWM / LEO unavailable — partition has no live leader</span>
+          </div>
+        </article>
       </div>
 
-      <p><a class="btn secondary" href="/topics">← Back to topics</a></p>
+      <p style="margin-top: 1.25rem;"><a class="btn secondary" href="/topics">← Back to topics</a></p>
     </main>
-    <footer>j-broker admin — Milestone 8</footer>
+    <footer>j-broker admin</footer>
   </body>
 </html>

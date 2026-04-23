@@ -21,6 +21,9 @@ import jbroker.storage.LogManager;
  */
 public final class ReplicaFetchHandler {
 
+    /** minimum lag (records) for ReplicationLagEvent emission. */
+    private static final long LAG_EVENT_THRESHOLD_RECORDS = 10L;
+
     private final LogManager logManager;
     private final TopicManager topicManager;
     private final int selfBrokerId;
@@ -90,6 +93,21 @@ public final class ReplicaFetchHandler {
             }
             long hwm = tracker.computeHwm(
                     req.getTopic(), req.getPartition(), state.get().isr(), selfBrokerId, leaderLeo);
+            // emit ReplicationLag when the follower is meaningfully
+            // behind the leader. Leader-side because only the leader has the
+            // authoritative leaderLeo; suppressed below a small threshold to
+            // keep JFR volume manageable at steady state.
+            long lag = Math.max(0L, leaderLeo - req.getFetchOffset());
+            if (lag >= LAG_EVENT_THRESHOLD_RECORDS) {
+                var jfr = new jbroker.broker.jfr.ReplicationLagEvent();
+                if (jfr.shouldCommit()) {
+                    jfr.topic = req.getTopic();
+                    jfr.partition = req.getPartition();
+                    jfr.followerBrokerId = req.getFollowerBrokerId();
+                    jfr.lagRecords = lag;
+                    jfr.commit();
+                }
+            }
             return ReplicaFetchResponse.newBuilder()
                     .setRecords(ByteString.copyFrom(baos.toByteArray()))
                     .setHighWatermark(hwm)

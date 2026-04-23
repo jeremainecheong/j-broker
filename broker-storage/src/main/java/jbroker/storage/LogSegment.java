@@ -248,9 +248,22 @@ public final class LogSegment implements AutoCloseable {
     }
 
     public synchronized void force() throws IOException {
-        logChannel.force(true);
-        offsetIndex.force();
-        timeIndex.force();
+        var event = new jbroker.storage.jfr.FsyncDurationEvent();
+        if (event.shouldCommit()) {
+            long before = logChannel.size();
+            long startNanos = System.nanoTime();
+            logChannel.force(true);
+            offsetIndex.force();
+            timeIndex.force();
+            event.baseOffset = baseOffset;
+            event.sizeBytes = before;
+            event.durationNanos = System.nanoTime() - startNanos;
+            event.commit();
+        } else {
+            logChannel.force(true);
+            offsetIndex.force();
+            timeIndex.force();
+        }
     }
 
     /**
@@ -311,9 +324,18 @@ public final class LogSegment implements AutoCloseable {
 
     @Override
     public synchronized void close() throws IOException {
-        logChannel.close();
-        offsetIndex.close();
-        timeIndex.close();
+        // fsync on close so a clean shutdown durably persists the tail
+        // of the active segment. Previously the active segment relied on
+        // the OS page cache to flush post-process-exit, which is unsafe for
+        // kill -9. FsyncDurationEvent also fires here, which is what the
+        // teardown observes.
+        try {
+            force();
+        } finally {
+            logChannel.close();
+            offsetIndex.close();
+            timeIndex.close();
+        }
     }
 
     /** Delete the segment's three files. Must be called after {@link #close}. */

@@ -892,6 +892,7 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void becomeFollower(Term newTerm, Optional<NodeId> newVote, List<RaftEffect> effects) {
+        var oldTerm = persistentState.currentTerm();
         role = Role.FOLLOWER;
         leaderId = Optional.empty();
         votesReceived.clear();
@@ -909,6 +910,18 @@ public final class DefaultRaftCore implements RaftCore {
         persistentState.update(newTerm, newVote);
         effects.add(new RaftEffect.PersistState(newTerm, newVote));
         electionDeadlineNanos = Long.MAX_VALUE;
+        emitTermChange(oldTerm, newTerm, "becomeFollower");
+    }
+
+    private void emitTermChange(Term oldTerm, Term newTerm, String reason) {
+        if (oldTerm.value() == newTerm.value()) return;
+        var event = new jbroker.raft.core.jfr.RaftTermChangeEvent();
+        if (event.shouldCommit()) {
+            event.oldTerm = oldTerm.value();
+            event.newTerm = newTerm.value();
+            event.reason = reason;
+            event.commit();
+        }
     }
 
     private long randomisedElectionTimeout() {

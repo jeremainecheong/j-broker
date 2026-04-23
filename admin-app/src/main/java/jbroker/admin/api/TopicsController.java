@@ -118,10 +118,73 @@ public class TopicsController {
         return ResponseEntity.ok(resp.getConfigMap());
     }
 
+    /**
+     * P11.4 — fans DescribeTopicPartitions out to every broker and merges the
+     * per-partition state by overlaying whichever broker actually leads each
+     * partition (and therefore reports real {@code highWatermark} /
+     * {@code logEndOffset}; followers set sentinel -1).
+     *
+     * <p>Non-leader fields (leader id, ISR, replicas, epochs) are identical
+     * across replicas since the metadata plane is a single Raft state
+     * machine, so we seed from the first successful response and only
+     * replace the two offset fields.
+     */
     private DescribeTopicPartitionsResponse fetchTopicPartitions(String name) {
-        var resp = pool.firstSuccessful(c -> c.describeTopicPartitions(name));
-        if (resp.getError() == jbroker.proto.common.ErrorCode.UNKNOWN) return null;
-        return resp;
+        java.util.List<DescribeTopicPartitionsResponse> responses;
+        try {
+            responses = pool.allSuccessful(c -> c.describeTopicPartitions(name));
+        } catch (IllegalStateException allUnreachable) {
+            throw allUnreachable;
+        }
+        DescribeTopicPartitionsResponse primary = null;
+        for (var r : responses) {
+            if (r.getError() == jbroker.proto.common.ErrorCode.OK) {
+                primary = r;
+                break;
+            }
+        }
+        if (primary == null) {
+            // Every broker said UNKNOWN — topic really doesn't exist.
+            return null;
+        }
+        return mergeLeaderReportedOffsets(primary, responses);
+    }
+
+    static DescribeTopicPartitionsResponse mergeLeaderReportedOffsets(
+            DescribeTopicPartitionsResponse primary, java.util.List<DescribeTopicPartitionsResponse> all) {
+        // For each partition, if any response reports a non-sentinel
+        // highWatermark (≥ 0), it came from the leader — use it.
+        var partitionToOffsets = new java.util.HashMap<Integer, long[]>();
+        for (var r : all) {
+            if (r.getError() != jbroker.proto.common.ErrorCode.OK) continue;
+            for (var ps : r.getPartitionStatesList()) {
+                if (ps.getHighWatermark() >= 0 || ps.getLogEndOffset() >= 0) {
+                    partitionToOffsets.put(ps.getPartition(), new long[] {ps.getHighWatermark(), ps.getLogEndOffset()});
+                }
+            }
+        }
+        if (partitionToOffsets.isEmpty()) {
+            // No broker reported real offsets — either the partition has no
+            // leader yet, or every leader is unreachable. Return primary
+            // untouched so callers still see leader id + ISR.
+            return primary;
+        }
+        var builder = primary.toBuilder();
+        var rebuiltStates = new ArrayList<PartitionStateInfo>();
+        for (var ps : primary.getPartitionStatesList()) {
+            var offsets = partitionToOffsets.get(ps.getPartition());
+            if (offsets == null) {
+                rebuiltStates.add(ps);
+            } else {
+                rebuiltStates.add(
+                        ps.toBuilder().setHighWatermark(offsets[0]).setLogEndOffset(offsets[1]).build());
+            }
+        }
+        builder.clearPartitionStates();
+        for (var ps : rebuiltStates) {
+            builder.addPartitionStates(ps);
+        }
+        return builder.build();
     }
 
     private ResponseEntity<?> errorEnvelope(jbroker.proto.broker.Error err) {

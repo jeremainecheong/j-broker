@@ -5,84 +5,120 @@
     <nav th:replace="~{fragments/shell :: topnav}"></nav>
     <main>
       <h1 th:text="|Consumer group: ${detail.groupId()}|">Consumer group</h1>
-      <div class="card">
-        <strong>State:</strong>
-        <span class="pill" th:classappend="${detail.state() == 'Stable' ? 'alive' : 'unknown'}"
-              th:text="${detail.state()}">Stable</span>
-        ·
-        <strong>Generation:</strong> <span th:text="${detail.generation()}">-</span>
-        ·
-        <strong>Assignor:</strong> <span th:text="${detail.assignor()}">range</span>
-      </div>
 
       <div class="card">
-        <h2 style="margin-top:0; font-size:1.05rem;">Members</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Member ID</th>
-              <th>Instance ID</th>
-              <th>Epoch</th>
-              <th>Subscribed</th>
-              <th>Owned partitions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr th:each="m : ${detail.members()}" th:attr="data-member-id=${m.memberId()}">
-              <td th:text="${m.memberId()}">-</td>
-              <td th:text="${m.instanceId() ?: '—'}">-</td>
-              <td th:text="${m.memberEpoch()}">0</td>
-              <td th:text="${#strings.listJoin(m.subscribedTopics(), ', ')}">-</td>
-              <td>
-                <span th:each="op : ${m.ownedPartitions()}"
-                      th:text="|${op.topic()}:[${#strings.listJoin(op.partitions(), ',')}] |">-</span>
-              </td>
-            </tr>
-            <tr th:if="${detail.members().size() == 0}">
-              <td colspan="5" style="color: var(--muted);">No members currently joined.</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="kv-row">
+          <span>
+            <strong>State:</strong>
+            <span class="pill" th:classappend="${detail.state() == 'Stable' ? 'alive' : 'unknown'}"
+                  th:text="${detail.state()}">Stable</span>
+          </span>
+          <span><strong>Generation:</strong> <span th:text="${detail.generation()}">-</span></span>
+          <span><strong>Assignor:</strong> <span th:text="${detail.assignor()}">range</span></span>
+          <span><strong>Members:</strong> <span th:text="${detail.members().size()}">0</span></span>
+        </div>
       </div>
 
+      <h2 style="margin: 1rem 0 0.5rem; font-size:1.05rem;">Members</h2>
+      <div class="member-grid" th:if="${!detail.members().isEmpty()}">
+        <!--/*
+          one card per consumer-group member. Owned partitions
+          render as chips grouped by topic so reviewers see who owns what
+          at a glance. `data-member-id` is preserved for E2E assertions.
+        */-->
+        <article
+          class="member-card"
+          th:each="m : ${detail.members()}"
+          th:attr="data-member-id=${m.memberId()}">
+          <header class="member-card-head">
+            <span class="member-id" th:text="${m.memberId()}">mbr-xxx</span>
+            <span class="pill follower" th:text="|epoch ${m.memberEpoch()}|">epoch 0</span>
+          </header>
+          <div th:if="${m.instanceId()}" class="muted" style="font-size: 0.82rem;">
+            instance: <span th:text="${m.instanceId()}">-</span>
+          </div>
+          <div class="member-subs">
+            <span class="muted member-subs-label">subscribed</span>
+            <span class="pill follower"
+                  th:each="t : ${m.subscribedTopics()}"
+                  th:text="${t}">topic</span>
+          </div>
+          <div class="member-owned" th:if="${!m.ownedPartitions().isEmpty()}">
+            <span class="muted member-subs-label">owns</span>
+            <span class="member-owned-group" th:each="op : ${m.ownedPartitions()}">
+              <span class="muted" th:text="|${op.topic()}|">topic</span>
+              <span class="partition-chip"
+                    th:each="p : ${op.partitions()}"
+                    th:text="${p}">0</span>
+            </span>
+          </div>
+          <div class="member-owned muted" th:if="${m.ownedPartitions().isEmpty()}"
+               style="font-style: italic; font-size: 0.82rem;">
+            no partitions assigned
+          </div>
+        </article>
+      </div>
+      <div class="card" th:if="${detail.members().isEmpty()}">
+        <span class="muted" style="font-style: italic;">No members currently joined.</span>
+      </div>
+
+      <h2 style="margin: 1.25rem 0 0.5rem; font-size:1.05rem;">Partition lag</h2>
       <div class="card">
-        <h2 style="margin-top:0; font-size:1.05rem;">Partition lag</h2>
         <table>
           <thead>
             <tr>
               <th>Topic</th>
               <th>Partition</th>
-              <th>Committed offset</th>
+              <th>Committed</th>
               <th>High watermark</th>
               <th>Lag</th>
+              <th>Progress</th>
               <th>Owner</th>
             </tr>
           </thead>
           <tbody>
             <tr th:each="p : ${detail.partitions()}"
-                th:attr="data-partition=${p.partition()}, data-lag=${p.lag()}">
+                th:attr="data-partition=${p.partition()}, data-lag=${p.lag()}"
+                th:with="committed=${p.committedOffset() < 0 ? 0 : p.committedOffset()},
+                         hwm=${p.highWatermark() < 0 ? 0 : p.highWatermark()},
+                         progressPct=${hwm > 0 ? (committed * 100.0 / hwm) : (committed == 0 ? 100 : 0)}">
               <td th:text="${p.topic()}">-</td>
               <td th:text="${p.partition()}">-</td>
               <td th:text="${p.committedOffset()}">0</td>
               <td th:text="${p.highWatermark() < 0 ? '—' : p.highWatermark()}">0</td>
               <td>
-                <!-- Colour-code lag: green < 100, yellow 100..1000, red > 1000. Cell
-                     also carries data-lag so the E2E can assert on exact values. -->
+                <!-- Colour-code lag: green < 100, yellow 100..1000, red > 1000. -->
                 <span class="pill"
                       th:classappend="${p.lag() < 100 ? 'alive' : (p.lag() < 1000 ? 'unknown' : 'dead')}"
                       th:text="${p.lag()}">0</span>
               </td>
-              <td th:text="${p.ownerMemberId() ?: '—'}">-</td>
+              <td style="min-width: 9rem;">
+                <!-- Committed-offset / HWM progress bar: green fill for how
+                     caught up the group is; empty track shows remaining lag. -->
+                <div class="offset-meter" th:if="${p.highWatermark() >= 0}"
+                     th:attr="aria-label=|committed ${committed} of ${hwm}|">
+                  <div class="offset-fill"
+                       th:classappend="${p.lag() < 100 ? 'ok' : (p.lag() < 1000 ? 'warn' : 'bad')}"
+                       th:attr="style=|width: ${progressPct}%|"></div>
+                </div>
+                <span class="muted" th:if="${p.highWatermark() < 0}" style="font-size: 0.78rem;">—</span>
+              </td>
+              <td>
+                <span class="muted" th:if="${p.ownerMemberId() == null}">unassigned</span>
+                <code th:if="${p.ownerMemberId() != null}"
+                      th:text="${p.ownerMemberId()}"
+                      style="font-size: 0.78rem;">mbr-xxx</code>
+              </td>
             </tr>
             <tr th:if="${detail.partitions().size() == 0}">
-              <td colspan="6" style="color: var(--muted);">No committed offsets yet.</td>
+              <td colspan="7" style="color: var(--muted);">No committed offsets yet.</td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <p><a class="btn secondary" href="/groups">← Back to groups</a></p>
+      <p style="margin-top: 1.25rem;"><a class="btn secondary" href="/groups">← Back to groups</a></p>
     </main>
-    <footer>j-broker admin — Milestone 8</footer>
+    <footer>j-broker admin</footer>
   </body>
 </html>

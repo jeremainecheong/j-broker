@@ -10,4 +10,5 @@ include(
     "broker-core",
     "broker-app",
     "admin-app",
+    "bench",
 )

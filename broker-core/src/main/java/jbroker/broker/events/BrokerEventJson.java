@@ -17,7 +17,7 @@ public final class BrokerEventJson {
     public static String encode(BrokerEvent e) {
         return switch (e) {
             case BrokerEvent.LeaderChanged l -> String.format(
-                    "{\"topic\":\"%s\",\"partition\":%d,\"oldLeader\":%d,\"newLeader\":%d,\"leaderEpoch\":%d}",
+                    "{\"topic\":\"%s\",\"partition\":%d,\"old_leader\":%d,\"new_leader\":%d,\"leader_epoch\":%d}",
                     escape(l.topic()), l.partition(), l.oldLeader(), l.newLeader(), l.leaderEpoch());
             case BrokerEvent.IsrChanged i -> {
                 var sb = new StringBuilder(
@@ -30,20 +30,20 @@ public final class BrokerEventJson {
                 yield sb.toString();
             }
             case BrokerEvent.RaftTermChanged r -> String.format(
-                    "{\"oldTerm\":%d,\"newTerm\":%d,\"newLeader\":%d}", r.oldTerm(), r.newTerm(), r.newLeader());
+                    "{\"old_term\":%d,\"new_term\":%d,\"new_leader\":%d}", r.oldTerm(), r.newTerm(), r.newLeader());
             case BrokerEvent.BrokerRegistered b -> String.format(
-                    "{\"brokerId\":%d,\"host\":\"%s\",\"port\":%d}", b.brokerId(), escape(b.host()), b.port());
-            case BrokerEvent.BrokerFenced b -> String.format("{\"brokerId\":%d}", b.brokerId());
+                    "{\"broker_id\":%d,\"host\":\"%s\",\"port\":%d}", b.brokerId(), escape(b.host()), b.port());
+            case BrokerEvent.BrokerFenced b -> String.format("{\"broker_id\":%d}", b.brokerId());
             case BrokerEvent.ConsumerGroupRebalance c -> String.format(
-                    "{\"groupId\":\"%s\",\"generation\":%d,\"memberCount\":%d}",
+                    "{\"group_id\":\"%s\",\"generation\":%d,\"member_count\":%d}",
                     escape(c.groupId()), c.generation(), c.memberCount());
             case BrokerEvent.ChaosAction ca -> {
                 var sb = new StringBuilder(96);
                 sb.append("{\"action\":\"")
                         .append(escape(ca.action()))
-                        .append("\",\"brokerId\":")
+                        .append("\",\"broker_id\":")
                         .append(ca.brokerId());
-                if (ca.peerId() != null) sb.append(",\"peerId\":").append(ca.peerId());
+                if (ca.peerId() != null) sb.append(",\"peer_id\":").append(ca.peerId());
                 if (ca.millis() != null) sb.append(",\"millis\":").append(ca.millis());
                 sb.append('}');
                 yield sb.toString();

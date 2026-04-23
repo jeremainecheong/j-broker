@@ -125,6 +125,12 @@ services:
       # Boot's relaxed binding). MetricsScraper dials these on a 5s cadence
       # so the UI does not need a deterministic broker-ready signal.
       JBROKER_ADMIN_BROKERS: "broker1:9092,broker2:9092,broker3:9092"
+      # admin-side chaos endpoint mapping. Every broker exposes its
+      # cooperative chaos HTTP control plane on internal port 9100 (only
+      # when JBROKER_CHAOS_PORT is set for the broker services above).
+      # Harmless when chaos is disabled: the admin only dials these URLs
+      # on explicit POSTs from the Chaos UI page.
+      JBROKER_ADMIN_CHAOS_BROKERS: "1=broker1:9100,2=broker2:9100,3=broker3:9100"
 
 networks:
   jbroker:

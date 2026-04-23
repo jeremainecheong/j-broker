@@ -32,6 +32,16 @@ public final class Log implements AutoCloseable {
     private final Path dir;
     private final Config config;
     private final CopyOnWriteArrayList<LogSegment> segments = new CopyOnWriteArrayList<>();
+    /**
+     * P10.2 — mutation lock. Replaces `synchronized (this)` on the hot
+     * append / nextOffset paths so virtual threads running produce/fetch
+     * no longer pin their carrier OS thread while holding a monitor.
+     * Cold paths (retain, truncate, compact, close) use the same lock
+     * for mutual exclusion; they're off the request path so pinning
+     * would have been a non-issue anyway, but keeping one lock avoids
+     * interleaved retention mid-append.
+     */
+    private final java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
 
     private Log(Path dir, Config config) {
         this.dir = dir;
@@ -73,39 +83,50 @@ public final class Log implements AutoCloseable {
      * Used by the follower replication path to preserve every byte of the
      * leader's batch header.
      */
-    public synchronized long appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
-        var active = segments.get(segments.size() - 1);
-        active.appendRaw(encodedBatch, expectedBaseOffset);
-        long assignedLast = active.nextOffset() - 1;
-        if (active.sizeBytes() >= config.segmentBytes()) {
-            var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
-            active.force();
-            segments.add(next);
+    public long appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+        lock.lock();
+        try {
+            var active = segments.get(segments.size() - 1);
+            active.appendRaw(encodedBatch, expectedBaseOffset);
+            long assignedLast = active.nextOffset() - 1;
+            if (active.sizeBytes() >= config.segmentBytes()) {
+                var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
+                active.force();
+                segments.add(next);
+            }
+            return assignedLast;
+        } finally {
+            lock.unlock();
         }
-        return assignedLast;
     }
 
-    public synchronized long append(List<Record> records, long nowMillis) throws IOException {
-        var active = segments.get(segments.size() - 1);
-        long firstTimestamp = nowMillis;
-        long maxTimestamp = nowMillis;
-        long baseOffset = active.append(firstTimestamp, maxTimestamp, records);
-        // Convert position-based return into last-assigned-offset for caller
-        // convenience:
-        long assignedFirst = active.nextOffset() - records.size();
-        long assignedLast = active.nextOffset() - 1;
-        // Rollover if we've crossed the size threshold.
-        if (active.sizeBytes() >= config.segmentBytes()) {
-            var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
-            active.force();
-            segments.add(next);
+    public long append(List<Record> records, long nowMillis) throws IOException {
+        lock.lock();
+        try {
+            var active = segments.get(segments.size() - 1);
+            long firstTimestamp = nowMillis;
+            long maxTimestamp = nowMillis;
+            active.append(firstTimestamp, maxTimestamp, records);
+            long assignedLast = active.nextOffset() - 1;
+            if (active.sizeBytes() >= config.segmentBytes()) {
+                var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
+                active.force();
+                segments.add(next);
+            }
+            return assignedLast;
+        } finally {
+            lock.unlock();
         }
-        return assignedLast;
     }
 
-    public synchronized long nextOffset() {
-        var active = segments.get(segments.size() - 1);
-        return active.nextOffset();
+    public long nextOffset() {
+        lock.lock();
+        try {
+            var active = segments.get(segments.size() - 1);
+            return active.nextOffset();
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -117,15 +138,20 @@ public final class Log implements AutoCloseable {
      * <p>Batch-granular: a mid-batch targetOffset rounds down to the
      * containing batch's baseOffset (the whole divergent batch is dropped).
      */
-    public synchronized void truncateTo(long targetOffset) throws IOException {
-        if (targetOffset >= nextOffset()) return;
-        while (segments.size() > 1 && segments.get(segments.size() - 1).baseOffset() >= targetOffset) {
-            var tail = segments.remove(segments.size() - 1);
-            tail.close();
-            tail.delete();
+    public void truncateTo(long targetOffset) throws IOException {
+        lock.lock();
+        try {
+            if (targetOffset >= segments.get(segments.size() - 1).nextOffset()) return;
+            while (segments.size() > 1 && segments.get(segments.size() - 1).baseOffset() >= targetOffset) {
+                var tail = segments.remove(segments.size() - 1);
+                tail.close();
+                tail.delete();
+            }
+            var active = segments.get(segments.size() - 1);
+            active.truncateAtOrAbove(targetOffset);
+        } finally {
+            lock.unlock();
         }
-        var active = segments.get(segments.size() - 1);
-        active.truncateAtOrAbove(targetOffset);
     }
 
     /**
@@ -159,26 +185,36 @@ public final class Log implements AutoCloseable {
      * {@code cutoffMillis}. The active segment is never deleted. Returns the
      * number of segments removed.
      */
-    public synchronized int retain(long cutoffMillis) throws IOException {
-        int removed = 0;
-        while (segments.size() > 1) {
-            var head = segments.get(0);
-            if (head.maxTimestamp() > 0 && head.maxTimestamp() >= cutoffMillis) break;
-            if (head == segments.get(segments.size() - 1)) break;
-            segments.remove(0);
-            head.close();
-            head.delete();
-            removed++;
+    public int retain(long cutoffMillis) throws IOException {
+        lock.lock();
+        try {
+            int removed = 0;
+            while (segments.size() > 1) {
+                var head = segments.get(0);
+                if (head.maxTimestamp() > 0 && head.maxTimestamp() >= cutoffMillis) break;
+                if (head == segments.get(segments.size() - 1)) break;
+                segments.remove(0);
+                head.close();
+                head.delete();
+                removed++;
+            }
+            return removed;
+        } finally {
+            lock.unlock();
         }
-        return removed;
     }
 
     public List<LogSegment> segments() {
         return List.copyOf(segments);
     }
 
-    public synchronized void force() throws IOException {
-        for (var seg : segments) seg.force();
+    public void force() throws IOException {
+        lock.lock();
+        try {
+            for (var seg : segments) seg.force();
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -194,7 +230,16 @@ public final class Log implements AutoCloseable {
      *
      * <p>Returns the number of records retained after compaction.
      */
-    public synchronized int compactByKey() throws IOException {
+    public int compactByKey() throws IOException {
+        lock.lock();
+        try {
+            return compactByKeyLocked();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private int compactByKeyLocked() throws IOException {
         // Read every batch in original order. The latest record for each
         // key wins, including when the "latest" is a tombstone — in which
         // case the key is dropped entirely.
@@ -266,7 +311,12 @@ public final class Log implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() throws IOException {
-        for (var seg : segments) seg.close();
+    public void close() throws IOException {
+        lock.lock();
+        try {
+            for (var seg : segments) seg.close();
+        } finally {
+            lock.unlock();
+        }
     }
 }

@@ -23,6 +23,14 @@ public final class LogSegment implements AutoCloseable {
 
     public static final int DEFAULT_INDEX_INTERVAL_BYTES = 4 * 1024;
 
+    /**
+     * P10.2 — serialise all IO-touching methods via a ReentrantLock
+     * rather than an intrinsic monitor. Blocking FileChannel ops held
+     * under `synchronized` pin a virtual thread's carrier OS thread;
+     * ReentrantLock does not.
+     */
+    private final java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
+
     private final long baseOffset;
     private final Path logPath;
     private final FileChannel logChannel;
@@ -117,8 +125,13 @@ public final class LogSegment implements AutoCloseable {
         return nextOffset;
     }
 
-    public synchronized long sizeBytes() throws IOException {
-        return logChannel.size();
+    public long sizeBytes() throws IOException {
+        lock.lock();
+        try {
+            return logChannel.size();
+        } finally {
+            lock.unlock();
+        }
     }
 
     public long maxTimestamp() {
@@ -138,7 +151,16 @@ public final class LogSegment implements AutoCloseable {
      * <p>Verifies the batch's header matches {@code expectedBaseOffset} and
      * throws {@link IllegalArgumentException} otherwise.
      */
-    public synchronized int appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+    public int appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+        lock.lock();
+        try {
+            return appendRawLocked(encodedBatch, expectedBaseOffset);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private int appendRawLocked(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
         if (expectedBaseOffset != nextOffset) {
             throw new IllegalArgumentException(
                     "expectedBaseOffset " + expectedBaseOffset + " != segment nextOffset " + nextOffset);
@@ -179,7 +201,16 @@ public final class LogSegment implements AutoCloseable {
      * this segment's {@link #nextOffset()}. Returns the position at which the
      * batch was written.
      */
-    public synchronized int append(long firstTimestamp, long maxTimestamp, List<Record> records) throws IOException {
+    public int append(long firstTimestamp, long maxTimestamp, List<Record> records) throws IOException {
+        lock.lock();
+        try {
+            return appendLocked(firstTimestamp, maxTimestamp, records);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private int appendLocked(long firstTimestamp, long maxTimestamp, List<Record> records) throws IOException {
         if (records.isEmpty()) throw new IllegalArgumentException("records must be non-empty");
         long baseOff = nextOffset;
         int size = RecordBatch.estimatedSize(records);
@@ -208,7 +239,16 @@ public final class LogSegment implements AutoCloseable {
      * bytes; the caller decodes via {@link RecordBatch#decode(ByteBuffer)}.
      * {@code maxBytes} bounds the total returned length.
      */
-    public synchronized List<RecordBatch.Parsed> readFrom(long startOffset, int maxBytes) throws IOException {
+    public List<RecordBatch.Parsed> readFrom(long startOffset, int maxBytes) throws IOException {
+        lock.lock();
+        try {
+            return readFromLocked(startOffset, maxBytes);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private List<RecordBatch.Parsed> readFromLocked(long startOffset, int maxBytes) throws IOException {
         var entry = offsetIndex.lookup(startOffset);
         int fromPos = entry.map(e -> e.position()).orElse(0);
         long size = logChannel.size();
@@ -238,16 +278,30 @@ public final class LogSegment implements AutoCloseable {
      * Zero-copy read: transfer {@code maxBytes} of raw log bytes starting at
      * the index position for {@code startOffset} directly to {@code out}.
      */
-    public synchronized long transferTo(long startOffset, int maxBytes, OutputStream out) throws IOException {
-        var entry = offsetIndex.lookup(startOffset);
-        long fromPos = entry.map(e -> (long) e.position()).orElse(0L);
-        long size = logChannel.size();
-        if (fromPos >= size) return 0;
-        long toRead = Math.min(size - fromPos, maxBytes);
-        return logChannel.transferTo(fromPos, toRead, Channels.newChannel(out));
+    public long transferTo(long startOffset, int maxBytes, OutputStream out) throws IOException {
+        lock.lock();
+        try {
+            var entry = offsetIndex.lookup(startOffset);
+            long fromPos = entry.map(e -> (long) e.position()).orElse(0L);
+            long size = logChannel.size();
+            if (fromPos >= size) return 0;
+            long toRead = Math.min(size - fromPos, maxBytes);
+            return logChannel.transferTo(fromPos, toRead, Channels.newChannel(out));
+        } finally {
+            lock.unlock();
+        }
     }
 
-    public synchronized void force() throws IOException {
+    public void force() throws IOException {
+        lock.lock();
+        try {
+            forceLocked();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void forceLocked() throws IOException {
         var event = new jbroker.storage.jfr.FsyncDurationEvent();
         if (event.shouldCommit()) {
             long before = logChannel.size();

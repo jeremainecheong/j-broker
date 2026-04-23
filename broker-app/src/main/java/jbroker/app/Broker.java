@@ -65,13 +65,30 @@ public final class Broker implements AutoCloseable {
             int raftPort,
             int brokerPort,
             List<VoterAddress> voters,
-            int consumerOffsetsPartitions) {
+            int consumerOffsetsPartitions,
+            /** when ≥ 0, the broker binds a cooperative chaos HTTP server on this port. */
+            int chaosPort) {
         public Config {
             voters = List.copyOf(voters);
             if (consumerOffsetsPartitions < 1) {
                 throw new IllegalArgumentException(
                         "consumerOffsetsPartitions must be ≥ 1, got " + consumerOffsetsPartitions);
             }
+        }
+
+        /** 5-arg ctor back-compat: chaos disabled (chaosPort = -1). */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions) {
+            this(selfId, dataDir, raftPort, brokerPort, voters, consumerOffsetsPartitions, -1);
+        }
+
+        public Config withChaosPort(int port) {
+            return new Config(selfId, dataDir, raftPort, brokerPort, voters, consumerOffsetsPartitions, port);
         }
 
         /**
@@ -126,6 +143,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.replication.ReplicaFetcherManager fetcherManager;
     private final jbroker.broker.replication.DefaultFetcherFactory fetcherFactory;
     private final jbroker.broker.BrokerMetrics metrics;
+    private final jbroker.broker.chaos.ChaosHttpServer chaosHttp;
 
     private Broker(
             TopicManager tm,
@@ -142,7 +160,8 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.BrokerHeartbeatSender heartbeatSender,
             jbroker.broker.replication.ReplicaFetcherManager fetcherManager,
             jbroker.broker.replication.DefaultFetcherFactory fetcherFactory,
-            jbroker.broker.BrokerMetrics metrics) {
+            jbroker.broker.BrokerMetrics metrics,
+            jbroker.broker.chaos.ChaosHttpServer chaosHttp) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
@@ -158,6 +177,7 @@ public final class Broker implements AutoCloseable {
         this.fetcherManager = fetcherManager;
         this.fetcherFactory = fetcherFactory;
         this.metrics = metrics;
+        this.chaosHttp = chaosHttp;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -361,7 +381,14 @@ public final class Broker implements AutoCloseable {
                 brokerMetrics,
                 eventPublisher,
                 partitionMetricsProvider);
+        // cooperative chaos control plane. Only active when the
+        // config exposes a chaos port (≥ 0); interceptor is installed on
+        // every inbound service so pause + peer-block affect broker-to-
+        // broker RPCs as well as client traffic.
+        var chaosState = new jbroker.broker.chaos.ChaosState();
+        var chaosInterceptor = new jbroker.broker.chaos.ChaosServerInterceptor(chaosState);
         var server = NettyServerBuilder.forPort(config.brokerPort())
+                .intercept(chaosInterceptor)
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
@@ -370,6 +397,25 @@ public final class Broker implements AutoCloseable {
                 .addService(BrokerGrpcServices.metadata(metadataHandler))
                 .build()
                 .start();
+
+        jbroker.broker.chaos.ChaosHttpServer chaosHttp = null;
+        if (config.chaosPort() >= 0) {
+            chaosHttp = new jbroker.broker.chaos.ChaosHttpServer(
+                    chaosState,
+                    config.selfId().value(),
+                    config.chaosPort(),
+                    eventPublisher,
+                    // Force-election isn't yet wired into the raft core; the
+                    // endpoint currently just logs + publishes the SSE event.
+                    // Reserved for a follow-up once RaftDriver exposes a
+                    // deadline-to-now hook. Deliberately a no-op so the
+                    // the spec endpoint surface is complete.
+                    () -> log.info(
+                            "chaos: force-election requested on broker {}",
+                            config.selfId().value()),
+                    () -> System.exit(137));
+            log.info("chaos HTTP server listening on port {}", chaosHttp.port());
+        }
 
         // Wait for Raft to complete a first election. In a multi-voter
         // cluster this broker may or may not be the winner; instead of
@@ -594,7 +640,13 @@ public final class Broker implements AutoCloseable {
                 heartbeatSender,
                 fetcherManager,
                 fetcherFactory,
-                brokerMetrics);
+                brokerMetrics,
+                chaosHttp);
+    }
+
+    /** exposed for tests + the admin-app chaos proxy probe. */
+    public int chaosPort() {
+        return chaosHttp == null ? -1 : chaosHttp.port();
     }
 
     /** broker-local counter bag (incremental-fetch hits, etc). */
@@ -734,6 +786,7 @@ public final class Broker implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        if (chaosHttp != null) chaosHttp.close();
         // Stop heartbeat sender before its peer channels race against
         // the peer brokers shutting down their gRPC servers.
         heartbeatSender.close();

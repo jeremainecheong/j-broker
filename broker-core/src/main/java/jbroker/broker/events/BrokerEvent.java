@@ -65,4 +65,17 @@ public sealed interface BrokerEvent {
             return "consumer_group_rebalance";
         }
     }
+
+    /**
+     * dev-only chaos action observed by the SSE stream. {@code action}
+     * is one of {@code kill|pause|resume|partition|heal|inject-latency|
+     * force-election}; {@code peerId} is meaningful for partition/heal and
+     * null otherwise; {@code millis} is meaningful for inject-latency.
+     */
+    record ChaosAction(long id, String action, int brokerId, Integer peerId, Long millis) implements BrokerEvent {
+        @Override
+        public String typeName() {
+            return "chaos_action";
+        }
+    }
 }

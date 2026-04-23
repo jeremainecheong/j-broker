@@ -3,6 +3,7 @@ package jbroker.admin.api;
 import io.grpc.StatusRuntimeException;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,14 +65,37 @@ public class MetricsScraper {
 
     void tick() {
         try {
+            // P10.3 — fan out describeMetrics across brokers concurrently
+            // via a virtual-thread-per-task executor, closed inside a
+            // try-with-resources so the scrape waits for every fork to
+            // finish before returning (structured-concurrency semantics
+            // without the StructuredTaskScope preview API). Scrape
+            // completes in max(per-broker RTT) rather than sum.
             var byBroker = new HashMap<Integer, DescribeMetricsResponse>();
+            var tasks = new ArrayList<java.util.concurrent.Callable<DescribeMetricsResponse>>();
             for (var c : pool.clients()) {
-                try {
-                    var r = c.describeMetrics();
-                    if (r.getError() == ErrorCode.OK) byBroker.put(r.getBrokerId(), r);
-                } catch (StatusRuntimeException e) {
-                    log.debug("broker {} unreachable during scrape: {}", c.address(), e.getStatus());
+                tasks.add(() -> {
+                    try {
+                        return c.describeMetrics();
+                    } catch (StatusRuntimeException e) {
+                        log.debug("broker {} unreachable during scrape: {}", c.address(), e.getStatus());
+                        return null;
+                    }
+                });
+            }
+            try (var scope = Executors.newVirtualThreadPerTaskExecutor()) {
+                var futures = scope.invokeAll(tasks);
+                for (var f : futures) {
+                    try {
+                        var r = f.get();
+                        if (r != null && r.getError() == ErrorCode.OK) byBroker.put(r.getBrokerId(), r);
+                    } catch (java.util.concurrent.ExecutionException ee) {
+                        log.debug("scrape subtask failed", ee.getCause());
+                    }
                 }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
             }
             var snap = new Snapshot(Map.copyOf(byBroker));
             latest.set(snap);

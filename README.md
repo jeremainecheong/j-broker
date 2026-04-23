@@ -65,6 +65,36 @@ Modules that exist today:
 - **Torn-write recovery** — `FileRaftLog` rehydrates by skipping incomplete trailing frames and hard-caps per-frame payloads at 64 MiB against corrupted length prefixes.
 - **Defensive immutability** — `LogEntry.payload()` returns a defensive copy; equality and hash are content-based via `Arrays.equals`/`Arrays.hashCode`.
 
+## Performance
+
+Single-broker snapshot produced by `scripts/bench/run-readme-bench.sh` on an
+Apple-silicon laptop (Darwin 24.2, M-series, SSD). Represents the end-to-end
+gRPC path — the producer bench issues one-record-per-RPC with `acks=1`,
+the consumer bench fetches via `Consumer.Fetch`. Multi-broker numbers will
+differ once acks=all and inter-broker replication enter the loop; this is
+the floor the broker delivers as a solo node.
+
+### Producer
+
+| Payload | Records | rps | MiB/s | p50 | p99 | p999 |
+|---|---|---|---|---|---|---|
+| 256B | 5,000 | 5,362 | 1.31 | 0.14ms | 0.60ms | 1.21ms |
+| 1024B | 5,000 | 5,597 | 5.47 | 0.13ms | 0.56ms | 1.18ms |
+| 4096B | 5,000 | 5,494 | 21.46 | 0.13ms | 0.58ms | 2.89ms |
+
+### Consumer
+
+| Payload | Records | rps | MiB/s | p50 | p99 | p999 |
+|---|---|---|---|---|---|---|
+| 256B | 5,100 | 37,057 | 9.05 | 5.40ms | 131.92ms | 131.92ms |
+| 1024B | 5,100 | 34,922 | 34.10 | 4.34ms | 124.72ms | 124.72ms |
+| 4096B | 5,020 | 25,189 | 98.40 | 3.37ms | 130.55ms | 130.55ms |
+
+Raw CSV in `docs/bench/results.csv`. Regenerate with `./gradlew
+:bench:installDist :broker-app:installDist`, start a broker
+(`broker-app/build/install/broker-app/bin/broker-app server --data-dir /tmp/b
+--broker-port 9092`), then `scripts/bench/run-readme-bench.sh`.
+
 ## Monitoring (Milestone 9)
 
 Bring up Prometheus + Grafana locally against a running admin-app:

@@ -37,6 +37,7 @@ public final class ProduceHandler {
     private final int selfBrokerId;
     private final FollowerStateTracker followerTracker;
     private final BrokerMetrics metrics;
+    private final jbroker.broker.quota.QuotaEnforcer quotaEnforcer;
 
     // TODO(P6.8): idle-producer-state expiration. This map grows unbounded
     // across (topic, partition, producer_id, producer_epoch) pairs ever
@@ -50,11 +51,23 @@ public final class ProduceHandler {
             int selfBrokerId,
             FollowerStateTracker followerTracker,
             BrokerMetrics metrics) {
+        this(logManager, topicManager, selfBrokerId, followerTracker, metrics, jbroker.broker.quota.QuotaEnforcer.NOOP);
+    }
+
+    /** P9.6 — constructor with a {@link jbroker.broker.quota.QuotaEnforcer}. */
+    public ProduceHandler(
+            LogManager logManager,
+            TopicManager topicManager,
+            int selfBrokerId,
+            FollowerStateTracker followerTracker,
+            BrokerMetrics metrics,
+            jbroker.broker.quota.QuotaEnforcer quotaEnforcer) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
         this.followerTracker = followerTracker;
         this.metrics = metrics == null ? new BrokerMetrics() : metrics;
+        this.quotaEnforcer = quotaEnforcer == null ? jbroker.broker.quota.QuotaEnforcer.NOOP : quotaEnforcer;
     }
 
     /** Back-compat overload: omits metrics (tests that don't care). */
@@ -69,6 +82,19 @@ public final class ProduceHandler {
     }
 
     public ProduceResponse handle(ProduceRequest req) {
+        // P9.6 — admission check. Uses "anonymous" until Phase 10 adds
+        // authenticated principal extraction from gRPC metadata. Byte budget
+        // is the serialized batch size so the budget matches the wire cost.
+        var decision = quotaEnforcer.check(
+                "anonymous",
+                jbroker.broker.quota.QuotaEnforcer.Op.PRODUCE,
+                req.getBatch().size());
+        if (!decision.allow()) {
+            return err(
+                    ErrorCodes.QUOTA_VIOLATED,
+                    "produce quota exceeded: " + decision.quotaBytesPerSec() + " B/s; retry in "
+                            + decision.throttleMillis() + "ms");
+        }
         var topic = topicManager.describe(req.getTopic());
         if (topic.isEmpty()) {
             return err(ErrorCodes.UNKNOWN_TOPIC, "unknown topic: " + req.getTopic());

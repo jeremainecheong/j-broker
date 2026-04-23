@@ -27,6 +27,10 @@ public final class ErrorCodes {
     /** P7.11 — client-supplied fetch {@code session_id} was not found in the broker cache. */
     public static final int FETCH_SESSION_ID_NOT_FOUND = 85;
 
+    // Phase 9 — rate limiting.
+    /** P9.6 — per-principal quota exceeded on produce or fetch path. Retry after {@code throttleMillis}. */
+    public static final int QUOTA_VIOLATED = 86;
+
     // Phase 8 — admin surface placeholders.
     /** Phase 8 skeleton placeholder: RPC is wired but the body has not yet been implemented. */
     public static final int UNIMPLEMENTED = 99;

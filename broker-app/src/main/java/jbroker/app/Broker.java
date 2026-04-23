@@ -393,7 +393,7 @@ public final class Broker implements AutoCloseable {
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
                 .addService(BrokerGrpcServices.cluster(heartbeatHandler))
-                .addService(BrokerGrpcServices.admin(admin))
+                .addService(BrokerGrpcServices.admin(admin, consumerHandler))
                 .addService(BrokerGrpcServices.metadata(metadataHandler))
                 .build()
                 .start();

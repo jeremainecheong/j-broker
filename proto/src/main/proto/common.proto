@@ -21,6 +21,9 @@ enum ErrorCode {
   // Milestone 8 — admin surface skeleton placeholder. An RPC whose body is not
   // yet wired (lands the proto surface; later slices fill bodies).
   UNIMPLEMENTED = 99;
+  // admin tried to mutate a group the coordinator doesn't track
+  // (never-joined or already deleted).
+  UNKNOWN_GROUP = 86;
 }
 
 message BrokerEndpoint {

@@ -47,6 +47,33 @@ public class BrokerAdminClientPool {
     }
 
     /**
+     * Fans {@code op} out to every broker, returning a list of the responses
+     * that succeeded. Order of the returned list matches the order of
+     * {@link #clients()}. Throws if every broker is unreachable.
+     *
+     * <p>Used by the topic-detail merge flow (P11.4): only the partition
+     * leader populates real {@code highWatermark} / {@code logEndOffset} in
+     * {@code DescribeTopicPartitions}, so we fan out to every replica and
+     * pick the leader's answer per partition.
+     */
+    public <T> List<T> allSuccessful(Function<BrokerAdminClient, T> op) {
+        var out = new java.util.ArrayList<T>();
+        RuntimeException last = null;
+        for (var c : clients) {
+            try {
+                out.add(op.apply(c));
+            } catch (StatusRuntimeException e) {
+                log.debug("broker {} failed with {}; skipping", c.address(), e.getStatus());
+                last = e;
+            }
+        }
+        if (out.isEmpty()) {
+            throw new IllegalStateException("every broker unreachable", last);
+        }
+        return out;
+    }
+
+    /**
      * Tries {@code op} against each broker in order and returns the first
      * successful result. Swallows {@link StatusRuntimeException} so a single
      * unreachable broker doesn't bring down the admin UI — but does surface

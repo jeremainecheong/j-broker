@@ -1,6 +1,9 @@
 package jbroker.admin.api;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import jbroker.admin.client.BrokerAdminClientPool;
 import jbroker.admin.dto.ClusterSummary;
 import jbroker.admin.dto.HealthBadge;
@@ -38,8 +41,68 @@ public class ClusterController {
 
     @GetMapping("/cluster")
     public ClusterSummary cluster() {
-        var resp = pool.describeCluster();
-        return toSummary(resp);
+        // P11.9 — fan out so every broker can report its OWN role.
+        // Broker-core's DescribeCluster stamps "UNKNOWN" for peers it doesn't
+        // self-track; first-successful-only therefore shows 2/3 UNKNOWN in a
+        // 3-broker cluster. Merging self-reports across responses gives every
+        // broker its authoritative role.
+        List<DescribeClusterResponse> all;
+        try {
+            all = pool.allSuccessful(c -> c.describeCluster());
+        } catch (IllegalStateException unreachable) {
+            throw unreachable;
+        }
+        return toSummary(mergeSelfReportedRoles(all));
+    }
+
+    /**
+     * Picks the first OK response as the primary (ISR lists + controller id +
+     * broker address maps are identical across replicas, modulo in-flight
+     * Raft applies) and overlays the role field using per-broker self-reports.
+     *
+     * <p>Each broker's response concretely reports only its OWN role and
+     * stamps every peer as {@code UNKNOWN}. So for each response we find the
+     * node whose self-role is a concrete value and use that as the merge
+     * contribution. Empty-role values and {@code UNKNOWN} don't overwrite
+     * concrete ones, so the merge is order-independent.
+     */
+    static DescribeClusterResponse mergeSelfReportedRoles(List<DescribeClusterResponse> responses) {
+        DescribeClusterResponse primary = null;
+        for (var r : responses) {
+            if (r.getError() == ErrorCode.OK) {
+                primary = r;
+                break;
+            }
+        }
+        if (primary == null) {
+            // Every response was an error — let the caller handle via toSummary's
+            // error branch (throws IllegalStateException).
+            return responses.get(0);
+        }
+
+        Map<Integer, String> selfRoles = new HashMap<>();
+        for (var r : responses) {
+            if (r.getError() != ErrorCode.OK) continue;
+            for (var node : r.getNodesList()) {
+                String role = node.getRole();
+                if (role == null || role.isEmpty() || "UNKNOWN".equals(role)) continue;
+                // A concrete role on a node means this responder IS that node
+                // (broker-core only stamps concrete roles for self). Trust it.
+                selfRoles.merge(node.getBrokerId(), role, (existing, incoming) -> existing);
+            }
+        }
+
+        var builder = primary.toBuilder();
+        builder.clearNodes();
+        for (var node : primary.getNodesList()) {
+            String better = selfRoles.get(node.getBrokerId());
+            if (better != null && !better.equals(node.getRole())) {
+                builder.addNodes(node.toBuilder().setRole(better).build());
+            } else {
+                builder.addNodes(node);
+            }
+        }
+        return builder.build();
     }
 
     @GetMapping("/nodes")

@@ -25,6 +25,14 @@ tasks.withType<Test>().configureEach {
         if (!runPerf) {
             excludeTags("perf")
         }
+        // P12.5/P12.6 — Testcontainers-backed ITs + 1M-record scale tests
+        // are tagged `slow`. Default CI excludes them; opt-in via
+        // `-PincludeTags=slow` or env JBROKER_RUN_SLOW_TESTS=1.
+        val runSlow = project.findProperty("includeTags")?.toString()?.contains("slow") == true
+                || System.getenv("JBROKER_RUN_SLOW_TESTS") == "1"
+        if (!runSlow) {
+            excludeTags("slow")
+        }
     }
     testLogging {
         events("passed", "skipped", "failed")

@@ -7,4 +7,9 @@ dependencies {
     api(project(":broker-storage"))
     api(project(":raft-core"))
     implementation(project(":raft-transport"))
+
+    // P12.6 — Testcontainers backs the Redis quota IT. Scoped to tests
+    // so broker-core stays classpath-slim at runtime.
+    testImplementation("org.testcontainers:testcontainers:1.20.2")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.2")
 }

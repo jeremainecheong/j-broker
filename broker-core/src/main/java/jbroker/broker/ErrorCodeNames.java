@@ -31,6 +31,7 @@ public final class ErrorCodeNames {
             Map.entry(ErrorCodes.FENCED_MEMBER_EPOCH, "FENCED_MEMBER_EPOCH"),
             Map.entry(ErrorCodes.OFFSET_OUT_OF_RANGE, "OFFSET_OUT_OF_RANGE"),
             Map.entry(ErrorCodes.FETCH_SESSION_ID_NOT_FOUND, "FETCH_SESSION_ID_NOT_FOUND"),
+            Map.entry(ErrorCodes.QUOTA_VIOLATED, "QUOTA_VIOLATED"),
             Map.entry(ErrorCodes.UNIMPLEMENTED, "UNIMPLEMENTED"));
 
     /** Returns the canonical name for {@code code}, or {@code "UNKNOWN"} if unrecognised. */

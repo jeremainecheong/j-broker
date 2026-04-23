@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+#
+# P11.1 — broker runtime image. Two-stage build:
+#   1. JDK builder runs `:broker-app:installDist` (skips tests) to produce a
+#      self-contained distribution under broker-app/build/install/broker-app/
+#      with a launcher script at bin/broker-app.
+#   2. JRE runtime copies just that distribution in — no gradle, no sources,
+#      no test classes.
+
+FROM eclipse-temurin:21-jdk AS builder
+WORKDIR /src
+
+COPY . .
+RUN --mount=type=cache,target=/root/.gradle \
+    ./gradlew :broker-app:installDist -x test --no-daemon
+
+FROM eclipse-temurin:21-jre
+LABEL org.opencontainers.image.title="j-broker"
+LABEL org.opencontainers.image.description="Educational Kafka-shaped log broker"
+LABEL org.opencontainers.image.source="https://github.com/jeremainecheong/j-broker"
+
+WORKDIR /opt/jbroker
+COPY --from=builder /src/broker-app/build/install/broker-app/ /opt/jbroker/
+
+# Non-root runtime: the broker never needs privileged capabilities. Host
+# bind-mounts onto /var/lib/jbroker need to be chown'd to uid 1001 or have
+# world-writable perms; named volumes inherit this directive's owner.
+RUN groupadd --system --gid 1001 jbroker \
+    && useradd --system --uid 1001 --gid jbroker --home-dir /opt/jbroker --shell /usr/sbin/nologin jbroker \
+    && mkdir -p /var/lib/jbroker \
+    && chown -R jbroker:jbroker /opt/jbroker /var/lib/jbroker
+VOLUME /var/lib/jbroker
+
+# 9092 — broker gRPC (producer/consumer/admin/metadata services)
+# 9192 — Raft peer RPC
+# 9100 — optional chaos HTTP control plane (only bound when --chaos-port ≥ 0)
+EXPOSE 9092 9192 9100
+
+USER jbroker
+ENTRYPOINT ["/opt/jbroker/bin/broker-app"]
+# Default command: single-broker server on the conventional ports. The
+# compose file overrides this to pass --voters + --id + --chaos-port for the
+# 3-broker cluster layout.
+CMD ["server", "--data-dir", "/var/lib/jbroker"]

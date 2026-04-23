@@ -37,6 +37,17 @@ public final class BrokerEventJson {
             case BrokerEvent.ConsumerGroupRebalance c -> String.format(
                     "{\"groupId\":\"%s\",\"generation\":%d,\"memberCount\":%d}",
                     escape(c.groupId()), c.generation(), c.memberCount());
+            case BrokerEvent.ChaosAction ca -> {
+                var sb = new StringBuilder(96);
+                sb.append("{\"action\":\"")
+                        .append(escape(ca.action()))
+                        .append("\",\"brokerId\":")
+                        .append(ca.brokerId());
+                if (ca.peerId() != null) sb.append(",\"peerId\":").append(ca.peerId());
+                if (ca.millis() != null) sb.append(",\"millis\":").append(ca.millis());
+                sb.append('}');
+                yield sb.toString();
+            }
         };
     }
 

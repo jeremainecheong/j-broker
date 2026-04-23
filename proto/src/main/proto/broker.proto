@@ -42,6 +42,10 @@ service Admin {
   // Phase 8 — topic CRUD.
   rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse);
   rpc UpdateTopicConfig(UpdateTopicConfigRequest) returns (UpdateTopicConfigResponse);
+  // P12.7 — consumer-group mutations. Both route to the coordinator
+  // broker; NOT_COORDINATOR hints the admin-app at which broker to retry.
+  rpc DeleteConsumerGroup(DeleteConsumerGroupRequest) returns (DeleteConsumerGroupResponse);
+  rpc ResetConsumerGroupOffsets(ResetConsumerGroupOffsetsRequest) returns (ResetConsumerGroupOffsetsResponse);
 }
 
 // Phase 8 — read-only admin observability surface. All RPCs answer from
@@ -234,6 +238,44 @@ message UpdateTopicConfigRequest {
 message UpdateTopicConfigResponse {
   Error error = 1;
   map<string, string> config = 2; // merged effective config after apply
+}
+
+// P12.7 — consumer-group mutations.
+message DeleteConsumerGroupRequest {
+  string group_id = 1;
+}
+
+message DeleteConsumerGroupResponse {
+  jbroker.common.ErrorCode error = 1;
+  // When error == NOT_COORDINATOR, points at the broker that owns the
+  // group's __consumer_offsets partition so the admin-app can retry.
+  int32 suggested_coordinator_id = 2;
+  string suggested_coordinator_host = 3;
+  int32 suggested_coordinator_port = 4;
+}
+
+message OffsetReset {
+  jbroker.common.TopicPartition tp = 1;
+  int64 offset = 2; // target committed offset
+  int32 leader_epoch = 3;
+}
+
+message ResetConsumerGroupOffsetsRequest {
+  string group_id = 1;
+  repeated OffsetReset resets = 2;
+}
+
+message OffsetResetResult {
+  jbroker.common.TopicPartition tp = 1;
+  jbroker.common.ErrorCode error = 2;
+}
+
+message ResetConsumerGroupOffsetsResponse {
+  jbroker.common.ErrorCode error = 1;
+  repeated OffsetResetResult results = 2;
+  int32 suggested_coordinator_id = 3;
+  string suggested_coordinator_host = 4;
+  int32 suggested_coordinator_port = 5;
 }
 
 message ListTopicsRequest {}

@@ -262,6 +262,16 @@ public final class BrokerGrpcServices {
     }
 
     public static AdminGrpc.AdminImplBase admin(AdminHandler handler) {
+        return admin(handler, null);
+    }
+
+    /**
+     * P12.7 — admin service with optional consumer-group mutation support.
+     * The {@code consumer} parameter may be null for single-topic test
+     * harnesses; in production Broker.start always passes a wired
+     * ConsumerHandler so the new delete/reset RPCs route correctly.
+     */
+    public static AdminGrpc.AdminImplBase admin(AdminHandler handler, ConsumerHandler consumer) {
         return new AdminGrpc.AdminImplBase() {
             @Override
             public void createTopic(CreateTopicRequest req, StreamObserver<CreateTopicResponse> out) {
@@ -290,6 +300,57 @@ public final class BrokerGrpcServices {
             @Override
             public void updateTopicConfig(UpdateTopicConfigRequest req, StreamObserver<UpdateTopicConfigResponse> out) {
                 out.onNext(handler.updateTopicConfig(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void deleteConsumerGroup(
+                    jbroker.proto.broker.DeleteConsumerGroupRequest req,
+                    StreamObserver<jbroker.proto.broker.DeleteConsumerGroupResponse> out) {
+                var b = jbroker.proto.broker.DeleteConsumerGroupResponse.newBuilder();
+                if (consumer == null) {
+                    b.setError(jbroker.proto.common.ErrorCode.UNIMPLEMENTED);
+                } else {
+                    b.setError(consumer.deleteConsumerGroupAdmin(req.getGroupId()));
+                }
+                out.onNext(b.build());
+                out.onCompleted();
+            }
+
+            @Override
+            public void resetConsumerGroupOffsets(
+                    jbroker.proto.broker.ResetConsumerGroupOffsetsRequest req,
+                    StreamObserver<jbroker.proto.broker.ResetConsumerGroupOffsetsResponse> out) {
+                var b = jbroker.proto.broker.ResetConsumerGroupOffsetsResponse.newBuilder();
+                if (consumer == null) {
+                    b.setError(jbroker.proto.common.ErrorCode.UNIMPLEMENTED);
+                    for (var r : req.getResetsList()) {
+                        b.addResults(jbroker.proto.broker.OffsetResetResult.newBuilder()
+                                .setTp(r.getTp())
+                                .setError(jbroker.proto.common.ErrorCode.UNIMPLEMENTED)
+                                .build());
+                    }
+                    out.onNext(b.build());
+                    out.onCompleted();
+                    return;
+                }
+                var topLevel = new jbroker.proto.common.ErrorCode[1];
+                topLevel[0] = jbroker.proto.common.ErrorCode.OK;
+                java.util.List<jbroker.proto.common.ErrorCode> results;
+                try {
+                    results = consumer.resetConsumerGroupOffsetsAdmin(req.getGroupId(), req.getResetsList(), topLevel);
+                } catch (java.io.IOException ioe) {
+                    results = java.util.Collections.nCopies(
+                            req.getResetsCount(), jbroker.proto.common.ErrorCode.UNKNOWN);
+                }
+                b.setError(topLevel[0]);
+                for (int i = 0; i < req.getResetsCount(); i++) {
+                    b.addResults(jbroker.proto.broker.OffsetResetResult.newBuilder()
+                            .setTp(req.getResets(i).getTp())
+                            .setError(results.get(i))
+                            .build());
+                }
+                out.onNext(b.build());
                 out.onCompleted();
             }
         };

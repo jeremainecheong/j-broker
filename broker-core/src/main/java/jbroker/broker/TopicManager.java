@@ -97,7 +97,8 @@ public final class TopicManager {
             int partitionEpoch) {
         var key = new PartitionKey(topic, partition);
         var next = new PartitionState(leader, isr, replicas, leaderEpoch, partitionEpoch);
-        partitions.merge(key, next, (existing, proposed) -> {
+        var prior = partitions.get(key);
+        var merged = partitions.merge(key, next, (existing, proposed) -> {
             if (proposed.leaderEpoch() > existing.leaderEpoch()) return proposed;
             if (proposed.leaderEpoch() == existing.leaderEpoch()
                     && proposed.partitionEpoch() > existing.partitionEpoch()) {
@@ -105,6 +106,19 @@ public final class TopicManager {
             }
             return existing;
         });
+        // P9.2 — emit when the proposal won (merged == next) AND the leader
+        // actually changed (or this is the first proposal for the partition).
+        if (merged == next && (prior == null || prior.leader() != leader)) {
+            var event = new jbroker.broker.jfr.PartitionLeaderChangeEvent();
+            if (event.shouldCommit()) {
+                event.topic = topic;
+                event.partition = partition;
+                event.oldLeader = prior == null ? 0 : prior.leader();
+                event.newLeader = leader;
+                event.leaderEpoch = leaderEpoch;
+                event.commit();
+            }
+        }
     }
 
     /** Back-compat overload: defaults replicas to isr, partitionEpoch to 0. */

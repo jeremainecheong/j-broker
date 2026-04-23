@@ -44,3 +44,36 @@ Modules that exist today:
 - **Conflict-index fast backoff** — follower returns the first index of its conflicting term on AppendEntries failure; leader jumps `nextIndex[peer]` directly there.
 - **Torn-write recovery** — `FileRaftLog` rehydrates by skipping incomplete trailing frames and hard-caps per-frame payloads at 64 MiB against corrupted length prefixes.
 - **Defensive immutability** — `LogEntry.payload()` returns a defensive copy; equality and hash are content-based via `Arrays.equals`/`Arrays.hashCode`.
+
+## Profiling (Phase 9)
+
+The broker emits six custom JFR events on hot paths, plus integrates cleanly with `async-profiler`.
+
+**Custom JFR events** (all under category `j-broker`):
+
+| Event | Where | Fields |
+|---|---|---|
+| `jbroker.RaftTermChange` | `DefaultRaftCore.becomeFollower` | oldTerm, newTerm, reason |
+| `jbroker.PartitionLeaderChange` | `TopicManager.onPartitionChange` | topic, partition, oldLeader, newLeader, leaderEpoch |
+| `jbroker.FsyncDuration` | `LogSegment.force` | baseOffset, durationNanos, sizeBytes |
+| `jbroker.ReplicationLag` | `ReplicaFetchHandler.handle` (leader-side; ≥10 records lag) | topic, partition, followerBrokerId, lagRecords |
+| `jbroker.ProduceLatency` | `ProduceHandler.handle` | topic, partition, latencyNanos, bytes, acks |
+| `jbroker.FetchLatency` | `FetchHandler.handle` | topic, partition, latencyNanos, bytes |
+
+**Start a JFR recording on a running broker:**
+
+```
+jcmd <PID> JFR.start duration=30s filename=broker.jfr settings=profile
+```
+
+Open `broker.jfr` in [JDK Mission Control](https://www.oracle.com/java/technologies/jdk-mission-control.html); custom events show up under *Event Browser → j-broker*.
+
+**Flame graph via [async-profiler](https://github.com/jvm-profiling-tools/async-profiler):**
+
+```
+asprof -d 30 -f flame.html <PID>                       # CPU flame graph
+asprof -d 30 -e alloc -f alloc.html <PID>              # allocation profile
+asprof -d 30 -e lock -f lock.html <PID>                # lock contention (watch virtual-thread pinning!)
+```
+
+On Linux, ensure `perf_event_paranoid` is ≤ 1 and kernel symbols are accessible. Frame-pointer mode works out of the box; if you see truncated Java stacks, launch the JVM with `-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints`.

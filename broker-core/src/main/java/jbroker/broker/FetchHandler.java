@@ -88,7 +88,16 @@ public final class FetchHandler {
                     .build();
             sessionCache.update(sessionId, tp, req.getOffset(), /*leaderEpoch*/ 0);
             byte[] bytes = baos.toByteArray();
-            metrics.recordFetch(System.nanoTime() - startNs, bytes.length);
+            long latencyNanos = System.nanoTime() - startNs;
+            metrics.recordFetch(latencyNanos, bytes.length);
+            var jfr = new jbroker.broker.jfr.FetchLatencyEvent();
+            if (jfr.shouldCommit()) {
+                jfr.topic = req.getTopic();
+                jfr.partition = req.getPartition();
+                jfr.latencyNanos = latencyNanos;
+                jfr.bytes = bytes.length;
+                jfr.commit();
+            }
             return FetchResponse.newBuilder()
                     .setRecords(ByteString.copyFrom(bytes))
                     .setHighWatermark(hwm)

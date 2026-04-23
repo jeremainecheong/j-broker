@@ -7,14 +7,17 @@
 #   2. JRE runtime copies just that distribution in — no gradle, no sources,
 #      no test classes.
 
-FROM eclipse-temurin:21-jdk AS builder
+# Base images pinned by digest (2026-04-23) so two builds a month apart
+# can't drift. Temurin publishes fresh digests for the same floating tag
+# periodically — re-pin when we pull in a deliberate update.
+FROM eclipse-temurin:21-jdk@sha256:e58e492628c1428ceb838afc1a1b8762673d5eaa09296f560c363daea0fdcf3b AS builder
 WORKDIR /src
 
 COPY . .
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew :broker-app:installDist -x test --no-daemon
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jre@sha256:ff65ff0d43c73d2b675eb4b758665a5cb487e7df127436a9979f8172c144c819
 LABEL org.opencontainers.image.title="j-broker"
 LABEL org.opencontainers.image.description="Educational Kafka-shaped log broker"
 LABEL org.opencontainers.image.source="https://github.com/jeremainecheong/j-broker"
@@ -37,6 +40,15 @@ VOLUME /var/lib/jbroker
 EXPOSE 9092 9192 9100
 
 USER jbroker
+
+# HEALTHCHECK — bash TCP probe against the broker gRPC port. eclipse-temurin
+# ships bash by default; `3<>/dev/tcp/host/port` returns non-zero when the
+# broker isn't accepting connections (not-yet-bound, paused by chaos, or
+# carrier-thread deadlock). 10s start-period covers the cold-start window
+# where Raft is still holding an election.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD bash -c 'exec 3<>/dev/tcp/localhost/9092' || exit 1
+
 ENTRYPOINT ["/opt/jbroker/bin/broker-app"]
 # Default command: single-broker server on the conventional ports. The
 # compose file overrides this to pass --voters + --id + --chaos-port for the

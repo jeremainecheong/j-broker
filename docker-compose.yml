@@ -114,9 +114,15 @@ services:
     restart: unless-stopped
     networks: [jbroker]
     depends_on:
-      - broker1
-      - broker2
-      - broker3
+      # HEALTHCHECK in Dockerfile.broker makes service_healthy
+      # meaningful. Admin no longer races broker startup — it waits for
+      # each broker's gRPC port to accept connections before starting.
+      broker1:
+        condition: service_healthy
+      broker2:
+        condition: service_healthy
+      broker3:
+        condition: service_healthy
     ports:
       - "15672:15672"
     environment:

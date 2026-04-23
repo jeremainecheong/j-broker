@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.file.Path;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -17,7 +18,15 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class AppendThroughputTest {
 
+    /**
+     * Throughput floor is hardware-dependent. GitHub Actions runners and
+     * similar shared CI disks routinely fall below 50 MB/s under noisy-
+     * neighbour load, producing meaningless red builds. The test still
+     * runs on demand for perf-regression detection — opt-in via
+     * {@code -PincludeTags=perf} or {@code JBROKER_RUN_PERF=1}.
+     */
     @Test
+    @Tag("perf")
     void appendThroughputFloor(@TempDir Path dir) throws Exception {
         final int recordBytes = 1024;
         final int records = 50_000;

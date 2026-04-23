@@ -93,6 +93,25 @@ public final class BrokerClient implements AutoCloseable {
         return resp.getConfigMap();
     }
 
+    /**
+     * force synchronous compaction on the responding broker's local
+     * log for {@code (topic, partition)}. Returns the survivor count, or
+     * -1 if the broker has no open log for that partition. Throws on any
+     * populated {@code error} (unknown topic, invalid partition, I/O error).
+     */
+    public int forceCompactPartition(String topic, int partition) {
+        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .forceCompactPartition(jbroker.proto.broker.ForceCompactPartitionRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException(
+                    "forceCompactPartition failed: " + resp.getError().getMessage());
+        }
+        return resp.getRecordsKept();
+    }
+
     /** Milestone 8 — create a topic with a config map. */
     public void createTopicWithConfig(String topic, int partitions, int rf, java.util.Map<String, String> config) {
         var b = CreateTopicRequest.newBuilder()
@@ -235,6 +254,47 @@ public final class BrokerClient implements AutoCloseable {
         }
         return out;
     }
+
+    /**
+     * offset-preserving fetch variant. Like {@link #fetch} but
+     * surfaces each record's absolute offset and key alongside its value,
+     * which integration tests (in particular the post-compaction sparse-
+     * offset assertion in ) need to prove log-layer guarantees
+     * survive the gRPC hop.
+     */
+    public List<FetchedRecord> fetchRecords(String topic, int partition, long offset, int maxBytes) {
+        var resp = consumer.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .fetch(FetchRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .setOffset(offset)
+                        .setMaxBytes(maxBytes)
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("fetch failed: " + resp.getError().getMessage());
+        }
+        var buf = ByteBuffer.wrap(resp.getRecords().toByteArray());
+        var out = new java.util.ArrayList<FetchedRecord>();
+        while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
+            int mark = buf.position();
+            try {
+                var parsed = RecordBatch.decode(buf);
+                for (var rec : parsed.records()) {
+                    long abs = parsed.baseOffset() + rec.offsetDelta();
+                    if (abs >= offset) {
+                        out.add(new FetchedRecord(abs, rec.key(), rec.value()));
+                    }
+                }
+            } catch (IllegalArgumentException e) {
+                buf.position(mark);
+                break;
+            }
+        }
+        return out;
+    }
+
+    /** Offset + key + value tuple from {@link #fetchRecords}. */
+    public record FetchedRecord(long offset, byte[] key, byte[] value) {}
 
     /** Fetch everything starting from offset 0 until no new records arrive. */
     public List<byte[]> fetchAll(String topic, int partition, int maxBytes) {

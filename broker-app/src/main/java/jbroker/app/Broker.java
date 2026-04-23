@@ -307,13 +307,17 @@ public final class Broker implements AutoCloseable {
         // AdminHandler learns Raft leader id + registry so NOT_LEADER
         // responses can carry suggested_leader_* hints that the admin REST
         // layer surfaces into the error envelope.
+        // wire LogManager::compactLogNowIfPresent so the
+        // ForceCompactPartition admin RPC can trigger a synchronous compaction
+        // on the responding broker's local log without touching Raft.
         var admin = new AdminHandler(
                 topicManager,
                 proposer,
                 config.selfId().value(),
                 brokerRegistry::knownBrokerIds,
                 () -> raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value),
-                brokerRegistry);
+                brokerRegistry,
+                logManager::compactLogNowIfPresent);
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var brokerLiveness = new jbroker.broker.BrokerLiveness();

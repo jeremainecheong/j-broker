@@ -629,8 +629,16 @@ public final class Broker implements AutoCloseable {
         // heartbeats to trigger a false-positive fence — safe under
         // heavy GC / JVM load. Low enough traffic (6 RPCs/s per broker
         // in a 3-broker cluster) to be negligible.
+        // pause-aware: the sender consults ChaosState.isPaused so
+        // `pause-broker` from the chaos UI flips the broker to "dead" on
+        // every peer's BrokerLiveness, the fencer kicks in, and the
+        // admin's health pill correctly flips to yellow/red.
         var heartbeatSender = new jbroker.broker.BrokerHeartbeatSender(
-                config.selfId().value(), heartbeatPeers, () -> 0L, /*intervalMs*/ 250L);
+                config.selfId().value(),
+                heartbeatPeers,
+                () -> 0L,
+                /*intervalMs*/ 250L,
+                chaosState::isPaused);
         heartbeatSender.start();
 
         return new Broker(

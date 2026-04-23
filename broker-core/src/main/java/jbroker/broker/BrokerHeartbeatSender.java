@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import jbroker.proto.broker.BrokerHeartbeatRequest;
 import jbroker.proto.broker.ClusterGrpc;
@@ -37,16 +38,40 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
     private final java.util.List<PeerAddress> peers;
     private final LongSupplier metadataOffset;
     private final long intervalMs;
+    private final BooleanSupplier paused;
     private final ScheduledExecutorService scheduler;
     private final Map<Integer, ManagedChannel> channels = new HashMap<>();
     private final Map<Integer, ClusterGrpc.ClusterBlockingStub> stubs = new HashMap<>();
 
+    /**
+     * Back-compat 4-arg constructor — no pause gate. Existing tests keep
+     * working; only Broker.start currently needs the pause-aware variant.
+     */
     public BrokerHeartbeatSender(
             int selfBrokerId, java.util.List<PeerAddress> peers, LongSupplier metadataOffset, long intervalMs) {
+        this(selfBrokerId, peers, metadataOffset, intervalMs, () -> false);
+    }
+
+    /**
+     * chaos-aware constructor. {@code paused.getAsBoolean()} is
+     * polled once per tick; when it returns true the whole tick no-ops so
+     * peers' {@link BrokerLiveness} eventually flips this broker to dead and
+     * the fencer promotes a replacement leader. Combined with the existing
+     * {@link jbroker.broker.chaos.ChaosServerInterceptor} (which blocks
+     * inbound traffic), pause now simulates a bidirectional disconnect
+     * instead of a one-way "refuse-to-answer".
+     */
+    public BrokerHeartbeatSender(
+            int selfBrokerId,
+            java.util.List<PeerAddress> peers,
+            LongSupplier metadataOffset,
+            long intervalMs,
+            BooleanSupplier paused) {
         this.selfBrokerId = selfBrokerId;
         this.peers = java.util.List.copyOf(peers);
         this.metadataOffset = metadataOffset;
         this.intervalMs = intervalMs;
+        this.paused = paused;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "broker-heartbeat-sender-" + selfBrokerId);
             t.setDaemon(true);
@@ -66,6 +91,12 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
     }
 
     private void tick() {
+        if (paused.getAsBoolean()) {
+            // Chaos pause — skip the tick entirely. Peers will observe our
+            // last-signal age climb past BrokerFencer's staleness threshold
+            // (3s) and mark us dead.
+            return;
+        }
         long offset = metadataOffset.getAsLong();
         var req = BrokerHeartbeatRequest.newBuilder()
                 .setBrokerId(selfBrokerId)

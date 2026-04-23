@@ -124,57 +124,69 @@ public final class MetadataStateMachine implements StateMachine {
             // A non-metadata payload on the metadata Raft log — skip.
             return;
         }
-        if (record.hasTopic()) {
-            var t = record.getTopic();
-            topicManager.onTopicCommitted(
-                    t.getTopic(),
-                    t.getPartitions(),
-                    t.getReplicationFactor(),
-                    t.getCreatedMillis(),
-                    t.getInternal(),
-                    t.getCompact(),
-                    t.getConfigMap());
-        } else if (record.hasPartitionChange()) {
-            applyPartitionChange(record.getPartitionChange());
-        } else if (record.hasCreateTopic()) {
-            var ct = record.getCreateTopic();
-            var t = ct.getTopic();
-            topicManager.onTopicCommitted(
-                    t.getTopic(),
-                    t.getPartitions(),
-                    t.getReplicationFactor(),
-                    t.getCreatedMillis(),
-                    t.getInternal(),
-                    t.getCompact(),
-                    t.getConfigMap());
-            for (var p : ct.getPartitionChangesList()) {
-                applyPartitionChange(p);
+        // Java 21 pattern-matching switch over the proto oneof's
+        // generated KindCase enum. Prefer this over the historical
+        // has*() chain: the compiler warns on a non-exhaustive switch so
+        // adding a new MetadataRecord variant without an apply branch is
+        // a build-time failure rather than a silent drop.
+        switch (record.getKindCase()) {
+            case TOPIC -> {
+                var t = record.getTopic();
+                topicManager.onTopicCommitted(
+                        t.getTopic(),
+                        t.getPartitions(),
+                        t.getReplicationFactor(),
+                        t.getCreatedMillis(),
+                        t.getInternal(),
+                        t.getCompact(),
+                        t.getConfigMap());
             }
-        } else if (record.hasProducerIdAssignment()) {
-            // : advance the producer-id counter. ProducerIdRegistry is
-            // idempotent under replay — a duplicate or out-of-order apply
-            // cannot regress the counter.
-            producerIdRegistry.applyAssignment(record.getProducerIdAssignment().getNextProducerId());
-        } else if (record.hasBroker()) {
-            // : broker-gRPC address discovery. The listener is where
-            // BrokerRegistry + ReplicaFetcherManager plug in.
-            var r = record.getBroker();
-            brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
-        } else if (record.hasDeleteTopic()) {
-            // drop the topic from the metadata catalogue, then let
-            // the broker-level listener evict LogManager cache entries,
-            // delete on-disk segments, and kick the replica-fetcher
-            // reconcile loop so any in-flight fetch against the now-gone
-            // partitions stops promptly rather than waiting on the next
-            // unrelated metadata event.
-            var deletedTopic = record.getDeleteTopic().getTopic();
-            topicManager.onTopicDeleted(deletedTopic);
-            topicDeletionListener.onTopicDeleted(deletedTopic);
-        } else if (record.hasUpdateTopicConfig()) {
-            var u = record.getUpdateTopicConfig();
-            topicManager.onTopicConfigUpdated(u.getTopic(), u.getConfigMap());
+            case PARTITION_CHANGE -> applyPartitionChange(record.getPartitionChange());
+            case CREATE_TOPIC -> {
+                var ct = record.getCreateTopic();
+                var t = ct.getTopic();
+                topicManager.onTopicCommitted(
+                        t.getTopic(),
+                        t.getPartitions(),
+                        t.getReplicationFactor(),
+                        t.getCreatedMillis(),
+                        t.getInternal(),
+                        t.getCompact(),
+                        t.getConfigMap());
+                for (var p : ct.getPartitionChangesList()) {
+                    applyPartitionChange(p);
+                }
+            }
+                // : advance the producer-id counter. ProducerIdRegistry is
+                // idempotent under replay — duplicate / out-of-order applies
+                // cannot regress the counter.
+            case PRODUCER_ID_ASSIGNMENT -> producerIdRegistry.applyAssignment(
+                    record.getProducerIdAssignment().getNextProducerId());
+            case BROKER -> {
+                // : broker-gRPC address discovery.
+                var r = record.getBroker();
+                brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
+            }
+            case DELETE_TOPIC -> {
+                // drop the topic from the catalogue, then let the
+                // broker-level listener evict LogManager cache entries,
+                // delete on-disk segments, and kick the replica-fetcher
+                // reconcile loop so any in-flight fetch against the now-
+                // gone partitions stops promptly.
+                var deletedTopic = record.getDeleteTopic().getTopic();
+                topicManager.onTopicDeleted(deletedTopic);
+                topicDeletionListener.onTopicDeleted(deletedTopic);
+            }
+            case UPDATE_TOPIC_CONFIG -> {
+                var u = record.getUpdateTopicConfig();
+                topicManager.onTopicConfigUpdated(u.getTopic(), u.getConfigMap());
+            }
+                // PartitionRecord is not yet dispatched — unused by any
+                // consumer. KIND_NOT_SET is legal (pre-v4 snapshot frames).
+            case PARTITION, KIND_NOT_SET -> {
+                /* no-op */
+            }
         }
-        // PartitionRecord: not yet dispatched — unused by any consumer.
     }
 
     private void applyPartitionChange(jbroker.proto.raft.PartitionChangeRecord p) {

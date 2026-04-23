@@ -1,0 +1,23 @@
+# Build artefacts + gradle caches — re-created inside the builder stage.
+.git
+.gradle
+build
+**/build
+out
+**/out
+
+# IDE + editor clutter
+.idea
+.vscode
+*.iml
+.DS_Store
+
+# Local runtime state that must NOT leak into container layers.
+var
+var-*
+
+# Planning docs aren't needed for a runtime image.
+.planning
+
+# Learning notes (session-local, not needed in image)
+docs/superpowers/learnings

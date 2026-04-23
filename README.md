@@ -45,6 +45,23 @@ Modules that exist today:
 - **Torn-write recovery** — `FileRaftLog` rehydrates by skipping incomplete trailing frames and hard-caps per-frame payloads at 64 MiB against corrupted length prefixes.
 - **Defensive immutability** — `LogEntry.payload()` returns a defensive copy; equality and hash are content-based via `Arrays.equals`/`Arrays.hashCode`.
 
+## Monitoring (Milestone 9)
+
+Bring up Prometheus + Grafana locally against a running admin-app:
+
+```
+# with admin-app running on localhost:9090 and brokers registered to it
+docker compose -f docker-compose.monitoring.yml --profile monitoring up
+```
+
+- **Prometheus** → `http://localhost:9091` (host port 9091 → container 9090; admin-app keeps 9090)
+- **Grafana** → `http://localhost:3000` (anonymous admin)
+- **Dashboards** — auto-provisioned from `scripts/monitoring/grafana/dashboards/`:
+  - *j-broker Cluster Overview* — produce/fetch throughput + latency percentiles + Raft state per broker
+  - *j-broker Partitions* — ISR size, HWM, per-follower replication lag per (topic, partition)
+
+Prometheus scrapes `admin-app:9090/actuator/prometheus` which exposes the full `jbroker_*` meter family on the cluster — the admin-app's `MetricsScraper` pulls `DescribeMetrics` from every broker every 5s and republishes tagged by `broker_id`.
+
 ## Profiling (Milestone 9)
 
 The broker emits six custom JFR events on hot paths, plus integrates cleanly with `async-profiler`.

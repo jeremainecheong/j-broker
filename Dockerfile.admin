@@ -3,14 +3,17 @@
 # P11.1 — admin UI runtime image. Spring Boot bootJar is self-contained, so
 # the runtime layer is just `java -jar admin-app.jar`.
 
-FROM eclipse-temurin:21-jdk AS builder
+# Base images pinned by digest (2026-04-23) — re-pin when we pull in a
+# deliberate update. Keeps two builds a month apart byte-identical in
+# the base layers.
+FROM eclipse-temurin:21-jdk@sha256:e58e492628c1428ceb838afc1a1b8762673d5eaa09296f560c363daea0fdcf3b AS builder
 WORKDIR /src
 
 COPY . .
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew :admin-app:bootJar -x test --no-daemon
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jre@sha256:ff65ff0d43c73d2b675eb4b758665a5cb487e7df127436a9979f8172c144c819
 LABEL org.opencontainers.image.title="j-broker-admin"
 LABEL org.opencontainers.image.description="j-broker management UI (Thymeleaf + htmx)"
 LABEL org.opencontainers.image.source="https://github.com/jeremainecheong/j-broker"
@@ -30,4 +33,12 @@ ENV SERVER_PORT=15672
 EXPOSE 15672
 
 USER jbroker
+
+# HEALTHCHECK — bash TCP probe on the Spring Boot HTTP port. A deeper
+# check would hit /actuator/health, but curl/wget aren't in the base
+# image and a full TCP accept is enough to know the JVM is alive and
+# Tomcat has bound the port.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+    CMD bash -c 'exec 3<>/dev/tcp/localhost/15672' || exit 1
+
 ENTRYPOINT ["java", "-jar", "/opt/jbroker/admin-app.jar"]

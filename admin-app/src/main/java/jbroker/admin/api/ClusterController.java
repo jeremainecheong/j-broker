@@ -3,6 +3,7 @@ package jbroker.admin.api;
 import java.util.ArrayList;
 import jbroker.admin.client.BrokerAdminClientPool;
 import jbroker.admin.dto.ClusterSummary;
+import jbroker.admin.dto.HealthBadge;
 import jbroker.admin.dto.NodeInfo;
 import jbroker.admin.dto.RestError;
 import jbroker.proto.broker.BrokerInfo;
@@ -44,6 +45,25 @@ public class ClusterController {
     @GetMapping("/nodes")
     public java.util.List<NodeInfo> nodes() {
         return cluster().nodes();
+    }
+
+    /**
+     * tiny payload polled by every admin page's cluster-health badge
+     * (every 5s via htmx). Derived from the existing {@code /cluster} response;
+     * kept as a separate route so browser intermediaries cache it independently
+     * and so a flaky admin-client-pool fallback doesn't knock the whole
+     * cluster page out when all we need is a green/yellow/red hint.
+     */
+    @GetMapping("/health/badge")
+    public HealthBadge healthBadge() {
+        try {
+            return HealthBadge.from(cluster());
+        } catch (Exception e) {
+            // Describe fan-out failed across every broker — we can't tell if
+            // it's a network blip or a dead cluster; render red with a reason
+            // the user can act on.
+            return new HealthBadge("red", "admin unable to reach any broker: " + e.getMessage());
+        }
     }
 
     @GetMapping("/nodes/{id}")

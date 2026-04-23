@@ -463,6 +463,125 @@ tr:hover td {
   flex: 1;
 }
 
+/* Overview dashboard (P11.3) ------------------------------------------ */
+
+.alert-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid;
+  border-radius: var(--radius);
+  font-size: 0.92rem;
+  font-weight: 500;
+}
+.alert-strip.yellow {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-color: var(--warn);
+}
+.alert-strip.red {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+  border-color: var(--bad);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.summary-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.summary-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.summary-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-feature-settings: "tnum" 1;
+  margin-top: 0.15rem;
+}
+
+.summary-sub {
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+}
+
+.spark-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.spark-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem 0.6rem;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.spark-card header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.spark-current {
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-feature-settings: "tnum" 1;
+  margin-left: auto;
+}
+
+.spark-unit {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sparkline {
+  width: 100%;
+  height: 60px;
+  display: block;
+}
+
+.sparkline-stroke {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.sparkline-fill {
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+  stroke: none;
+}
+
 /* Offset-fill colour variants (P11.5 — lag progress bars share the meter) */
 .offset-fill.ok {
   background: var(--ok);

@@ -157,6 +157,21 @@ public final class LogManager implements AutoCloseable {
         return logFor(topic, partition).compactByKey();
     }
 
+    /**
+     * P13.1 — synchronous compaction that no-ops cleanly when this broker
+     * has no open log for {@code (topic, partition)}. Lets the admin
+     * {@code ForceCompactPartition} RPC fan out to every broker and have
+     * non-hosting brokers return without creating stray partition dirs.
+     *
+     * <p>Returns {@code OptionalInt.empty()} when the log isn't open
+     * locally, else the survivor count from {@link Log#compactByKey()}.
+     */
+    public java.util.OptionalInt compactLogNowIfPresent(String topic, int partition) throws IOException {
+        var log = logs.get(topic + "-" + partition);
+        if (log == null) return java.util.OptionalInt.empty();
+        return java.util.OptionalInt.of(log.compactByKey());
+    }
+
     private void runCleaner() {
         long cutoff = System.currentTimeMillis() - config.retentionMillis();
         for (var entry : logs.entrySet()) {

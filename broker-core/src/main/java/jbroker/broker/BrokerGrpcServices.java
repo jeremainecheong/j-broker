@@ -304,6 +304,14 @@ public final class BrokerGrpcServices {
             }
 
             @Override
+            public void forceCompactPartition(
+                    jbroker.proto.broker.ForceCompactPartitionRequest req,
+                    StreamObserver<jbroker.proto.broker.ForceCompactPartitionResponse> out) {
+                out.onNext(handler.forceCompactPartition(req));
+                out.onCompleted();
+            }
+
+            @Override
             public void deleteConsumerGroup(
                     jbroker.proto.broker.DeleteConsumerGroupRequest req,
                     StreamObserver<jbroker.proto.broker.DeleteConsumerGroupResponse> out) {

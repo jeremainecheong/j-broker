@@ -106,6 +106,56 @@ public class TopicsController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * P13.1 — force synchronous compaction on every replica of
+     * {@code (topic, partition)}. Fans out to every broker; each returns its
+     * local survivor count, or {@code -1} if it doesn't host the partition.
+     * Aggregated response reports total survivors summed across hosting
+     * replicas plus the count of brokers that actually compacted.
+     *
+     * <p>404 when no broker hosts the partition (or every broker returned
+     * UNKNOWN_TOPIC / INVALID_PARTITION). The metadata plane is Raft-
+     * replicated so an UNKNOWN_TOPIC reply from one broker means the topic
+     * really doesn't exist.
+     */
+    @PostMapping("/{name}/partitions/{p}/compact")
+    public ResponseEntity<?> forceCompact(@PathVariable("name") String name, @PathVariable("p") int p) {
+        java.util.List<jbroker.proto.broker.ForceCompactPartitionResponse> responses;
+        try {
+            responses = pool.allSuccessful(c -> c.forceCompactPartition(name, p));
+        } catch (IllegalStateException allUnreachable) {
+            throw allUnreachable;
+        }
+        jbroker.proto.broker.Error firstError = null;
+        int keptTotal = 0;
+        int hostingReplicas = 0;
+        for (var r : responses) {
+            if (r.hasError() && r.getError().getCode() != 0) {
+                if (firstError == null) firstError = r.getError();
+                continue;
+            }
+            if (r.getRecordsKept() >= 0) {
+                keptTotal += r.getRecordsKept();
+                hostingReplicas++;
+            }
+        }
+        if (hostingReplicas == 0) {
+            if (firstError != null) {
+                return errorEnvelope(firstError);
+            }
+            // All responses OK but no broker hosts the partition — partition
+            // has no warm log on any replica. Shouldn't happen in practice
+            // unless the partition has literally never been touched.
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(RestError.of(
+                            "NO_REPLICA_HOSTS_PARTITION",
+                            "no broker has an open log for " + name + "/" + p));
+        }
+        return ResponseEntity.ok(new CompactResult(keptTotal, hostingReplicas));
+    }
+
+    public record CompactResult(int recordsKept, int brokersCompacted) {}
+
     @PatchMapping("/{name}/config")
     public ResponseEntity<?> updateConfig(@PathVariable("name") String name, @RequestBody Map<String, String> overlay) {
         var resp = pool.firstNonNotLeader(

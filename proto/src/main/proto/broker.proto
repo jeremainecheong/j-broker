@@ -46,6 +46,11 @@ service Admin {
   // broker; NOT_COORDINATOR hints the admin-app at which broker to retry.
   rpc DeleteConsumerGroup(DeleteConsumerGroupRequest) returns (DeleteConsumerGroupResponse);
   rpc ResetConsumerGroupOffsets(ResetConsumerGroupOffsetsRequest) returns (ResetConsumerGroupOffsetsResponse);
+  // P13.1 — force synchronous compaction on the responding broker's local
+  // copy of (topic, partition). No-ops (records_kept = -1) when the broker
+  // doesn't host a replica. Admin-app fans out to every broker so all
+  // replicas converge to the compacted view.
+  rpc ForceCompactPartition(ForceCompactPartitionRequest) returns (ForceCompactPartitionResponse);
 }
 
 // Phase 8 — read-only admin observability surface. All RPCs answer from
@@ -276,6 +281,22 @@ message ResetConsumerGroupOffsetsResponse {
   int32 suggested_coordinator_id = 3;
   string suggested_coordinator_host = 4;
   int32 suggested_coordinator_port = 5;
+}
+
+// P13.1 — force-compact admin RPC. Sugar over LogManager.compactLogNow so
+// integration tests and the admin-app can prove post-compaction correctness
+// without waiting out the cleaner cadence.
+message ForceCompactPartitionRequest {
+  string topic = 1;
+  int32 partition = 2;
+}
+
+message ForceCompactPartitionResponse {
+  Error error = 1;
+  // Count of survivors after compaction. -1 when this broker has no local
+  // log for (topic, partition) — either it doesn't host a replica or the
+  // log hasn't been opened yet (no produce/fetch has warmed the handle).
+  int32 records_kept = 2;
 }
 
 message ListTopicsRequest {}

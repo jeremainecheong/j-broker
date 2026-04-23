@@ -1,0 +1,372 @@
+/* P11.2 — admin UI shell. Same look in light + dark mode via CSS custom
+ * properties and a prefers-color-scheme override. Every visual token goes
+ * through a --var so new pages and dark-mode future tweaks live in one
+ * place.
+ *
+ * Kept framework-free on purpose: Thymeleaf + htmx + Alpine handle the
+ * dynamism; this file is the entire stylesheet.
+ */
+
+:root {
+  --bg: #f6f7f9;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #fafbfc;
+  --fg: #1b2431;
+  --fg-muted: #65748b;
+  --fg-inverse: #ffffff;
+  --accent: #0a66c2;
+  --accent-subtle: #e7f5ff;
+  --border: #d0d7de;
+  --border-strong: #b8c0ca;
+
+  --ok: #2f9e44;
+  --ok-bg: #d3f9d8;
+  --ok-fg: #2b8a3e;
+  --warn: #e8590c;
+  --warn-bg: #ffe8cc;
+  --warn-fg: #bf4c0c;
+  --bad: #e03131;
+  --bad-bg: #ffe3e3;
+  --bad-fg: #c92a2a;
+
+  --leader-bg: #fff3bf;
+  --leader-fg: #876800;
+  --leader-border: #f08c00;
+  --follower-bg: #e7f5ff;
+  --follower-fg: #1971c2;
+  --follower-border: #228be6;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-nav: 0 1px 0 rgba(15, 23, 42, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f141a;
+    --bg-elevated: #1a2028;
+    --bg-subtle: #141a22;
+    --fg: #e6ebf2;
+    --fg-muted: #8795a8;
+    --fg-inverse: #0f141a;
+    --accent: #4aa1e3;
+    --accent-subtle: #12304a;
+    --border: #2a3340;
+    --border-strong: #394555;
+
+    --ok: #51cf66;
+    --ok-bg: #143a1f;
+    --ok-fg: #8ce99a;
+    --warn: #ffa94d;
+    --warn-bg: #3a2511;
+    --warn-fg: #ffd8a8;
+    --bad: #ff6b6b;
+    --bad-bg: #3a1414;
+    --bad-fg: #ffa8a8;
+
+    --leader-bg: #3a2d0a;
+    --leader-fg: #ffe066;
+    --leader-border: #ffd43b;
+    --follower-bg: #0f2c42;
+    --follower-fg: #74c0fc;
+    --follower-border: #339af0;
+
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-nav: 0 1px 0 rgba(0, 0, 0, 0.35);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Top nav --------------------------------------------------------------- */
+
+nav.topnav {
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-nav);
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  min-height: 3.25rem;
+}
+
+nav.topnav .brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin-right: 1.25rem;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+nav.topnav a {
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.92rem;
+  padding: 1rem 0.75rem 0.95rem;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+nav.topnav a:hover {
+  color: var(--fg);
+}
+
+/* Active-route indicator — added by app.js based on window.location.pathname */
+nav.topnav a.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+nav.topnav .spacer {
+  flex: 1;
+}
+
+/* Health badge — green/yellow/red pill, polled every 5s via htmx */
+.health-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: default;
+  user-select: none;
+  font-feature-settings: "tnum" 1;
+}
+
+.health-badge::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.health-badge.green {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+.health-badge.yellow {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.health-badge.red {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+}
+.health-badge.loading {
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+}
+.health-badge.loading::before {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Page scaffolding ------------------------------------------------------ */
+
+main {
+  padding: 1.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0 0 1.25rem;
+  font-size: 1.4rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.75rem;
+  font-weight: 600;
+}
+
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow-card);
+}
+
+/* Tables ---------------------------------------------------------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+th,
+td {
+  padding: 0.6rem 0.9rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.92rem;
+}
+
+th {
+  background: var(--bg-subtle);
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+tr:hover td {
+  background: color-mix(in srgb, var(--accent-subtle) 40%, transparent);
+}
+
+/* Pills ----------------------------------------------------------------- */
+
+.pill {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.pill.leader {
+  background: var(--leader-bg);
+  color: var(--leader-fg);
+}
+.pill.follower {
+  background: var(--follower-bg);
+  color: var(--follower-fg);
+}
+.pill.unknown {
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+}
+.pill.alive {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+.pill.dead {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+}
+
+/* Buttons --------------------------------------------------------------- */
+
+.btn {
+  display: inline-block;
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--fg-inverse);
+  text-decoration: none;
+  border: 0;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.9rem;
+  transition: filter 120ms ease;
+}
+.btn:hover {
+  filter: brightness(1.08);
+}
+.btn.secondary {
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+.btn.danger {
+  background: var(--bad);
+}
+
+/* Topology SVG (cluster view) ------------------------------------------ */
+
+.topology svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.node-label {
+  font-size: 12px;
+  fill: var(--fg);
+}
+.node-controller {
+  fill: var(--leader-bg);
+  stroke: var(--leader-border);
+  stroke-width: 2;
+}
+.node-follower {
+  fill: var(--follower-bg);
+  stroke: var(--follower-border);
+  stroke-width: 2;
+}
+.node-dead {
+  fill: var(--bad-bg);
+  stroke: var(--bad);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+
+/* Footer ---------------------------------------------------------------- */
+
+footer {
+  text-align: center;
+  padding: 1.5rem 1rem 2rem;
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+}
+
+/* Utility --------------------------------------------------------------- */
+
+.muted {
+  color: var(--fg-muted);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

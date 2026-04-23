@@ -2,59 +2,66 @@
 <html xmlns:th="http://www.thymeleaf.org">
   <head th:fragment="head (title)">
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title th:text="${title}">j-broker admin</title>
-    <style>
-      :root {
-        --bg: #f6f7f9; --fg: #1b2431; --muted: #65748b; --accent: #0a66c2;
-        --ok: #2f9e44; --warn: #e8590c; --bad: #e03131; --border: #d0d7de;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        background: var(--bg); color: var(--fg);
-      }
-      nav.topnav {
-        background: #fff; border-bottom: 1px solid var(--border);
-        padding: 0.75rem 1.5rem; display: flex; align-items: center; gap: 1.5rem;
-      }
-      nav.topnav a { color: var(--fg); text-decoration: none; font-weight: 500; }
-      nav.topnav a:hover { color: var(--accent); }
-      nav.topnav .brand { font-weight: 700; font-size: 1.1rem; margin-right: 1rem; }
-      main { padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
-      h1 { margin-top: 0; font-size: 1.4rem; }
-      table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--border); }
-      th, td { padding: 0.6rem 0.9rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.95rem; }
-      th { background: #fafbfc; font-weight: 600; color: var(--muted); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.04em; }
-      tr:last-child td { border-bottom: 0; }
-      .pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
-      .pill.leader { background: #fff3bf; color: #876800; }
-      .pill.follower { background: #e7f5ff; color: #1971c2; }
-      .pill.unknown { background: #f1f3f5; color: var(--muted); }
-      .pill.alive { background: #d3f9d8; color: #2b8a3e; }
-      .pill.dead { background: #ffe3e3; color: #c92a2a; }
-      .btn { display: inline-block; padding: 0.4rem 0.8rem; border-radius: 6px; background: var(--accent); color: #fff; text-decoration: none; border: 0; cursor: pointer; }
-      .btn.secondary { background: #fff; color: var(--fg); border: 1px solid var(--border); }
-      .btn.danger { background: var(--bad); }
-      .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
-      .topology svg { display: block; margin: 0 auto; }
-      .node-label { font-size: 12px; fill: var(--fg); }
-      .node-controller { fill: #fff3bf; stroke: #f08c00; stroke-width: 2; }
-      .node-follower { fill: #e7f5ff; stroke: #228be6; stroke-width: 2; }
-      .node-dead { fill: #ffe3e3; stroke: #e03131; stroke-width: 2; stroke-dasharray: 4 3; }
-      footer { text-align: center; padding: 1rem; color: var(--muted); font-size: 0.85rem; }
-    </style>
+    <link rel="stylesheet" th:href="@{/app.css}" />
     <script src="https://unpkg.com/[email protected]/dist/htmx.min.js"></script>
     <script defer src="https://unpkg.com/[email protected]/dist/cdn.min.js"></script>
+    <script defer th:src="@{/app.js}"></script>
   </head>
   <body>
+    <!--
+      P11.2 — shared top-nav fragment. Every page inherits:
+        * brand
+        * route links (highlight via app.js based on window.location.pathname)
+        * live cluster-health badge (htmx polls /api/v1/health/badge every 5s)
+    -->
     <nav class="topnav" th:fragment="topnav">
-      <span class="brand">j-broker admin</span>
-      <a href="/">Cluster</a>
-      <a href="/topics">Topics</a>
-      <a href="/groups">Groups</a>
-      <a href="/raft">Raft</a>
-      <a href="/metrics">Metrics</a>
+      <span class="brand">j-broker</span>
+      <a href="/" data-nav>Cluster</a>
+      <a href="/topics" data-nav>Topics</a>
+      <a href="/groups" data-nav>Groups</a>
+      <a href="/raft" data-nav>Raft</a>
+      <a href="/metrics" data-nav>Metrics</a>
+      <span class="spacer"></span>
+      <!--
+        The badge fragment below replaces itself on every response, so
+        hx-swap="outerHTML" + the same outer wrapper means the pill keeps
+        its title/colour even while the in-flight request resolves.
+      -->
+      <span
+        id="cluster-health-badge"
+        class="health-badge loading"
+        hx-get="/ui/health/badge"
+        hx-trigger="load, every 5s"
+        hx-swap="outerHTML"
+        hx-target="this"
+        title="Cluster health — updates every 5s"
+      >
+        checking…
+      </span>
     </nav>
+
+    <!--
+      P11.2 — badge-response fragment. The /api/v1/health/badge endpoint
+      returns JSON by default, so we expose a tiny Thymeleaf fragment that
+      the UI re-renders into the nav on each htmx tick. Wire via a
+      @GetMapping(produces = "text/html") in a dedicated view controller so
+      the JSON route stays machine-readable.
+    -->
+    <span
+      th:fragment="badge (badge)"
+      id="cluster-health-badge"
+      th:classappend="${badge.status()}"
+      class="health-badge"
+      th:attr="title=${badge.reason()}"
+      hx-get="/ui/health/badge"
+      hx-trigger="every 5s"
+      hx-swap="outerHTML"
+      hx-target="this"
+      th:text="${badge.status()}"
+    >
+      green
+    </span>
   </body>
 </html>

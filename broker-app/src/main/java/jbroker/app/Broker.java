@@ -137,6 +137,7 @@ public final class Broker implements AutoCloseable {
     private final ScheduledExecutorService isrTicker;
     private final ScheduledExecutorService registrationTicker;
     private final ScheduledExecutorService fencerTicker;
+    private final ScheduledExecutorService balancerTicker;
     private final jbroker.broker.BrokerRegistry brokerRegistry;
     private final jbroker.broker.BrokerLiveness brokerLiveness;
     private final jbroker.broker.BrokerHeartbeatSender heartbeatSender;
@@ -155,6 +156,7 @@ public final class Broker implements AutoCloseable {
             ScheduledExecutorService isrTicker,
             ScheduledExecutorService registrationTicker,
             ScheduledExecutorService fencerTicker,
+            ScheduledExecutorService balancerTicker,
             jbroker.broker.BrokerRegistry brokerRegistry,
             jbroker.broker.BrokerLiveness brokerLiveness,
             jbroker.broker.BrokerHeartbeatSender heartbeatSender,
@@ -171,6 +173,7 @@ public final class Broker implements AutoCloseable {
         this.isrTicker = isrTicker;
         this.registrationTicker = registrationTicker;
         this.fencerTicker = fencerTicker;
+        this.balancerTicker = balancerTicker;
         this.brokerRegistry = brokerRegistry;
         this.brokerLiveness = brokerLiveness;
         this.heartbeatSender = heartbeatSender;
@@ -222,7 +225,12 @@ public final class Broker implements AutoCloseable {
         // new leader, record (epoch, current_leo) in the partition's
         // LeaderEpochCheckpoint so OffsetsForLeaderEpoch can answer.
         int selfId = config.selfId().value();
+        // track the most recent leader-change wall-clock so the
+        // PreferredLeaderBalancer can skip proposals during periods of
+        // churn (stability window).
+        var lastLeaderChangeMillis = new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
         MetadataStateMachine.LeaderEpochListener leaderEpochListener = (topic, partition, epoch, leaderId) -> {
+            lastLeaderChangeMillis.set(System.currentTimeMillis());
             if (leaderId == selfId) {
                 try {
                     var leo = logManager.logFor(topic, partition).nextOffset();
@@ -618,6 +626,60 @@ public final class Broker implements AutoCloseable {
                 /*period*/ 250,
                 TimeUnit.MILLISECONDS);
 
+        // PreferredLeaderBalancer ticker. On the active controller
+        // only, every 15s: if no leader change happened in the last 30s,
+        // for every partition whose preferred replica (replicas[0]) is in
+        // ISR but isn't the current leader, propose a PartitionChangeRecord
+        // moving leadership back. Stops partition leadership from drifting
+        // onto a single broker after a wave of failovers.
+        var preferredBalancer = new jbroker.broker.controller.PreferredLeaderBalancer(
+                topicManager,
+                () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
+                lastLeaderChangeMillis::get,
+                TimeUnit.SECONDS.toMillis(30));
+        var balancerTicker = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "preferred-leader-balancer-" + config.selfId().value());
+            t.setDaemon(true);
+            return t;
+        });
+        balancerTicker.scheduleWithFixedDelay(
+                () -> {
+                    try {
+                        for (var proposal : preferredBalancer.proposeRebalances(System.currentTimeMillis())) {
+                            var ps = topicManager.partitionState(proposal.topic(), proposal.partition())
+                                    .orElse(null);
+                            if (ps == null) continue;
+                            var record = jbroker.proto.raft.PartitionChangeRecord.newBuilder()
+                                    .setTopic(proposal.topic())
+                                    .setPartition(proposal.partition())
+                                    .setLeader(proposal.newLeader())
+                                    .addAllIsr(ps.isr())
+                                    .addAllReplicas(ps.replicas())
+                                    .setLeaderEpoch(proposal.leaderEpoch())
+                                    .setPartitionEpoch(0)
+                                    .build();
+                            var payload = jbroker.proto.raft.MetadataRecord.newBuilder()
+                                    .setPartitionChange(record)
+                                    .build()
+                                    .toByteArray();
+                            raftDriver.propose(payload);
+                            log.info(
+                                    "preferred-leader: {}-{} → broker {} (epoch {})",
+                                    proposal.topic(),
+                                    proposal.partition(),
+                                    proposal.newLeader(),
+                                    proposal.leaderEpoch());
+                        }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
+                        log.debug("preferred-leader balancer tick failed, retrying", e);
+                    }
+                },
+                /*initialDelay*/ 15,
+                /*period*/ 15,
+                TimeUnit.SECONDS);
+
         // Point-to-point heartbeat sender: every broker periodically
         // pings every peer (excluding self) with its current metadata
         // offset. Receivers update their BrokerLiveness maps directly.
@@ -657,6 +719,7 @@ public final class Broker implements AutoCloseable {
                 isrTicker,
                 registrationTicker,
                 fencerTicker,
+                balancerTicker,
                 brokerRegistry,
                 brokerLiveness,
                 heartbeatSender,
@@ -782,6 +845,7 @@ public final class Broker implements AutoCloseable {
         isrTicker.shutdownNow();
         registrationTicker.shutdownNow();
         fencerTicker.shutdownNow();
+        balancerTicker.shutdownNow();
         brokerServer.shutdownNow();
         raftDriver.close();
         heartbeatSender.close();
@@ -801,10 +865,12 @@ public final class Broker implements AutoCloseable {
         isrTicker.shutdownNow();
         registrationTicker.shutdownNow();
         fencerTicker.shutdownNow();
+        balancerTicker.shutdownNow();
         try {
             isrTicker.awaitTermination(1, TimeUnit.SECONDS);
             registrationTicker.awaitTermination(1, TimeUnit.SECONDS);
             fencerTicker.awaitTermination(1, TimeUnit.SECONDS);
+            balancerTicker.awaitTermination(1, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

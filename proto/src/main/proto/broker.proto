@@ -569,4 +569,31 @@ message DescribeMetricsResponse {
   int64 fetch_p99_nanos = 14;
   int64 fetch_p999_nanos = 15;
   int64 incremental_fetch_hits = 16;
+  // Raft observability snapshot. Leader reports accurate values;
+  // followers report whatever their RaftCore knows (still correct, just
+  // behind). Absent on brokers that aren't Raft voters.
+  int64 raft_current_term = 17;
+  int64 raft_commit_index = 18;
+  int64 raft_last_applied = 19;
+  int64 raft_last_log_index = 20;
+  // per-partition metrics. Leader-hosted partitions only; the
+  // leader is the only broker with complete ISR + HWM info. Follower
+  // brokers omit partitions they don't lead.
+  repeated PartitionMetrics partition_metrics = 21;
+}
+
+message PartitionMetrics {
+  string topic = 1;
+  int32 partition = 2;
+  int32 isr_size = 3;
+  // HWM computed via FollowerStateTracker.computeHwm — monotonic
+  // min(LEO) across ISR. 0 when any ISR follower has never fetched.
+  int64 hwm = 4;
+  // Leader's local log end offset; used as the numerator when admin UI
+  // displays replication lag.
+  int64 leader_log_end_offset = 5;
+  // Per-follower byte lag (leaderLEO - followerLEO) * approx-record-size.
+  // Zero for the leader itself. Only includes brokers currently in ISR
+  // or configured as replicas.
+  map<int32, int64> replication_lag_by_follower = 6;
 }

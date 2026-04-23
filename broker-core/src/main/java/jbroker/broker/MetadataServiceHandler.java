@@ -57,6 +57,7 @@ public final class MetadataServiceHandler {
     private final Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability;
     private final BrokerMetrics brokerMetrics;
     private final jbroker.broker.events.BrokerEventPublisher eventPublisher;
+    private final jbroker.broker.metrics.PartitionMetricsProvider partitionMetricsProvider;
 
     /** Default staleness threshold: matches {@code BrokerFencer}'s 3s default. */
     public static final long DEFAULT_STALENESS_NANOS = TimeUnit.SECONDS.toNanos(3);
@@ -158,7 +159,7 @@ public final class MetadataServiceHandler {
                 null);
     }
 
-    /** full constructor with event publisher for the streaming SSE RPC. */
+    /** back-compat constructor — adds the partition metrics provider. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -176,6 +177,45 @@ public final class MetadataServiceHandler {
             Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability,
             BrokerMetrics brokerMetrics,
             jbroker.broker.events.BrokerEventPublisher eventPublisher) {
+        this(
+                selfBrokerId,
+                brokerRegistry,
+                brokerLiveness,
+                selfRole,
+                currentLeaderId,
+                currentTerm,
+                metadataOffset,
+                nowNanos,
+                stalenessThresholdNanos,
+                topicManager,
+                logManager,
+                groupCoordinator,
+                offsetCache,
+                raftObservability,
+                brokerMetrics,
+                eventPublisher,
+                jbroker.broker.metrics.PartitionMetricsProvider.NOOP);
+    }
+
+    /** full constructor including partition metrics provider. */
+    public MetadataServiceHandler(
+            int selfBrokerId,
+            BrokerRegistry brokerRegistry,
+            BrokerLiveness brokerLiveness,
+            Supplier<String> selfRole,
+            Supplier<Optional<Integer>> currentLeaderId,
+            LongSupplier currentTerm,
+            LongSupplier metadataOffset,
+            Supplier<Long> nowNanos,
+            long stalenessThresholdNanos,
+            TopicManager topicManager,
+            jbroker.storage.LogManager logManager,
+            jbroker.broker.group.GroupCoordinator groupCoordinator,
+            jbroker.broker.group.OffsetCache offsetCache,
+            Supplier<jbroker.raft.core.RaftCore.Observability> raftObservability,
+            BrokerMetrics brokerMetrics,
+            jbroker.broker.events.BrokerEventPublisher eventPublisher,
+            jbroker.broker.metrics.PartitionMetricsProvider partitionMetricsProvider) {
         this.selfBrokerId = selfBrokerId;
         this.brokerRegistry = brokerRegistry;
         this.brokerLiveness = brokerLiveness;
@@ -192,6 +232,9 @@ public final class MetadataServiceHandler {
         this.raftObservability = raftObservability;
         this.brokerMetrics = brokerMetrics;
         this.eventPublisher = eventPublisher;
+        this.partitionMetricsProvider = partitionMetricsProvider == null
+                ? jbroker.broker.metrics.PartitionMetricsProvider.NOOP
+                : partitionMetricsProvider;
     }
 
     /** back-compat overload — no TopicManager / LogManager wired. */
@@ -519,7 +562,7 @@ public final class MetadataServiceHandler {
         var t = brokerMetrics.throughputSnapshot();
         var pl = brokerMetrics.produceLatencySnapshot();
         var fl = brokerMetrics.fetchLatencySnapshot();
-        return DescribeMetricsResponse.newBuilder()
+        var builder = DescribeMetricsResponse.newBuilder()
                 .setError(ErrorCode.OK)
                 .setBrokerId(selfBrokerId)
                 .setWindowSeconds(t.windowSeconds())
@@ -535,8 +578,30 @@ public final class MetadataServiceHandler {
                 .setFetchP50Nanos(fl.p50Nanos())
                 .setFetchP99Nanos(fl.p99Nanos())
                 .setFetchP999Nanos(fl.p999Nanos())
-                .setIncrementalFetchHits(brokerMetrics.incrementalFetchHits())
-                .build();
+                .setIncrementalFetchHits(brokerMetrics.incrementalFetchHits());
+        // Raft observability (null when no voter; values defaulted to 0).
+        if (raftObservability != null) {
+            var obs = raftObservability.get();
+            if (obs != null) {
+                builder.setRaftCurrentTerm(obs.currentTerm())
+                        .setRaftCommitIndex(obs.commitIndex())
+                        .setRaftLastApplied(obs.lastApplied())
+                        .setRaftLastLogIndex(obs.lastLogIndex());
+            }
+        }
+        // per-partition metrics (leader-only).
+        for (var s : partitionMetricsProvider.snapshot()) {
+            var p = jbroker.proto.broker.PartitionMetrics.newBuilder()
+                    .setTopic(s.topic())
+                    .setPartition(s.partition())
+                    .setIsrSize(s.isrSize())
+                    .setHwm(s.hwm())
+                    .setLeaderLogEndOffset(s.leaderLogEndOffset())
+                    .putAllReplicationLagByFollower(s.replicationLagBytes())
+                    .build();
+            builder.addPartitionMetrics(p);
+        }
+        return builder.build();
     }
 
     /** Static helper: turn a {@code Role} enum name into the string the spec uses. */

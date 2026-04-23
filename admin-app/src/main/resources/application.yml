@@ -15,7 +15,12 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # /actuator/prometheus serves cluster + admin-process metrics.
+        include: health,info,prometheus
+  prometheus:
+    metrics:
+      export:
+        enabled: true
 
 jbroker:
   admin:
@@ -27,3 +32,8 @@ jbroker:
     # stream and does not attempt a Redis connection. Set to e.g.
     # "redis://localhost:6379" in production.
     url: ""
+  metrics:
+    scrape:
+      # MetricsScraper cadence in seconds. Prometheus scrape
+      # interval in prometheus.yml should be ≥ this value.
+      intervalSeconds: 5

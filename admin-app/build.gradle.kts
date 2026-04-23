@@ -17,6 +17,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-thymeleaf")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    // Prometheus scrape endpoint at /actuator/prometheus. Auto-wires
+    // a PrometheusMeterRegistry bean; PrometheusMetricsBinder reads from
+    // MetricsScraper and emits jbroker_* meters.
+    implementation("io.micrometer:micrometer-registry-prometheus")
 
     // Broker-app is only used by tests: ITs boot an in-process Broker to
     // point the admin-app at. Production deployments run admin-app + broker

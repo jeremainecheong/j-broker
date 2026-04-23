@@ -67,13 +67,45 @@ public final class Broker implements AutoCloseable {
             List<VoterAddress> voters,
             int consumerOffsetsPartitions,
             /** when ≥ 0, the broker binds a cooperative chaos HTTP server on this port. */
-            int chaosPort) {
+            int chaosPort,
+            /** PreferredLeaderBalancer tick interval, ms. Default 15_000. */
+            long balancerTickMillis,
+            /** PreferredLeaderBalancer stability window, ms. Default 30_000. */
+            long balancerStabilityMillis) {
         public Config {
             voters = List.copyOf(voters);
             if (consumerOffsetsPartitions < 1) {
                 throw new IllegalArgumentException(
                         "consumerOffsetsPartitions must be ≥ 1, got " + consumerOffsetsPartitions);
             }
+            if (balancerTickMillis < 1L) {
+                throw new IllegalArgumentException("balancerTickMillis must be ≥ 1, got " + balancerTickMillis);
+            }
+            if (balancerStabilityMillis < 0L) {
+                throw new IllegalArgumentException(
+                        "balancerStabilityMillis must be ≥ 0, got " + balancerStabilityMillis);
+            }
+        }
+
+        /** pre-existing-call-sites overload: balancer timings default to 15_000 / 30_000. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    15_000L,
+                    30_000L);
         }
 
         /** 5-arg ctor back-compat: chaos disabled (chaosPort = -1). */
@@ -88,7 +120,16 @@ public final class Broker implements AutoCloseable {
         }
 
         public Config withChaosPort(int port) {
-            return new Config(selfId, dataDir, raftPort, brokerPort, voters, consumerOffsetsPartitions, port);
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    port,
+                    balancerTickMillis,
+                    balancerStabilityMillis);
         }
 
         /**
@@ -124,7 +165,35 @@ public final class Broker implements AutoCloseable {
         }
 
         public Config withConsumerOffsetsPartitions(int n) {
-            return new Config(selfId, dataDir, raftPort, brokerPort, voters, n);
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    n,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis);
+        }
+
+        /**
+         * override the preferred-leader balancer's tick interval and
+         * stability window. Integration tests that need to observe a rebalance
+         * within a few seconds compress both. Production callers should leave
+         * this alone (defaults 15s / 30s).
+         */
+        public Config withBalancerTiming(long tickMillis, long stabilityMillis) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    tickMillis,
+                    stabilityMillis);
         }
     }
 
@@ -631,16 +700,20 @@ public final class Broker implements AutoCloseable {
                 TimeUnit.MILLISECONDS);
 
         // PreferredLeaderBalancer ticker. On the active controller
-        // only, every 15s: if no leader change happened in the last 30s,
-        // for every partition whose preferred replica (replicas[0]) is in
-        // ISR but isn't the current leader, propose a PartitionChangeRecord
-        // moving leadership back. Stops partition leadership from drifting
-        // onto a single broker after a wave of failovers.
+        // only, every {@code balancerTickMillis}: if no leader change happened
+        // in the last {@code balancerStabilityMillis}, for every partition
+        // whose preferred replica (replicas[0]) is in ISR but isn't the
+        // current leader, propose a PartitionChangeRecord moving leadership
+        // back. Stops partition leadership from drifting onto a single
+        // broker after a wave of failovers.
+        //
+        // timings pulled from config so integration tests can
+        // compress the schedule. Defaults remain 15s tick / 30s stability.
         var preferredBalancer = new jbroker.broker.controller.PreferredLeaderBalancer(
                 topicManager,
                 () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
                 lastLeaderChangeMillis::get,
-                TimeUnit.SECONDS.toMillis(30));
+                config.balancerStabilityMillis());
         var balancerTicker = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "preferred-leader-balancer-" + config.selfId().value());
             t.setDaemon(true);
@@ -680,9 +753,9 @@ public final class Broker implements AutoCloseable {
                         log.debug("preferred-leader balancer tick failed, retrying", e);
                     }
                 },
-                /*initialDelay*/ 15,
-                /*period*/ 15,
-                TimeUnit.SECONDS);
+                /*initialDelay*/ config.balancerTickMillis(),
+                /*period*/ config.balancerTickMillis(),
+                TimeUnit.MILLISECONDS);
 
         // Point-to-point heartbeat sender: every broker periodically
         // pings every peer (excluding self) with its current metadata
@@ -766,6 +839,45 @@ public final class Broker implements AutoCloseable {
     /** Test-only accessor for assertion-driven inspection of per-broker logs. */
     public LogManager logManager() {
         return logManager;
+    }
+
+    /**
+     * test-only hook for staging a {@code PartitionChangeRecord}
+     * through the local Raft driver. Integration tests that need to
+     * produce a specific cluster topology (e.g. leader ≠ replicas[0] so
+     * the PreferredLeaderBalancer has something to rebalance) call this
+     * on the current Raft leader. Blocks until the local state machine
+     * has applied the record.
+     *
+     * <p>Package-private on purpose — production callers should go
+     * through {@code AdminHandler} or one of the controller tickers.
+     */
+    void proposePartitionChangeForTest(
+            String topic,
+            int partition,
+            int leader,
+            java.util.List<Integer> isr,
+            java.util.List<Integer> replicas,
+            int leaderEpoch,
+            int partitionEpoch,
+            long timeoutMillis)
+            throws Exception {
+        var pc = jbroker.proto.raft.PartitionChangeRecord.newBuilder()
+                .setTopic(topic)
+                .setPartition(partition)
+                .setLeader(leader)
+                .addAllIsr(isr)
+                .addAllReplicas(replicas)
+                .setLeaderEpoch(leaderEpoch)
+                .setPartitionEpoch(partitionEpoch)
+                .build();
+        byte[] payload = jbroker.proto.raft.MetadataRecord.newBuilder()
+                .setPartitionChange(pc)
+                .build()
+                .toByteArray();
+        var fut = waitingSm.awaitApply(payload);
+        raftDriver.propose(payload);
+        fut.get(timeoutMillis, TimeUnit.MILLISECONDS);
     }
 
     /**

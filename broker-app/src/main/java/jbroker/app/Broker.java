@@ -405,14 +405,20 @@ public final class Broker implements AutoCloseable {
                     config.selfId().value(),
                     config.chaosPort(),
                     eventPublisher,
-                    // Force-election isn't yet wired into the raft core; the
-                    // endpoint currently just logs + publishes the SSE event.
-                    // Reserved for a follow-up once RaftDriver exposes a
-                    // deadline-to-now hook. Deliberately a no-op so the
-                    // the spec endpoint surface is complete.
-                    () -> log.info(
-                            "chaos: force-election requested on broker {}",
-                            config.selfId().value()),
+                    // force-election now wired. RaftDriver queues a
+                    // self-addressed TimeoutNow so the core jumps straight to
+                    // startElection at term+1 (skipping pre-vote). No-op on
+                    // LEADER.
+                    () -> {
+                        try {
+                            raftDriver.forceElection();
+                            log.info(
+                                    "chaos: force-election triggered on broker {}",
+                                    config.selfId().value());
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
+                    },
                     () -> System.exit(137));
             log.info("chaos HTTP server listening on port {}", chaosHttp.port());
         }

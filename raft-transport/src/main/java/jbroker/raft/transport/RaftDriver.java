@@ -162,6 +162,24 @@ public final class RaftDriver implements AutoCloseable {
         queue.put(new PendingEvent(new RaftEvent.TransferLeadership(target), null));
     }
 
+    /**
+     * / chaos force-election — queues a self-addressed {@code TimeoutNow}
+     * so the core short-circuits the pre-vote + election-timeout wait and
+     * jumps straight to {@code startElection} at {@code currentTerm + 1}.
+     *
+     * <p>No-op when self is already LEADER — a leader force-electing itself
+     * would gratuitously bump the term and disrupt the cluster.
+     *
+     * <p>The election may still fail if a healthy leader holds more recent
+     * log entries or if peers reject the vote (stale log). That's the
+     * intended semantics: "force an election attempt" — not "force a win".
+     */
+    public void forceElection() throws InterruptedException {
+        if (core.role() == jbroker.raft.core.Role.LEADER) return;
+        var term = core.currentTerm();
+        queue.put(new PendingEvent(new RaftEvent.TimeoutNow(selfId, term, clock.nanoTime()), null));
+    }
+
     public jbroker.proto.raft.TimeoutNowResponse handleTimeoutNow(jbroker.proto.raft.TimeoutNowRequest req)
             throws InterruptedException {
         queue.put(new PendingEvent(

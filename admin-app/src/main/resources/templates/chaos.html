@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Chaos')}"></head>
+  <body>
+    <nav th:replace="~{fragments/shell :: topnav}"></nav>
+    <main>
+      <h1>Chaos</h1>
+      <div class="card" style="background: var(--warn-bg); border-color: var(--warn); color: var(--warn-fg);">
+        <strong>⚠ Live failure injection.</strong> Buttons on this page kill, pause, or
+        network-partition real brokers. Use against dev clusters only. Each action
+        posts to the cooperative chaos endpoint on the target broker
+        (<code>JBROKER_CHAOS_PORT</code> must be set when launching the compose
+        stack — see <code>docker-compose.yml</code>).
+      </div>
+
+      <div class="chaos-layout">
+        <section class="chaos-brokers">
+          <h2>Brokers</h2>
+          <div class="chaos-card-grid">
+            <article
+              class="chaos-card"
+              th:each="n : ${cluster.nodes()}"
+              th:attr="data-broker-id=${n.brokerId()}">
+              <header class="chaos-card-head">
+                <span class="chaos-broker-name" th:text="|broker ${n.brokerId()}|">broker 1</span>
+                <span class="pill" th:classappend="${n.alive() ? 'alive' : 'dead'}"
+                      th:text="${n.alive() ? 'alive' : 'dead'}">alive</span>
+              </header>
+              <div class="muted chaos-broker-host" th:text="|${n.host()}:${n.port()}|">-</div>
+              <div class="chaos-actions">
+                <button
+                  class="btn danger"
+                  th:attr="hx-post=@{/api/v1/chaos/kill-broker/{id}(id=${n.brokerId()})}"
+                  hx-target="#chaos-flash"
+                  hx-swap="textContent"
+                  title="SIGTERM the broker process (chaos HTTP endpoint calls System.exit)">Kill</button>
+                <button
+                  class="btn secondary"
+                  th:attr="hx-post=@{/api/v1/chaos/pause-broker/{id}(id=${n.brokerId()})}"
+                  hx-target="#chaos-flash"
+                  hx-swap="textContent"
+                  title="Stop responding to RPCs without exiting — simulates a GC pause">Pause</button>
+                <button
+                  class="btn secondary"
+                  th:attr="hx-post=@{/api/v1/chaos/resume-broker/{id}(id=${n.brokerId()})}"
+                  hx-target="#chaos-flash"
+                  hx-swap="textContent"
+                  title="Resume a paused broker">Resume</button>
+                <button
+                  class="btn secondary"
+                  th:attr="hx-post=@{/api/v1/chaos/force-election/{id}(id=${n.brokerId()})}"
+                  hx-target="#chaos-flash"
+                  hx-swap="textContent"
+                  title="Nudge the broker to force a new Raft election (dev-only)">Force election</button>
+              </div>
+            </article>
+          </div>
+
+          <h2 style="margin-top: 1.5rem;">Network partition</h2>
+          <div class="card">
+            <p class="muted" style="margin: 0 0 0.75rem;">
+              Partitions two brokers from each other. Both sides block traffic to/from
+              the peer. Heal clears all partitions cluster-wide.
+            </p>
+            <form
+              class="chaos-partition-form"
+              hx-post="/api/v1/chaos/partition"
+              hx-ext="json-enc"
+              hx-target="#chaos-flash"
+              hx-swap="textContent">
+              <label>From
+                <select name="from" required>
+                  <option value="" disabled selected>broker id…</option>
+                  <option th:each="n : ${cluster.nodes()}"
+                          th:value="${n.brokerId()}"
+                          th:text="|broker ${n.brokerId()}|">broker 1</option>
+                </select>
+              </label>
+              <label>To
+                <select name="to" required>
+                  <option value="" disabled selected>broker id…</option>
+                  <option th:each="n : ${cluster.nodes()}"
+                          th:value="${n.brokerId()}"
+                          th:text="|broker ${n.brokerId()}|">broker 2</option>
+                </select>
+              </label>
+              <button type="submit" class="btn danger">Partition</button>
+              <button
+                type="button"
+                class="btn secondary"
+                hx-post="/api/v1/chaos/heal-partition"
+                hx-target="#chaos-flash"
+                hx-swap="textContent">Heal all</button>
+            </form>
+          </div>
+
+          <div id="chaos-flash" class="chaos-flash" aria-live="polite"></div>
+        </section>
+
+        <aside
+          class="chaos-rail"
+          x-data="chaosFeed()"
+          x-init="subscribe()">
+          <header class="chaos-rail-head">
+            <h2 style="margin:0;">Live events</h2>
+            <span class="muted">SSE · last <span x-text="events.length"></span></span>
+          </header>
+          <ul class="chaos-event-list">
+            <template x-for="e in events" :key="e.id">
+              <li class="chaos-event">
+                <span class="chaos-event-type" x-text="e.type"></span>
+                <span class="chaos-event-body" x-text="e.body"></span>
+                <time class="muted" x-text="e.time"></time>
+              </li>
+            </template>
+            <li class="muted chaos-event-empty" x-show="events.length === 0">
+              no events yet — trigger a chaos action to see the SSE feed come alive
+            </li>
+          </ul>
+        </aside>
+      </div>
+    </main>
+    <footer>j-broker admin</footer>
+
+    <script src="https://unpkg.com/[email protected]/json-enc.js"></script>
+    <script th:src="@{/chaos.js}" defer></script>
+  </body>
+</html>

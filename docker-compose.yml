@@ -1,0 +1,114 @@
+# P11.1 — 3-broker j-broker cluster + admin UI on port 15672.
+#
+#   docker compose up             → build images + start the cluster
+#   open http://localhost:15672   → admin UI (RabbitMQ convention)
+#
+# Broker gRPC is exposed on 9092/9093/9094 (Kafka convention, one port per
+# broker). Raft peer traffic stays inside the compose bridge network — there
+# is no reason to expose 9192-9194 to the host unless you are debugging Raft
+# wire traffic with a tcpdump sidecar.
+#
+# Chaos control plane (broker-level kill/pause/partition REST endpoints) is
+# disabled by default (chaos-port = -1). To enable, run:
+#   JBROKER_CHAOS_PORT=9100 docker compose up
+# The three brokers then bind 9100 internally and the host maps them to
+# 9100/9101/9102. (They all bind the same internal 9100 because each broker
+# is a distinct container — no port collision.)
+#
+# Monitoring (Prometheus + Grafana) lives in docker-compose.monitoring.yml as
+# a profile; bring it up with:
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml \
+#                  --profile monitoring up
+
+x-broker-common: &broker-common
+  build:
+    context: .
+    dockerfile: Dockerfile.broker
+  image: jbroker-broker:local
+  restart: unless-stopped
+  networks: [jbroker]
+
+services:
+  broker1:
+    <<: *broker-common
+    container_name: jbroker-broker1
+    hostname: broker1
+    ports:
+      - "9092:9092"
+      - "9100:9100"
+    volumes:
+      - broker1-data:/var/lib/jbroker
+    command: >
+      server
+      --id 1
+      --data-dir /var/lib/jbroker
+      --broker-port 9092
+      --raft-port 9192
+      --voters 1@broker1:9192:9092,2@broker2:9192:9092,3@broker3:9192:9092
+      --chaos-port ${JBROKER_CHAOS_PORT:--1}
+
+  broker2:
+    <<: *broker-common
+    container_name: jbroker-broker2
+    hostname: broker2
+    ports:
+      - "9093:9092"
+      - "9101:9100"
+    volumes:
+      - broker2-data:/var/lib/jbroker
+    command: >
+      server
+      --id 2
+      --data-dir /var/lib/jbroker
+      --broker-port 9092
+      --raft-port 9192
+      --voters 1@broker1:9192:9092,2@broker2:9192:9092,3@broker3:9192:9092
+      --chaos-port ${JBROKER_CHAOS_PORT:--1}
+
+  broker3:
+    <<: *broker-common
+    container_name: jbroker-broker3
+    hostname: broker3
+    ports:
+      - "9094:9092"
+      - "9102:9100"
+    volumes:
+      - broker3-data:/var/lib/jbroker
+    command: >
+      server
+      --id 3
+      --data-dir /var/lib/jbroker
+      --broker-port 9092
+      --raft-port 9192
+      --voters 1@broker1:9192:9092,2@broker2:9192:9092,3@broker3:9192:9092
+      --chaos-port ${JBROKER_CHAOS_PORT:--1}
+
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+    image: jbroker-admin:local
+    container_name: jbroker-admin
+    restart: unless-stopped
+    networks: [jbroker]
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+    ports:
+      - "15672:15672"
+    environment:
+      SERVER_PORT: "15672"
+      # Spring property jbroker.admin.brokers ← JBROKER_ADMIN_BROKERS (Spring
+      # Boot's relaxed binding). MetricsScraper dials these on a 5s cadence
+      # so the UI does not need a deterministic broker-ready signal.
+      JBROKER_ADMIN_BROKERS: "broker1:9092,broker2:9092,broker3:9092"
+
+networks:
+  jbroker:
+    name: jbroker-net
+
+volumes:
+  broker1-data:
+  broker2-data:
+  broker3-data:

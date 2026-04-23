@@ -1,0 +1,49 @@
+{
+  "title": "j-broker Partitions",
+  "uid": "jbroker-partitions",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "ISR size per partition",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "jbroker_isr_size",
+          "legendFormat": "{{topic}}-{{partition}} @ broker {{broker_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "High watermark per partition",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "jbroker_hwm",
+          "legendFormat": "{{topic}}-{{partition}} @ broker {{broker_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Replication lag (records) by follower",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "jbroker_replication_lag_records",
+          "legendFormat": "{{topic}}-{{partition}} follower {{follower_id}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

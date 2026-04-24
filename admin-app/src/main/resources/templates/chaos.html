@@ -148,26 +148,31 @@
           <div id="chaos-flash" class="chaos-flash" aria-live="polite"></div>
         </section>
 
-        <!--
+        <!--/*
           Live events rail. Alpine component registered via alpine:init so
           the x-data reference is resolvable at init time (see chaos.js).
-        -->
+          Every events access defensively falls back to [] — Alpine 3.13.5
+          emits ~80 "Cannot read properties of undefined" warnings during
+          the first DOM walk when the reactive proxy for events hasn't
+          settled yet. The fallback is a no-op once the component is live
+          but kills the init-time noise reliably.
+        */-->
         <aside
           class="chaos-rail"
           x-data="chaosFeed">
           <header class="chaos-rail-head">
             <h2 style="margin:0;">Live events</h2>
-            <span class="muted">SSE · last <span x-text="events.length"></span></span>
+            <span class="muted">SSE · last <span x-text="(events || []).length"></span></span>
           </header>
           <ul class="chaos-event-list">
-            <template x-for="e in events" :key="e.id">
+            <template x-for="e in (events || [])" :key="e.id">
               <li class="chaos-event">
                 <span class="chaos-event-type" x-text="e.type"></span>
                 <span class="chaos-event-body" x-text="e.body"></span>
                 <time class="muted" x-text="e.time"></time>
               </li>
             </template>
-            <li class="muted chaos-event-empty" x-show="events.length === 0">
+            <li class="muted chaos-event-empty" x-show="(events || []).length === 0">
               no events yet — trigger a chaos action to see the SSE feed come alive
             </li>
           </ul>

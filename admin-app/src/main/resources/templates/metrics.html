@@ -6,14 +6,28 @@
     <main>
       <h1>Metrics</h1>
 
+      <!--/*
+        Chart.js responsive sizing needs a parent with explicit height and
+        the canvas anchored to it. Without the wrapper + position:relative
+        Chart.js computes a tiny layout on first paint (~100x30) because
+        the HTML width/height attributes resolve the drawing-surface size
+        but not the CSS display size, and the card has no height floor of
+        its own. Pinning the wrapper to 280px height and the canvas to
+        100%/100% keeps Chart.js painting the full card width at a stable
+        aspect.
+      */-->
       <div class="card">
         <h2 style="margin-top:0; font-size:1.05rem;">Throughput</h2>
-        <canvas id="throughputChart" width="800" height="240" data-testid="throughput-chart"></canvas>
+        <div class="chart-frame">
+          <canvas id="throughputChart" data-testid="throughput-chart"></canvas>
+        </div>
       </div>
 
       <div class="card">
         <h2 style="margin-top:0; font-size:1.05rem;">Latency (p99, microseconds)</h2>
-        <canvas id="latencyChart" width="800" height="240" data-testid="latency-chart"></canvas>
+        <div class="chart-frame">
+          <canvas id="latencyChart" data-testid="latency-chart"></canvas>
+        </div>
       </div>
 
       <!--

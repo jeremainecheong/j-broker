@@ -46,8 +46,7 @@
       </div>
 
       <!-- Alpine.js-powered create-topic modal -->
-      <div x-show="showCreate" x-cloak
-           style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:100;">
+      <div class="modal-overlay" x-show="showCreate" x-cloak>
         <div class="card" style="width:400px;">
           <h2 style="margin-top:0; font-size:1.05rem;">Create topic</h2>
           <form method="post" action="/ui/topics">

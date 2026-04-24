@@ -129,8 +129,7 @@
         x-cloak is REQUIRED — AlpineCloakIT pins this contract so the modal
         doesn't flash on first paint (see app.css [x-cloak] rule).
       -->
-      <div x-show="showEditConfig" x-cloak
-           style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:100;">
+      <div class="modal-overlay" x-show="showEditConfig" x-cloak>
         <div class="card" style="width:480px;">
           <h2 style="margin-top:0; font-size:1.05rem;">Edit config</h2>
           <p class="muted" style="margin-top:0; font-size:0.85rem;">

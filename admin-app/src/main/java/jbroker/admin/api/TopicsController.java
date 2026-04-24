@@ -267,12 +267,17 @@ public class TopicsController {
         for (var ps : r.getPartitionStatesList()) {
             parts.add(toPartitionState(ps));
         }
+        // Creation-time `compact` flag mirrors `internal` and never updates
+        // when cleanup.policy is overlayed later; see TopicSummary.of for
+        // the same derivation on the Topics list.
+        boolean effectiveCompact =
+                r.getCompact() || "compact".equals(r.getConfigMap().get("cleanup.policy"));
         return new TopicDetail(
                 r.getTopic(),
                 r.getPartitions(),
                 r.getReplicationFactor(),
                 r.getInternal(),
-                r.getCompact(),
+                effectiveCompact,
                 r.getCreatedMillis(),
                 r.getConfigMap(),
                 parts);

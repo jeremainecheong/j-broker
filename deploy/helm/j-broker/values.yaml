@@ -1,0 +1,139 @@
+# Default values for the j-broker Helm chart.
+# All values can be overridden via `helm install -f my-values.yaml` or
+# `helm install --set path.to.key=value`.
+
+# Broker cluster — StatefulSet with ordinal-aware Raft voter discovery.
+broker:
+  # Number of broker pods. Each pod gets a fixed ordinal used as the
+  # broker id (ordinal + 1) and as part of its Raft voter DNS name.
+  # Raft majority semantics mean you want an odd count; 3 or 5 are
+  # typical. Changing this on a running release requires manual Raft
+  # voter reconfiguration — plan for it.
+  replicaCount: 3
+  image:
+    repository: jbroker-broker
+    tag: "1.4.0"
+    pullPolicy: IfNotPresent
+  # Per-broker data volume. Each pod gets its own PVC backing
+  # /var/lib/jbroker (Raft state + partition segment files).
+  persistence:
+    enabled: true
+    size: 10Gi
+    # Leave empty to use the cluster default StorageClass.
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  # Port layout inside the pod — these are not externally exposed
+  # unless `service.*` toggles are flipped.
+  ports:
+    grpc: 9092
+    raft: 9192
+  # __consumer_offsets partition count. Kafka convention is 50; the
+  # broker's default. Override for tiny dev clusters.
+  consumerOffsetsPartitions: 50
+  # P15.1 — per-broker advertised hostname template. Rendered per pod
+  # via sprintf (%d → 1-indexed broker id). Leave empty to use the pod's
+  # in-cluster DNS, which is correct for same-namespace clients but
+  # wrong for ingress / NodePort clients. Typical override:
+  #   advertisedHostTemplate: "broker%d.example.com"
+  advertisedHostTemplate: ""
+  advertisedPort: 0  # 0 → falls back to ports.grpc
+  # Extra CLI flags appended to the broker startup command.
+  extraArgs: []
+  # Runtime chaos HTTP control plane. -1 disables; >= 0 binds that port
+  # inside the pod. Not exposed via Service by default.
+  chaosPort: -1
+  podAnnotations: {}
+
+# Admin UI — Deployment serving the Thymeleaf + htmx dashboard on
+# port 15672 (RabbitMQ management convention).
+admin:
+  replicaCount: 1
+  image:
+    repository: jbroker-admin
+    tag: "1.4.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  service:
+    type: ClusterIP
+    port: 15672
+  # Ingress off by default. Flip `enabled: true` + set host for
+  # production deployments behind an HTTPS reverse proxy.
+  ingress:
+    enabled: false
+    className: ""
+    host: jbroker.local
+    path: /
+    pathType: Prefix
+    annotations: {}
+    tls: []
+  # Override the admin-app's broker list (Spring property
+  # jbroker.admin.brokers). Empty → auto-derived from broker.replicaCount
+  # + the headless broker service.
+  brokersOverride: ""
+  podAnnotations: {}
+
+# P15.2 — cluster-wide TLS bundle. Apply via `--set tls.enabled=true`
+# plus a pre-created Secret carrying cert/key/ca.crt PEM files. When
+# enabled, every broker server + every inter-broker client speaks
+# mTLS; the admin-app uses the same bundle to dial brokers.
+tls:
+  enabled: false
+  # Name of a Kubernetes Secret in the same namespace as the release.
+  # Expected keys: ca.crt, tls.crt, tls.key (standard kubernetes.io/tls
+  # layout with an extra ca.crt). Generate via scripts/tls/bootstrap-ca.sh
+  # then `kubectl create secret generic jbroker-tls --from-file=...`.
+  secretName: jbroker-tls
+  # Optional separate secret for the admin-app's client cert. Empty →
+  # admin-app reuses the same secret as the brokers.
+  adminClientSecretName: ""
+
+# Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
+# Off by default — the admin-app and broker both degrade gracefully
+# (in-memory quota + single-pod SSE) without it.
+redis:
+  enabled: false
+  image:
+    repository: redis
+    tag: "7.4-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    port: 6379
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+
+# Headless + external services for broker traffic. The headless service
+# is always created (StatefulSets need it for stable DNS). The external
+# ClusterIP/LoadBalancer is opt-in for ingress use cases.
+brokerService:
+  # Extra non-headless service exposing broker.replicaCount gRPC
+  # endpoints via one Service object. Useful behind an LB that fans
+  # requests to the leader broker or for dev NodePort access. Off by
+  # default because most deployments use the headless per-pod DNS.
+  external:
+    enabled: false
+    type: ClusterIP
+    port: 9092
+
+# Kubernetes service account
+serviceAccount:
+  create: true
+  name: ""

@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jbroker.admin.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  replicas: {{ .Values.admin.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "jbroker.admin.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "jbroker.admin.selectorLabels" . | nindent 8 }}
+      {{- with .Values.admin.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "jbroker.serviceAccountName" . }}
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+      containers:
+        - name: admin
+          image: "{{ .Values.admin.image.repository }}:{{ .Values.admin.image.tag }}"
+          imagePullPolicy: {{ .Values.admin.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.admin.service.port }}
+              protocol: TCP
+          env:
+            - name: SERVER_PORT
+              value: {{ .Values.admin.service.port | quote }}
+            - name: JBROKER_ADMIN_BROKERS
+              value: {{ include "jbroker.admin.brokers" . | quote }}
+            {{- if .Values.redis.enabled }}
+            - name: JBROKER_REDIS_URL
+              value: {{ printf "redis://%s:%d" (include "jbroker.redis.fullname" .) (int .Values.redis.service.port) | quote }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: JBROKER_ADMIN_TLS_ENABLED
+              value: "true"
+            - name: JBROKER_ADMIN_TLS_CERT
+              value: /etc/jbroker/tls/tls.crt
+            - name: JBROKER_ADMIN_TLS_KEY
+              value: /etc/jbroker/tls/tls.key
+            - name: JBROKER_ADMIN_TLS_TRUST
+              value: /etc/jbroker/tls/ca.crt
+            {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.admin.resources | nindent 12 }}
+          {{- if .Values.tls.enabled }}
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/jbroker/tls
+              readOnly: true
+          {{- end }}
+      {{- if .Values.tls.enabled }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ default .Values.tls.secretName .Values.tls.adminClientSecretName | quote }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jbroker.admin.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  type: {{ .Values.admin.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.admin.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "jbroker.admin.selectorLabels" . | nindent 4 }}
+{{- if .Values.admin.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "jbroker.admin.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+  {{- with .Values.admin.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.admin.ingress.className }}
+  ingressClassName: {{ .Values.admin.ingress.className | quote }}
+  {{- end }}
+  {{- with .Values.admin.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.admin.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.admin.ingress.path }}
+            pathType: {{ .Values.admin.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "jbroker.admin.fullname" . }}
+                port:
+                  number: {{ .Values.admin.service.port }}
+{{- end }}

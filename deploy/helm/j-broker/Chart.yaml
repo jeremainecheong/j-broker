@@ -1,0 +1,18 @@
+apiVersion: v2
+name: j-broker
+description: >
+  j-broker — a Kafka-shaped log broker with hand-rolled Raft metadata
+  consensus. This chart ships a StatefulSet broker + Deployment admin UI,
+  optional bundled Redis for quota + SSE fan-out, and opt-in mTLS wiring.
+type: application
+version: 0.1.0
+appVersion: "1.4.0"
+keywords:
+  - broker
+  - kafka
+  - raft
+  - messaging
+home: https://github.com/jeremainecheong/j-broker
+maintainers:
+  - name: jeremainecheong
+    url: https://github.com/jeremainecheong

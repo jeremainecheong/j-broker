@@ -4,7 +4,7 @@ import java.util.Arrays;
 
 /**
  * P12.1 — entry point for the perf harness. Dispatches on the first
- * argument into {@link ProducerPerfTest} or {@link ConsumerPerfTest}.
+ * argument. audit-09 adds self-contained multi-broker variants:
  *
  * <pre>
  *   j-broker-bench producer --broker HOST:PORT --topic T --partition N
@@ -13,12 +13,20 @@ import java.util.Arrays;
  *
  *   j-broker-bench consumer --broker HOST:PORT --topic T --partition N
  *                           --records N [--max-bytes BYTES] [--csv FILE]
+ *
+ *   j-broker-bench acks-all    [--records N] [--payload-size B] [--csv FILE]
+ *   j-broker-bench replication [--records N] [--payload-size B] [--csv FILE]
+ *   j-broker-bench compaction  [--records N] [--keys K]         [--csv FILE]
  * </pre>
  *
- * <p>Both print a final percentile table (p50 / p99 / p999 / max) plus
- * throughput (records/s and bytes/s). Writing to {@code --csv FILE}
- * appends one line per run so multiple calls can aggregate into a single
- * series for a README table.
+ * <p>{@code producer}/{@code consumer} talk to an already-running
+ * broker; {@code acks-all}/{@code replication}/{@code compaction} start
+ * an in-process cluster themselves, so a single jar invocation is all
+ * the operator needs.
+ *
+ * <p>Every mode prints a final percentile / pause-duration summary plus
+ * throughput. Writing to {@code --csv FILE} appends one line per run so
+ * multiple calls can aggregate into a single series.
  */
 public final class PerfMain {
 
@@ -33,6 +41,9 @@ public final class PerfMain {
         switch (args[0]) {
             case "producer" -> ProducerPerfTest.run(rest);
             case "consumer" -> ConsumerPerfTest.run(rest);
+            case "acks-all" -> AcksAllPerfTest.run(rest);
+            case "replication" -> ReplicationPerfTest.run(rest);
+            case "compaction" -> CompactionPausePerfTest.run(rest);
             default -> {
                 usage();
                 System.exit(2);
@@ -41,7 +52,8 @@ public final class PerfMain {
     }
 
     private static void usage() {
-        System.err.println(
-                "Usage: j-broker-bench producer|consumer --broker HOST:PORT --topic T --partition N --records N [...]");
+        System.err.println("Usage: j-broker-bench <mode> [flags]");
+        System.err.println("  mode: producer | consumer | acks-all | replication | compaction");
+        System.err.println("  see class javadoc for per-mode flags");
     }
 }

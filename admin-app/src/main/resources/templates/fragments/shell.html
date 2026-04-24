@@ -72,5 +72,13 @@
     >
       green
     </span>
+
+    <!--
+      Shared page footer. Single source of truth so we don't drift between
+      stale "Phase 8" labels and current version strings across templates.
+      Keep this static — templating the version from Gradle is a bigger
+      lift and adds zero user value.
+    -->
+    <footer th:fragment="footer">j-broker admin</footer>
   </body>
 </html>

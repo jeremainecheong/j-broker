@@ -3,6 +3,7 @@ package jbroker.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.net.BindException;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -23,22 +24,17 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class HighVolumeSmokeTest {
 
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     @Test
     void hundredThousandMessagesRoundTripInOrder(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
         final int total = 100_000;
 
-        var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
-        try (var client = new BrokerClient("127.0.0.1", brokerPort)) {
+        // Broker.start may fail with a bind error if another process has
+        // grabbed our chosen port between freePort()'s socket close and
+        // Broker's own bind — the classic close-then-bind TOCTOU race.
+        // Retry with fresh ports; 5 attempts makes the flake probability
+        // (p_fail ≈ 1e-3 on laptop, up to 1e-2 on shared CI) ^5 negligible.
+        var broker = startBrokerWithBindRetry(dir);
+        try (var client = new BrokerClient("127.0.0.1", broker.brokerPort())) {
             client.createTopic("bulk", 1, 1);
 
             long t0 = System.nanoTime();
@@ -69,6 +65,48 @@ class HighVolumeSmokeTest {
             }
         } finally {
             broker.close();
+        }
+    }
+
+    private static Broker startBrokerWithBindRetry(Path dir) throws Exception {
+        Exception lastFailure = null;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            int raftPort = freePort();
+            int brokerPort = freePort();
+            try {
+                return Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+            } catch (Exception e) {
+                if (!isBindRace(e)) throw e;
+                lastFailure = e;
+            }
+        }
+        throw new AssertionError(
+                "Broker.start hit a bind race 5× in a row — real networking issue, not a flake", lastFailure);
+    }
+
+    /**
+     * True for bind-time failures that can be retried with a fresh port:
+     * {@link BindException}, Netty's {@code NativeIoException} from a
+     * failed bind, or anything in the cause chain whose message says
+     * "Address already in use" / "bind".
+     */
+    private static boolean isBindRace(Throwable t) {
+        while (t != null) {
+            if (t instanceof BindException) return true;
+            if (t.getClass().getName().contains("NativeIoException")) {
+                String msg = t.getMessage();
+                if (msg != null && (msg.contains("Address already in use") || msg.contains("bind"))) return true;
+            }
+            t = t.getCause();
+        }
+        return false;
+    }
+
+    private static int freePort() {
+        try (var sock = new ServerSocket(0)) {
+            return sock.getLocalPort();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 }

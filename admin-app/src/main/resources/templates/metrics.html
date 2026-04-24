@@ -84,8 +84,30 @@
           chart.update('none');
         }
 
-        refresh();
-        setInterval(refresh, 2000);
+        // P14.3 — hydrate historical samples from the server-side ring
+        // before starting live polling so the charts show the full 5-min
+        // window immediately, not a growing line starting from zero.
+        async function hydrate() {
+          try {
+            const d = await fetch('/api/v1/metrics/timeseries?window=5m').then(r => r.ok ? r.json() : null);
+            if (!d || !Array.isArray(d.samples) || d.samples.length === 0) return;
+            const recent = d.samples.slice(-MAX_POINTS);
+            recent.forEach(s => {
+              const label = Math.round((s.ts - startMillis) / 1000) + 's';
+              pushPoint(tput, label, [s.produce_bytes_per_sec || 0, s.fetch_bytes_per_sec || 0]);
+              pushPoint(lat, label,
+                [(s.produce_p99_nanos || 0) / 1000, (s.fetch_p99_nanos || 0) / 1000]);
+            });
+          } catch (e) {
+            // Fresh admin-app, history not populated yet; fall through
+            // to live polling and the first tick paints point 0.
+          }
+        }
+
+        hydrate().finally(() => {
+          refresh();
+          setInterval(refresh, 2000);
+        });
         /*]]>*/
       </script>
     </main>

@@ -1,7 +1,6 @@
 package jbroker.broker;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.proto.broker.ProduceRequest;
@@ -136,9 +135,13 @@ public final class ProduceHandler {
         }
 
         // Decode once up front so the dedup path can compare record count.
+        // Use ByteString.asReadOnlyByteBuffer() — zero-copy view of protobuf's
+        // internal byte array. The prior toByteArray() copied every inbound
+        // batch before decode; on the hot path that was allocation + memcpy
+        // per produce with no other consumer of the raw bytes.
         RecordBatch.Parsed parsed;
         try {
-            parsed = RecordBatch.decode(ByteBuffer.wrap(req.getBatch().toByteArray()));
+            parsed = RecordBatch.decode(req.getBatch().asReadOnlyByteBuffer());
         } catch (IllegalArgumentException e) {
             return err(ErrorCodes.CORRUPT_BATCH, e.getMessage() == null ? e.toString() : e.getMessage());
         }

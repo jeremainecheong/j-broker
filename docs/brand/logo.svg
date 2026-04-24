@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="j-broker logo">
+  <title>j-broker</title>
+  <desc>Three-node Raft cluster: one controller (yellow) + two followers (blue) connected by dashed heartbeats.</desc>
+
+  <!-- Rounded tile background -->
+  <rect x="16" y="16" width="480" height="480" rx="96"
+        fill="#f8fafc" stroke="#cbd5e1" stroke-width="4"/>
+
+  <!-- Partition-log strip along the bottom — stacked segments with HWM fill -->
+  <g transform="translate(88, 416)">
+    <rect x="0"   y="0" width="56" height="36" rx="6" fill="#e0e7ff" stroke="#6366f1" stroke-width="2"/>
+    <rect x="64"  y="0" width="56" height="36" rx="6" fill="#e0e7ff" stroke="#6366f1" stroke-width="2"/>
+    <rect x="128" y="0" width="56" height="36" rx="6" fill="#e0e7ff" stroke="#6366f1" stroke-width="2"/>
+    <rect x="192" y="0" width="56" height="36" rx="6" fill="#c7d2fe" stroke="#6366f1" stroke-width="2"/>
+    <rect x="256" y="0" width="56" height="36" rx="6" fill="#c7d2fe" stroke="#6366f1" stroke-width="2"/>
+    <rect x="320" y="0" width="56" height="36" rx="6" fill="#a5b4fc" stroke="#6366f1" stroke-width="2" stroke-dasharray="4 3"/>
+  </g>
+
+  <!-- Heartbeat links between brokers -->
+  <line x1="256" y1="150" x2="146" y2="330" stroke="#94a3b8" stroke-width="5" stroke-dasharray="10 8"/>
+  <line x1="256" y1="150" x2="366" y2="330" stroke="#94a3b8" stroke-width="5" stroke-dasharray="10 8"/>
+  <line x1="146" y1="330" x2="366" y2="330" stroke="#94a3b8" stroke-width="5" stroke-dasharray="10 8"/>
+
+  <!-- Controller (top) — yellow ring -->
+  <circle cx="256" cy="150" r="56"
+          fill="#fef3c7" stroke="#f59e0b" stroke-width="8"/>
+  <text x="256" y="161" font-family="ui-sans-serif, system-ui, sans-serif"
+        font-size="32" font-weight="700" fill="#92400e" text-anchor="middle">b2</text>
+
+  <!-- Follower 1 (bottom-left) -->
+  <circle cx="146" cy="330" r="54"
+          fill="#dbeafe" stroke="#3b82f6" stroke-width="8"/>
+  <text x="146" y="341" font-family="ui-sans-serif, system-ui, sans-serif"
+        font-size="30" font-weight="700" fill="#1e40af" text-anchor="middle">b1</text>
+
+  <!-- Follower 3 (bottom-right) -->
+  <circle cx="366" cy="330" r="54"
+          fill="#dbeafe" stroke="#3b82f6" stroke-width="8"/>
+  <text x="366" y="341" font-family="ui-sans-serif, system-ui, sans-serif"
+        font-size="30" font-weight="700" fill="#1e40af" text-anchor="middle">b3</text>
+</svg>

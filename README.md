@@ -110,9 +110,13 @@ Combined with the admin app:
 echo -e "o-1\no-2\no-3" | ./broker-app/build/install/broker-app/bin/broker-app \
   produce --broker localhost:9092 --topic orders --partition 0
 
-# Consume
+# Consume from a single partition (simple, no coordinator)
 ./broker-app/build/install/broker-app/bin/broker-app console-consumer \
   --broker localhost:9092 --topic orders --partition 0 --from-beginning
+
+# Consumer group (coordinator handshake, auto-assignment, commits)
+./broker-app/build/install/broker-app/bin/broker-app consume \
+  --broker localhost:9092 --group order-processor --topic orders
 ```
 
 ### Prometheus + Grafana
@@ -143,9 +147,7 @@ List of user + internal topics with partition counts, replication factor, compac
 
 ![Topics list](docs/screenshots/topics.png)
 
-Creating a topic uses a modal that posts `{name, partitions, replication_factor, config}` to `POST /api/v1/topics`.
-
-![Create topic modal](docs/screenshots/topics-create-modal.png)
+"+ Create topic" opens an Alpine-driven modal that POSTs `{name, partitions, replication_factor, config}` to `POST /api/v1/topics`.
 
 ### Topic detail
 
@@ -157,15 +159,27 @@ Force-compact sends `POST /api/v1/topics/{name}/partitions/{p}/compact`, fans ac
 
 ### Consumer groups
 
-Lists every group tracked by the coordinator with state, member count, generation, and the `__consumer_offsets` partition that owns it. The group detail view (not pictured, populates when a real consumer joins) shows members, assigned partitions, and per-partition lag.
+Lists every group tracked by the coordinator with state, member count, generation, and the `__consumer_offsets` partition that owns it. Join via `j-broker consume --group ID --topic T`; the list populates the moment the first heartbeat lands.
 
 ![Consumer groups](docs/screenshots/groups.png)
+
+Group detail shows the member slot, which partitions it owns, and a per-partition lag table with progress bars.
+
+![Consumer group detail](docs/screenshots/group-detail.png)
 
 ### Raft
 
 Per-broker Raft state — current role, term, commit index, last applied, voted-for, log end — pulled via `Metadata.DescribeRaft` and fanned across every broker.
 
 ![Raft state](docs/screenshots/raft.png)
+
+### Metrics
+
+Throughput + p99 latency line charts (Chart.js, self-hosted) over a rolling 5-minute window. The page **hydrates from the server-side history ring on load** — no more watching a flat line grow; you see the real recent window the moment you navigate in. Live polling every 2s extends it.
+
+![Metrics page](docs/screenshots/metrics.png)
+
+Backed by `GET /api/v1/metrics/timeseries?window={30s|5m|1h}`; the `ThroughputHistory` component persists one aggregate per scrape tick (default 5s interval, 600-sample ring = 50 min).
 
 ### Chaos
 
@@ -514,6 +528,7 @@ All paths are under `/api/v1/`. JSON is snake_case throughout (Jackson configure
 | `GET` | `/raft/nodes/{id}` | Single broker's Raft state |
 | `GET` | `/metrics/throughput` | Rolling throughput window |
 | `GET` | `/metrics/latency` | p50/p99/p999 latencies |
+| `GET` | `/metrics/timeseries?window=5m` | Server-side history for sparklines (P14.3) |
 | `GET` | `/events` | Server-Sent Events stream (`Last-Event-ID` supported) |
 | `GET` | `/health/badge` | 5s-polled health pill for the top nav |
 | `POST` | `/chaos/kill-broker/{id}` | Exit the broker process (requires chaos port) |
@@ -672,6 +687,7 @@ j-broker server   --data-dir DIR --broker-port P [--raft-port P] [--id N]
 j-broker topics   create|list|describe --broker HOST:PORT [...]
 j-broker produce  --broker HOST:PORT --topic T --partition N   (stdin = one msg per line)
 j-broker console-consumer --broker HOST:PORT --topic T --partition N [--from-beginning]
+j-broker consume  --broker HOST:PORT --group G --topic T [--topic T2 ...]   (P14.4, coordinator-aware)
 j-broker admin    cluster-info | topics ... | groups ... | raft  [--admin URL]
 ```
 
@@ -782,12 +798,12 @@ Where the project is, phase by phase:
 - [x] **Phase 11** — Docker image hardening, RabbitMQ-style UI polish, snake_case JSON, chaos force-election.
 - [x] **Phase 12** — Perf bench module, sparse-offset compaction, preferred-leader balancer wiring, real-RESP Redis quota enforcer, admin consumer-group mutations.
 - [x] **Phase 13** — v1.1 correctness-gap closers: force-compact admin RPC + IT, consumer-group admin-mutation round-trip ITs, balancer-rebalance IT, CI-grade 10k-client smoke, README bench table, Redis pub/sub SSE fan-out.
+- [x] **Phase 14** — Admin UI reliability: `x-cloak` modal-flash fix + self-hosted Alpine/htmx/Chart.js in `admin-app/.../static/vendor/` (Chrome ORB was blocking the unpkg CDN); `/metrics` sparklines wired to snake_case fields; `GET /api/v1/metrics/timeseries` + `ThroughputHistory` ring so overview + metrics hydrate on load instead of starting blank; `j-broker consume --group G --topic T` subcommand backed by the real `Consumer` library so the Groups page actually populates.
 
-Possible future phases:
-- mTLS between brokers + admin (multi-tenant security).
-- Helm charts for Kubernetes.
-- Globally-monotonic SSE ids backed by `Redis INCR` or a stream-backed ring.
-- Admin-originated audit events.
+Phase 15 (in flight — production hardening):
+- **P15.1** — Broker advertised host/port so external clients reach published Docker ports without `docker exec`.
+- **P15.2** — mTLS between brokers + admin + clients on the gRPC plane.
+- **P15.3** — Helm chart for Kubernetes.
 
 ---
 

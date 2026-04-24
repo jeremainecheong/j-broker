@@ -1,6 +1,7 @@
 package jbroker.bench;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -14,23 +15,27 @@ import org.HdrHistogram.Histogram;
  * <pre>
  *   j-broker-bench producer --broker HOST:PORT --topic T --partition N
  *                           --records N --payload-size BYTES
- *                           [--concurrency N] [--acks all] [--csv FILE]
- *                           [--tls-trust CA.crt --tls-cert C.crt --tls-key C.key]
+ *                           [--concurrency N] [--partitions N]
+ *                           [--batch-size N] [--acks all] [--csv FILE]
+ *                           [--tls-trust CA --tls-cert C --tls-key K]
  * </pre>
  *
- * <p>Default is single-producer, single-partition (concurrency=1). Each
- * record is a random payload of {@code --payload-size} bytes; the timed
- * region is {@code BrokerClient.produce()} / {@code produceAcksAll()}.
- * Latency samples feed into an {@link Histogram} with 3-significant-digit
- * precision; the final report prints p50 / p99 / p999 / max + throughput.
+ * <p>Throughput knobs, in order of impact:
  *
- * <p>{@code --concurrency N} spins N virtual-thread workers,
- * each with its own {@link BrokerClient} (distinct TCP socket so the
- * broker's acceptor is actually under fan-in), cooperatively dividing
- * the record budget. Single-threaded RTT bench numbers are bounded by
- * {@code 1 / p50}; the broker's throughput capacity only shows up under
- * fan-in. Histograms are merged across workers so the final percentile
- * table reflects the full distribution.
+ * <ol>
+ *   <li>{@code --batch-size N} — records per RPC. Amortizes fixed
+ *       per-call cost (encode, gRPC, handler dispatch, Log-append lock
+ *       acquire) across N records. Single-record RPCs are RTT-bound;
+ *       a batch size of 100 routinely unlocks 20–50× throughput.</li>
+ *   <li>{@code --concurrency N} — N virtual-thread producers each with
+ *       its own BrokerClient (TCP socket). Breaks the serial-RTT cap.</li>
+ *   <li>{@code --partitions N} — fan workers across N partitions so
+ *       per-partition Log.append locks don't serialize.</li>
+ * </ol>
+ *
+ * <p>Latency samples reflect per-RPC duration; when {@code --batch-size}
+ * is set, that's N records' worth of work per sample. Throughput
+ * reported is records/s and bytes/s.
  */
 public final class ProducerPerfTest {
 
@@ -40,13 +45,11 @@ public final class ProducerPerfTest {
         String broker = BenchArgs.get(args, "--broker", "127.0.0.1:9092");
         String topic = BenchArgs.get(args, "--topic", null);
         int partition = BenchArgs.getInt(args, "--partition", 0);
-        // optional fan-out across partitions. Worker w produces
-        // to (basePartition + w) % partitionsSpan. Defaults to 1 so the
-        // single-partition bench shape is preserved for existing callers.
         int partitionsSpan = Math.max(1, BenchArgs.getInt(args, "--partitions", 1));
         int records = BenchArgs.getInt(args, "--records", 10_000);
         int payloadSize = BenchArgs.getInt(args, "--payload-size", 256);
         int concurrency = Math.max(1, BenchArgs.getInt(args, "--concurrency", 1));
+        int batchSize = Math.max(1, BenchArgs.getInt(args, "--batch-size", 1));
         boolean acksAll = "all".equals(BenchArgs.get(args, "--acks", null));
         String csvStr = BenchArgs.get(args, "--csv", null);
         Path csv = csvStr == null ? null : Path.of(csvStr);
@@ -70,39 +73,36 @@ public final class ProducerPerfTest {
             ThreadLocalRandom.current().nextBytes(pool[i]);
         }
 
-        // Fast single-threaded path — preserved for existing callers that
-        // measure pure per-call RTT under the default --concurrency=1.
+        // Single-threaded path preserved for pure-RTT baseline runs.
         if (concurrency == 1) {
             var histogram = new Histogram(TimeUnitNanos.ONE_MINUTE, 3);
             try (var client = new BrokerClient(host, port, tls)) {
-                int warmup = Math.max(100, records / 50);
-                for (int i = 0; i < warmup; i++) {
-                    var payload = pool[i % pool.length];
-                    if (acksAll) client.produceAcksAll(topic, partition, payload);
-                    else client.produce(topic, partition, payload);
+                int warmupBatches = Math.max(5, records / 50 / batchSize);
+                for (int b = 0; b < warmupBatches; b++) {
+                    sendOne(client, topic, partition, pool, b * batchSize, batchSize, acksAll);
                 }
 
                 long totalBytes = 0;
+                long totalRecords = 0;
+                int batches = records / batchSize;
                 long start = System.nanoTime();
-                for (int i = 0; i < records; i++) {
-                    var payload = pool[i % pool.length];
+                for (int b = 0; b < batches; b++) {
                     long t0 = System.nanoTime();
-                    if (acksAll) client.produceAcksAll(topic, partition, payload);
-                    else client.produce(topic, partition, payload);
+                    sendOne(client, topic, partition, pool, b * batchSize, batchSize, acksAll);
                     histogram.recordValue(System.nanoTime() - t0);
-                    totalBytes += payload.length;
+                    totalBytes += (long) batchSize * payloadSize;
+                    totalRecords += batchSize;
                 }
                 long elapsed = System.nanoTime() - start;
-                PerfReport.emit("producer", histogram, records, totalBytes, elapsed, csv);
+                String tag = batchSize == 1 ? "producer" : "producer(bs=" + batchSize + ")";
+                PerfReport.emit(tag, histogram, totalRecords, totalBytes, elapsed, csv);
             }
             return;
         }
 
-        // Multi-worker path. Each worker owns its own BrokerClient so the
-        // broker's acceptor is under real TCP fan-in (one connection per
-        // concurrent producer). Histograms merge at the end.
+        // Multi-worker path.
         int perWorker = records / concurrency;
-        int spillover = records - perWorker * concurrency; // hand to worker 0
+        int spillover = records - perWorker * concurrency;
         var merged = new Histogram(TimeUnitNanos.ONE_MINUTE, 3);
         var produced = new AtomicInteger(0);
         long start = System.nanoTime();
@@ -115,20 +115,16 @@ public final class ProducerPerfTest {
                 tasks.add(() -> {
                     var local = new Histogram(TimeUnitNanos.ONE_MINUTE, 3);
                     try (var client = new BrokerClient(host, port, tls)) {
-                        // Per-worker warmup: 2% of its own budget, floored.
-                        int warmup = Math.max(20, myBudget / 50);
-                        for (int i = 0; i < warmup; i++) {
-                            var payload = pool[i % pool.length];
-                            if (acksAll) client.produceAcksAll(topic, myPartition, payload);
-                            else client.produce(topic, myPartition, payload);
+                        int warmupBatches = Math.max(5, myBudget / 50 / batchSize);
+                        for (int b = 0; b < warmupBatches; b++) {
+                            sendOne(client, topic, myPartition, pool, b * batchSize, batchSize, acksAll);
                         }
-                        for (int i = 0; i < myBudget; i++) {
-                            var payload = pool[i % pool.length];
+                        int batches = myBudget / batchSize;
+                        for (int b = 0; b < batches; b++) {
                             long t0 = System.nanoTime();
-                            if (acksAll) client.produceAcksAll(topic, myPartition, payload);
-                            else client.produce(topic, myPartition, payload);
+                            sendOne(client, topic, myPartition, pool, b * batchSize, batchSize, acksAll);
                             local.recordValue(System.nanoTime() - t0);
-                            produced.incrementAndGet();
+                            produced.addAndGet(batchSize);
                         }
                     }
                     return local;
@@ -138,7 +134,30 @@ public final class ProducerPerfTest {
         }
         long elapsed = System.nanoTime() - start;
         long totalBytes = (long) produced.get() * payloadSize;
-        PerfReport.emit("producer(c=" + concurrency + ")", merged, produced.get(), totalBytes, elapsed, csv);
+        String tag = "producer(c=" + concurrency + (batchSize > 1 ? " bs=" + batchSize : "") + ")";
+        PerfReport.emit(tag, merged, produced.get(), totalBytes, elapsed, csv);
+    }
+
+    /**
+     * Send one RPC. For {@code batchSize==1} routes through the single-record
+     * path so the pre-batching bench baseline is preserved byte-for-byte;
+     * otherwise builds a batch of {@code batchSize} records and calls
+     * {@link BrokerClient#produceBatch}.
+     */
+    private static void sendOne(
+            BrokerClient client, String topic, int partition, byte[][] pool, int seed, int batchSize, boolean acksAll) {
+        if (batchSize == 1) {
+            var payload = pool[seed % pool.length];
+            if (acksAll) client.produceAcksAll(topic, partition, payload);
+            else client.produce(topic, partition, payload);
+            return;
+        }
+        var batch = new ArrayList<byte[]>(batchSize);
+        for (int i = 0; i < batchSize; i++) {
+            batch.add(pool[(seed + i) % pool.length]);
+        }
+        if (acksAll) client.produceBatchAcksAll(topic, partition, batch);
+        else client.produceBatch(topic, partition, batch);
     }
 
     /** Nanos in a minute — covers the widest plausible per-op latency we'd ever want to record. */

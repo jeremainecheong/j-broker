@@ -167,6 +167,55 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     /**
+     * Send a batch of records in a single RPC — the Kafka-style batched
+     * produce path. One RecordBatch wraps all values; offsets within the
+     * batch are assigned contiguously starting at 0 (the broker remaps to
+     * absolute offsets on append). Returns the absolute offset of the
+     * last record.
+     *
+     * <p>This is the throughput lever: one-record-per-RPC is RTT-bound
+     * (throughput ≤ 1/p50), a batched produce amortizes the network +
+     * handler fixed cost across the whole batch.
+     */
+    public long produceBatch(String topic, int partition, List<byte[]> values) {
+        return produceBatchWithAcks(topic, partition, values, /*acks*/ 1);
+    }
+
+    /** Batched produce with acks=all — blocks until every ISR member has the batch. */
+    public long produceBatchAcksAll(String topic, int partition, List<byte[]> values) {
+        return produceBatchWithAcks(topic, partition, values, /*acks*/ -1);
+    }
+
+    private long produceBatchWithAcks(String topic, int partition, List<byte[]> values, int acks) {
+        if (values.isEmpty()) throw new IllegalArgumentException("values must be non-empty");
+        var records = new java.util.ArrayList<Record>(values.size());
+        for (int i = 0; i < values.size(); i++) {
+            // offsetDelta within the batch is i; timestampDelta stays 0.
+            records.add(new Record(i, 0L, null, values.get(i)));
+        }
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        long now = System.currentTimeMillis();
+        RecordBatch.encode(buf, 0L, 0, now, now, -1L, (short) -1, -1, records);
+        buf.flip();
+        byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+        long deadlineSeconds = acks == -1 ? 10 : 7;
+        var resp = producer.withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
+                .produce(ProduceRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .setBatch(ByteString.copyFrom(bytes))
+                        .setProducerId(-1L)
+                        .setBaseSequence(-1)
+                        .setAcks(acks)
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("produce failed: " + resp.getError().getMessage());
+        }
+        return resp.getLastOffset();
+    }
+
+    /**
      * Produce a single record and block until every ISR member has
      * replicated it (acks=all). Throws on timeout (the leader rejects
      * with {@code NOT_ENOUGH_REPLICAS}).

@@ -44,6 +44,7 @@ public final class PerfMain {
             case "acks-all" -> AcksAllPerfTest.run(rest);
             case "replication" -> ReplicationPerfTest.run(rest);
             case "compaction" -> CompactionPausePerfTest.run(rest);
+            case "check-batch" -> BatchCorrectness.run(rest);
             default -> {
                 usage();
                 System.exit(2);

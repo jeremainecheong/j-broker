@@ -84,6 +84,19 @@
   box-sizing: border-box;
 }
 
+/* required companion to Alpine.js's `x-cloak` attribute. Without
+ * this rule, every modal renders visible for the ~50–300ms between first
+ * paint and Alpine.js initialisation (or indefinitely if Alpine fails to
+ * load — slow CDN, CSP block, JS error). Modals gate on x-show=false by
+ * default, so once Alpine initialises the cloak attribute is stripped
+ * and x-show takes over.
+ *
+ * Reference: https://alpinejs.dev/directives/cloak
+ */
+[x-cloak] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;

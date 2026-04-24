@@ -5,8 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title th:text="${title}">j-broker admin</title>
     <link rel="stylesheet" th:href="@{/app.css}" />
-    <script src="https://unpkg.com/[email protected]/dist/htmx.min.js"></script>
-    <script defer src="https://unpkg.com/[email protected]/dist/cdn.min.js"></script>
+    <!--
+      self-host htmx + Alpine.js.
+      Previously loaded from unpkg.com which (a) fails in networks that
+      block outbound CDN traffic and (b) Chrome ORB was blocking the
+      response due to unpkg returning a permissive-but-off content-type
+      for some cross-origin clients. Self-hosted copies match the pinned
+      versions; refresh via the LICENSES note under static/vendor/.
+    -->
+    <script th:src="@{/vendor/htmx-1.9.12.min.js}"></script>
+    <script defer th:src="@{/vendor/alpine-3.13.5.min.js}"></script>
     <script defer th:src="@{/app.js}"></script>
   </head>
   <body>

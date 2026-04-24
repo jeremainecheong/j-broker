@@ -71,3 +71,8 @@ var/
 
 # Playwright MCP browser traces (generated during docs / admin-UI verification)
 .playwright-mcp/
+
+# Dev-only mTLS cert bundles produced by scripts/tls/bootstrap-ca.sh or
+# ad-hoc openssl commands for Kind / compose smoke. Never check in keys.
+.tls/
+.tls-kind/

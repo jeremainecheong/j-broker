@@ -42,7 +42,9 @@ public final class ConsumerPerfTest {
 
         var histogram = new Histogram(ONE_MINUTE_NANOS, 3);
         int colon = broker.indexOf(':');
-        try (var client = new BrokerClient(broker.substring(0, colon), Integer.parseInt(broker.substring(colon + 1)))) {
+        var tls = BenchArgs.tlsFromArgs(args);
+        try (var client =
+                new BrokerClient(broker.substring(0, colon), Integer.parseInt(broker.substring(colon + 1)), tls)) {
             long offset = 0;
             long received = 0;
             long totalBytes = 0;

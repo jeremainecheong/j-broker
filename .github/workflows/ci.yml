@@ -31,3 +31,41 @@ jobs:
         with:
           name: test-reports
           path: '**/build/reports/tests/'
+
+  perf-gate:
+    # runs @Tag("perf") tests with generous regression floors
+    # so a merge that halves throughput or triples tail latency breaks
+    # the build. Thresholds are set ~3-5x above observed dev-machine
+    # numbers so we catch catastrophic regressions (VT pinning, missing
+    # batching, serialisation blowup) without going red on GitHub's
+    # noisy-neighbour IO.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run perf gate — end-to-end produce+consume
+        env:
+          JBROKER_RUN_PERF: '1'
+        run: ./gradlew :integration-tests:test --tests "jbroker.it.PerfGateIT" --no-daemon
+
+      - name: Run perf gate — log append throughput
+        env:
+          JBROKER_RUN_PERF: '1'
+        run: ./gradlew :broker-storage:test --tests "jbroker.storage.AppendThroughputTest" --no-daemon
+
+      - name: Upload perf reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-reports
+          path: '**/build/reports/tests/'

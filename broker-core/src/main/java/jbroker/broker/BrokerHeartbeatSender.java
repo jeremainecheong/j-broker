@@ -11,6 +11,8 @@ import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import jbroker.proto.broker.BrokerHeartbeatRequest;
 import jbroker.proto.broker.ClusterGrpc;
+import jbroker.tls.TlsConfig;
+import jbroker.tls.TlsContexts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +69,17 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             LongSupplier metadataOffset,
             long intervalMs,
             BooleanSupplier paused) {
+        this(selfBrokerId, peers, metadataOffset, intervalMs, paused, TlsConfig.DISABLED);
+    }
+
+    /** P15.2 — TLS-aware constructor. Inter-broker heartbeats share the cluster TLS bundle. */
+    public BrokerHeartbeatSender(
+            int selfBrokerId,
+            java.util.List<PeerAddress> peers,
+            LongSupplier metadataOffset,
+            long intervalMs,
+            BooleanSupplier paused,
+            TlsConfig tls) {
         this.selfBrokerId = selfBrokerId;
         this.peers = java.util.List.copyOf(peers);
         this.metadataOffset = metadataOffset;
@@ -77,10 +90,20 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
+        io.grpc.netty.shaded.io.netty.handler.ssl.SslContext sslCtx;
+        try {
+            sslCtx = TlsContexts.clientContext(tls == null ? TlsConfig.DISABLED : tls);
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException("TLS client context build failed", e);
+        }
         for (var p : this.peers) {
-            var ch = NettyChannelBuilder.forAddress(p.host(), p.port())
-                    .usePlaintext()
-                    .build();
+            var b = NettyChannelBuilder.forAddress(p.host(), p.port());
+            if (sslCtx == null) {
+                b.usePlaintext();
+            } else {
+                b.sslContext(sslCtx);
+            }
+            var ch = b.build();
             channels.put(p.brokerId(), ch);
             stubs.put(p.brokerId(), ClusterGrpc.newBlockingStub(ch));
         }

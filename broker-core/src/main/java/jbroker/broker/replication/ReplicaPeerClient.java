@@ -7,6 +7,8 @@ import jbroker.proto.broker.OffsetsForLeaderEpochRequest;
 import jbroker.proto.broker.ReplicaConsumerGrpc;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
+import jbroker.tls.TlsConfig;
+import jbroker.tls.TlsContexts;
 
 /**
  * Thin blocking gRPC stub for the {@code ReplicaFetch} RPC. One instance
@@ -20,7 +22,23 @@ public final class ReplicaPeerClient implements AutoCloseable {
     private final ReplicaConsumerGrpc.ReplicaConsumerBlockingStub stub;
 
     public ReplicaPeerClient(String host, int port) {
-        this.channel = NettyChannelBuilder.forAddress(host, port).usePlaintext().build();
+        this(host, port, TlsConfig.DISABLED);
+    }
+
+    /** P15.2 — TLS-aware constructor. Inter-broker replication uses the same cert bundle as Raft. */
+    public ReplicaPeerClient(String host, int port, TlsConfig tls) {
+        var b = NettyChannelBuilder.forAddress(host, port);
+        try {
+            var sslCtx = TlsContexts.clientContext(tls);
+            if (sslCtx == null) {
+                b.usePlaintext();
+            } else {
+                b.sslContext(sslCtx);
+            }
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException("TLS client context build failed", e);
+        }
+        this.channel = b.build();
         this.stub = ReplicaConsumerGrpc.newBlockingStub(channel);
     }
 

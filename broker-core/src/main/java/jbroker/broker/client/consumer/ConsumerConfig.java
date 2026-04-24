@@ -1,6 +1,7 @@
 package jbroker.broker.client.consumer;
 
 import java.time.Duration;
+import jbroker.tls.TlsConfig;
 
 /**
  * Immutable {@link Consumer} configuration. Use the {@link Builder} to
@@ -22,6 +23,7 @@ public final class ConsumerConfig {
     private final int fetchMaxBytes;
     private final Duration pollFetchDeadline;
     private final DeadLetterPolicy deadLetterPolicy;
+    private final TlsConfig tls;
 
     private ConsumerConfig(Builder b) {
         this.bootstrapHost = b.bootstrapHost;
@@ -33,6 +35,12 @@ public final class ConsumerConfig {
         this.fetchMaxBytes = b.fetchMaxBytes;
         this.pollFetchDeadline = b.pollFetchDeadline;
         this.deadLetterPolicy = b.deadLetterPolicy;
+        this.tls = b.tls == null ? TlsConfig.DISABLED : b.tls;
+    }
+
+    /** P15.2 — TLS / mTLS configuration; defaults to {@link TlsConfig#DISABLED} (plaintext). */
+    public TlsConfig tls() {
+        return tls;
     }
 
     public String bootstrapHost() {
@@ -86,6 +94,7 @@ public final class ConsumerConfig {
         private int fetchMaxBytes = DEFAULT_FETCH_MAX_BYTES;
         private Duration pollFetchDeadline = Duration.ofSeconds(5);
         private DeadLetterPolicy deadLetterPolicy;
+        private TlsConfig tls;
 
         private Builder(String groupId, String bootstrapHost, int bootstrapPort) {
             this.groupId = groupId;
@@ -125,6 +134,12 @@ public final class ConsumerConfig {
          */
         public Builder deadLetterPolicy(DeadLetterPolicy p) {
             this.deadLetterPolicy = p;
+            return this;
+        }
+
+        /** P15.2 — supply a TLS config; defaults to {@link TlsConfig#DISABLED} (plaintext). */
+        public Builder tls(TlsConfig t) {
+            this.tls = t;
             return this;
         }
 

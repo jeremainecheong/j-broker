@@ -16,6 +16,12 @@
     <script th:src="@{/vendor/htmx-1.9.12.min.js}"></script>
     <script defer th:src="@{/vendor/alpine-3.13.5.min.js}"></script>
     <script defer th:src="@{/app.js}"></script>
+    <!--
+      Relative-time renderer. Rewrites <time data-epoch="…"> elements
+      into "3s ago / 2m ago / 1h ago" labels on DOMContentLoaded. Loaded
+      via the shell so every page gets it without per-template wiring.
+    -->
+    <script defer th:src="@{/epoch.js}"></script>
   </head>
   <body>
     <!--

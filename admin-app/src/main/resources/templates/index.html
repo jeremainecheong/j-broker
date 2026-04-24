@@ -131,7 +131,12 @@
                 <span class="pill" th:classappend="${n.alive() ? 'alive' : 'dead'}"
                       th:text="${n.alive() ? 'alive' : 'dead'}">alive</span>
               </td>
-              <td th:text="${n.lastSeenMillis()}">-</td>
+              <td>
+                <!-- Rendered as "Ns ago" by /epoch.js on DOMContentLoaded;
+                     raw millis is the no-JS fallback. -->
+                <time th:attr="data-epoch=${n.lastSeenMillis()}"
+                      th:text="${n.lastSeenMillis()}">-</time>
+              </td>
             </tr>
           </tbody>
         </table>

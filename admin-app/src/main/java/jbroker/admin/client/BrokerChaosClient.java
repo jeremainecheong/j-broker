@@ -64,6 +64,36 @@ public final class BrokerChaosClient {
         }
     }
 
+    /**
+     * Read-only chaos state for {@code brokerId}. Returns the raw JSON body
+     * from {@code GET /debug/chaos/state}. Throws {@link ChaosDisabled} for
+     * unreachable/404 brokers so the admin can render a neutral
+     * "chaos-off" state without failing the whole topology poll.
+     */
+    public String getState(int brokerId) throws Exception {
+        String base = brokerUrls.get(brokerId);
+        if (base == null) throw new BrokerUnknown("no chaos URL configured for broker " + brokerId);
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(base + "/debug/chaos/state"))
+                .timeout(Duration.ofSeconds(2))
+                .GET()
+                .build();
+        try {
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 404) throw new ChaosDisabled("broker " + brokerId + " returned 404 for state");
+            if (resp.statusCode() >= 400)
+                throw new RuntimeException(
+                        "broker " + brokerId + " returned " + resp.statusCode() + ": " + resp.body());
+            return resp.body();
+        } catch (java.net.ConnectException e) {
+            throw new ChaosDisabled("broker " + brokerId + " unreachable: " + e.getMessage());
+        }
+    }
+
+    public java.util.Set<Integer> knownBrokerIds() {
+        return java.util.Set.copyOf(brokerUrls.keySet());
+    }
+
     private static Map<Integer, String> parseMapping(String raw) {
         var out = new HashMap<Integer, String>();
         if (raw == null || raw.isBlank()) return out;

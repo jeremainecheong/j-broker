@@ -58,6 +58,7 @@ public final class ChaosHttpServer implements AutoCloseable {
         http.createContext("/debug/chaos/heal-partition", wrap(this::handleHealPartition));
         http.createContext("/debug/chaos/inject-latency", wrap(this::handleInjectLatency));
         http.createContext("/debug/chaos/force-election", wrap(this::handleForceElection));
+        http.createContext("/debug/chaos/state", wrap(this::handleState));
         http.setExecutor(Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("chaos-http-", 0).factory()));
         http.start();
@@ -209,6 +210,41 @@ public final class ChaosHttpServer implements AutoCloseable {
         forceElection.run();
         publish("force-election", null, null);
         respond(ex, 200, "{\"action\":\"force-election\",\"brokerId\":" + selfBrokerId + "}");
+    }
+
+    /**
+     * Read-only chaos-state snapshot: paused flag, per-direction blocked peer
+     * sets, injected latency. Lets the admin UI render the topology without
+     * knowing about chaos at compile time — it just queries every broker's
+     * chaos state and paints the right indicators.
+     */
+    private void handleState(HttpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"GET only\"}");
+            return;
+        }
+        var sb = new StringBuilder();
+        sb.append("{\"broker_id\":").append(selfBrokerId);
+        sb.append(",\"paused\":").append(state.isPaused());
+        sb.append(",\"outbound_blocked_peers\":")
+                .append(jsonIntArray(state.outboundBlockedPeers().keySet()));
+        sb.append(",\"inbound_blocked_peers\":")
+                .append(jsonIntArray(state.inboundBlockedPeers().keySet()));
+        sb.append(",\"latency_ms\":").append(state.latencyMs());
+        sb.append('}');
+        respond(ex, 200, sb.toString());
+    }
+
+    private static String jsonIntArray(java.util.Collection<Integer> ids) {
+        var sorted = new java.util.ArrayList<>(ids);
+        java.util.Collections.sort(sorted);
+        var sb = new StringBuilder("[");
+        for (int i = 0; i < sorted.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(sorted.get(i));
+        }
+        sb.append(']');
+        return sb.toString();
     }
 
     private void publish(String action, Integer peerId, Long millis) {

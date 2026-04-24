@@ -873,6 +873,37 @@ footer {
   font-style: italic;
 }
 
+/* Topic-detail action flash (force-compact + edit-config) --------------- */
+
+.topic-flash {
+  margin-bottom: 0.75rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  transition: background 180ms ease, padding 180ms ease;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.topic-flash.ok,
+.topic-flash.err {
+  padding: 0.55rem 0.85rem;
+  border: 1px solid;
+}
+
+.topic-flash.ok {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+  border-color: var(--ok);
+}
+
+.topic-flash.err {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+  border-color: var(--bad);
+}
+
 /* Utility --------------------------------------------------------------- */
 
 .muted {

@@ -3,8 +3,21 @@
   <head th:replace="~{fragments/shell :: head ('j-broker admin — Topic')}"></head>
   <body>
     <nav th:replace="~{fragments/shell :: topnav}"></nav>
-    <main>
+    <!--
+      P-admin-topic-actions — Alpine hosts both the edit-config modal and the
+      shared flash state so per-partition compact buttons and the config PATCH
+      can all drop their results into one spot at the top of the page.
+    -->
+    <main x-data="{ showEditConfig: false }">
       <h1 th:text="|Topic: ${topic.name()}|">Topic</h1>
+
+      <!--
+        Shared flash target. htmx POST/PATCH buttons below set hx-target="#topic-flash";
+        `hx-swap="innerHTML"` with a small formatter on htmx:afterRequest (inline at
+        the bottom) prints "compacted N records across M brokers" / "config updated"
+        instead of the raw JSON body.
+      -->
+      <div id="topic-flash" class="topic-flash" role="status" aria-live="polite"></div>
 
       <div class="card">
         <div class="kv-row">
@@ -19,9 +32,13 @@
         </div>
       </div>
 
-      <div class="card" th:if="${!topic.config().isEmpty()}">
-        <h2 style="margin-top:0; font-size:1.05rem;">Config</h2>
-        <table>
+      <div class="card">
+        <div class="kv-row" style="margin-bottom: 0.5rem;">
+          <h2 style="margin:0; font-size:1.05rem;">Config</h2>
+          <span class="spacer"></span>
+          <button type="button" class="btn secondary" @click="showEditConfig = true">Edit config</button>
+        </div>
+        <table th:if="${!topic.config().isEmpty()}">
           <thead><tr><th>Key</th><th>Value</th></tr></thead>
           <tbody>
             <tr th:each="e : ${topic.config()}">
@@ -30,6 +47,9 @@
             </tr>
           </tbody>
         </table>
+        <p class="muted" th:if="${topic.config().isEmpty()}" style="margin:0;">
+          No overlay config set. Click "Edit config" to add retention.ms / cleanup.policy overrides.
+        </p>
       </div>
 
       <h2 style="margin: 1rem 0 0.5rem; font-size:1.05rem;">Partitions</h2>
@@ -56,6 +76,19 @@
             <span class="pill dead" th:if="${p.leader() < 0}">no leader</span>
             <span class="spacer"></span>
             <span class="muted" th:text="|epoch ${p.leaderEpoch()}|">epoch 0</span>
+            <!--
+              Force-compact button — POSTs to the existing REST endpoint
+              directly. The flash formatter at the bottom of the page reads
+              the JSON response ({recordsKept, brokersCompacted}) and pretty-
+              prints into #topic-flash.
+            -->
+            <button
+              type="button"
+              class="btn secondary partition-compact-btn"
+              th:attr="hx-post=@{/api/v1/topics/{name}/partitions/{p}/compact(name=${topic.name()}, p=${p.partition()})}"
+              hx-target="#topic-flash"
+              hx-swap="innerHTML"
+              title="Force synchronous log compaction on every replica of this partition">Force compact</button>
           </header>
 
           <div class="isr-row">
@@ -85,7 +118,132 @@
       </div>
 
       <p style="margin-top: 1.25rem;"><a class="btn secondary" href="/topics">← Back to topics</a></p>
+
+      <!--
+        Edit-config modal. Operator types key=value lines; on submit we parse
+        to a Map<String,String> and PATCH /api/v1/topics/{name}/config. The
+        REST endpoint accepts any overlay map (retention.ms, cleanup.policy,
+        etc.) and merges into the Raft-replicated config. On success we
+        reload so the rendered table shows the new values.
+
+        x-cloak is REQUIRED — AlpineCloakIT pins this contract so the modal
+        doesn't flash on first paint (see app.css [x-cloak] rule).
+      -->
+      <div x-show="showEditConfig" x-cloak
+           style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:100;">
+        <div class="card" style="width:480px;">
+          <h2 style="margin-top:0; font-size:1.05rem;">Edit config</h2>
+          <p class="muted" style="margin-top:0; font-size:0.85rem;">
+            One <code>key=value</code> per line. Blank values clear the overlay for that key.
+          </p>
+          <form id="edit-config-form" th:attr="data-topic-name=${topic.name()}">
+            <!--/*
+              Prefill the textarea with one `key=value` line per existing
+              overlay entry. th:inline="text" evaluates the inline-text
+              iteration below so the textarea renders one line per config
+              key. Unknown/empty config is fine — the loop is a no-op.
+            */-->
+            <textarea
+              name="kv"
+              rows="6"
+              th:inline="text"
+              style="width:100%; padding:0.5rem; border:1px solid var(--border); border-radius:4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:0.85rem;"
+              placeholder="retention.ms=604800000&#10;cleanup.policy=compact">[# th:each="e : ${topic.config()}"][[${e.key}]]=[[${e.value}]]
+[/]</textarea>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:0.75rem;">
+              <button type="button" class="btn secondary" @click="showEditConfig = false">Cancel</button>
+              <button type="submit" class="btn">Save</button>
+            </div>
+          </form>
+        </div>
+      </div>
     </main>
     <footer th:replace="~{fragments/shell :: footer}"></footer>
+
+    <!--
+      htmx json-enc extension for PATCH body on config update; chaos.html
+      uses the same pattern. Loaded after htmx itself (which ships in the
+      shell head fragment), so the extension registers before any hx-post
+      with hx-ext="json-enc" fires.
+    -->
+    <script th:src="@{/vendor/htmx-json-enc.js}"></script>
+
+    <script>
+      // Pretty-print compact results + REST errors into #topic-flash so the
+      // operator sees "compacted 42 records across 3 brokers" rather than
+      // raw JSON. Also drives the edit-config form's parse+PATCH so we can
+      // keep TopicsViewController.java untouched (see PR template notes).
+      (function () {
+        var flash = document.getElementById("topic-flash");
+
+        function say(ok, msg) {
+          if (!flash) return;
+          flash.className = "topic-flash " + (ok ? "ok" : "err");
+          flash.textContent = msg;
+        }
+
+        // Suppress htmx's default body swap so we can write a formatted
+        // message instead of dumping raw JSON into #topic-flash.
+        document.addEventListener("htmx:beforeSwap", function (evt) {
+          var btn = evt.detail && evt.detail.requestConfig && evt.detail.requestConfig.elt;
+          if (!btn || !btn.classList || !btn.classList.contains("partition-compact-btn")) return;
+          evt.detail.shouldSwap = false;
+        });
+
+        document.addEventListener("htmx:afterRequest", function (evt) {
+          var btn = evt.detail && evt.detail.elt;
+          if (!btn || !btn.classList || !btn.classList.contains("partition-compact-btn")) return;
+          var xhr = evt.detail.xhr;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              var body = JSON.parse(xhr.responseText);
+              // Spring serialises our record as snake_case (see
+              // ForceCompactEndpointIT). Fall back to camelCase just in case.
+              var kept = body.records_kept != null ? body.records_kept : body.recordsKept;
+              var bc = body.brokers_compacted != null ? body.brokers_compacted : body.brokersCompacted;
+              say(true, "compacted " + kept + " records across " + bc + " broker(s)");
+            } catch (e) {
+              say(true, "compacted (response: " + xhr.responseText + ")");
+            }
+          } else {
+            say(false, "compact failed: " + xhr.status + " " + xhr.responseText);
+          }
+        });
+
+        var form = document.getElementById("edit-config-form");
+        if (form) {
+          form.addEventListener("submit", function (e) {
+            e.preventDefault();
+            var ta = form.querySelector("textarea[name=kv]");
+            var topic = form.getAttribute("data-topic-name");
+            var overlay = {};
+            var lines = (ta.value || "").split(/\r?\n/);
+            for (var i = 0; i < lines.length; i++) {
+              var line = lines[i].trim();
+              if (!line) continue;
+              var eq = line.indexOf("=");
+              if (eq <= 0) continue;
+              overlay[line.substring(0, eq).trim()] = line.substring(eq + 1).trim();
+            }
+            fetch("/api/v1/topics/" + encodeURIComponent(topic) + "/config", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(overlay),
+            }).then(function (r) {
+              if (r.ok) {
+                say(true, "config updated — reloading…");
+                // Reload so the server-rendered config table picks up the
+                // new values. 250ms gives the user a beat to read the flash.
+                setTimeout(function () { window.location.reload(); }, 250);
+              } else {
+                r.text().then(function (t) { say(false, "config update failed: " + r.status + " " + t); });
+              }
+            }).catch(function (err) {
+              say(false, "config update failed: " + err);
+            });
+          });
+        }
+      })();
+    </script>
   </body>
 </html>

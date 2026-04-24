@@ -376,13 +376,19 @@ public final class Broker implements AutoCloseable {
             }
         };
         var brokerRegistry = new jbroker.broker.BrokerRegistry();
+        // Audit-finding #1 — one ProducerStateManager per broker, shared
+        // between this broker's ProduceHandler (leader dedup) and every
+        // ReplicaFetcher (follower observe). Keeps idempotent-producer
+        // dedup state correct across leader failover.
+        var producerState = new jbroker.broker.ProducerStateManager();
         var fetcherFactory = new jbroker.broker.replication.DefaultFetcherFactory(
                 config.selfId().value(),
                 logManager,
                 topicManager,
                 /*pollIntervalMs*/ 25L,
                 /*fetchTimeoutMs*/ 2_000L,
-                config.tls());
+                config.tls(),
+                producerState);
         var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
                 config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
         MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt, ah, ap) -> {
@@ -398,6 +404,9 @@ public final class Broker implements AutoCloseable {
         MetadataStateMachine.TopicDeletionListener topicDeletionChain = deletedTopic -> {
             logManager.deleteTopicDir(deletedTopic);
             fetcherManager.scheduleReconcile();
+            // Audit-finding #1 — drop this topic's dedup entries so a
+            // topic recreated with the same name starts with a clean slate.
+            producerState.evictTopic(deletedTopic);
         };
         var metadataSm = new MetadataStateMachine(
                 topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager, topicDeletionChain);
@@ -418,8 +427,14 @@ public final class Broker implements AutoCloseable {
         var fetchSessionCache = new jbroker.broker.FetchSessionCache();
         var fetch = new FetchHandler(logManager, topicManager, fetchSessionCache, brokerMetrics);
         var followerTracker = new FollowerStateTracker();
-        var produce =
-                new ProduceHandler(logManager, topicManager, config.selfId().value(), followerTracker, brokerMetrics);
+        var produce = new ProduceHandler(
+                logManager,
+                topicManager,
+                config.selfId().value(),
+                followerTracker,
+                brokerMetrics,
+                jbroker.broker.quota.QuotaEnforcer.NOOP,
+                producerState);
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(

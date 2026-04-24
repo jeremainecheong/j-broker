@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicLong;
 import jbroker.broker.ErrorCodes;
+import jbroker.broker.ProducerStateManager;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
 import jbroker.storage.LogManager;
@@ -39,14 +40,33 @@ public final class ReplicaFetcher {
     private final int partition;
     private final int selfBrokerId;
     private final Peer peer;
+    private final ProducerStateManager producerState;
     private final AtomicLong highWatermark = new AtomicLong();
 
     public ReplicaFetcher(LogManager logManager, String topic, int partition, int selfBrokerId, Peer peer) {
+        this(logManager, topic, partition, selfBrokerId, peer, null);
+    }
+
+    /**
+     * Audit-finding #1 — TLS-aware constructor (misnomer aside, the extra
+     * parameter is for idempotent-producer dedup state). Followers call
+     * {@link ProducerStateManager#observeAppend} for every batch they
+     * replicate so the broker's dedup view survives a leader failover onto
+     * this peer.
+     */
+    public ReplicaFetcher(
+            LogManager logManager,
+            String topic,
+            int partition,
+            int selfBrokerId,
+            Peer peer,
+            ProducerStateManager producerState) {
         this.logManager = logManager;
         this.topic = topic;
         this.partition = partition;
         this.selfBrokerId = selfBrokerId;
         this.peer = peer;
+        this.producerState = producerState;
     }
 
     /**
@@ -119,6 +139,19 @@ public final class ReplicaFetcher {
             byte[] slice = new byte[endPos - startPos];
             System.arraycopy(bytes, startPos, slice, 0, slice.length);
             local.appendRaw(slice, decoded.baseOffset());
+            // Audit-finding #1 — every applied idempotent batch advances our
+            // local ProducerStateManager so a future takeover as leader
+            // already has the dedup state needed to recognize retries.
+            if (producerState != null && decoded.producerId() > 0) {
+                var key = new ProducerStateManager.DedupKey(
+                        topic, partition, decoded.producerId(), (int) decoded.producerEpoch());
+                producerState.observeAppend(
+                        key,
+                        decoded.baseSequence(),
+                        decoded.records().size(),
+                        decoded.baseOffset(),
+                        decoded.lastOffset());
+            }
         }
         highWatermark.set(resp.getHighWatermark());
         return PollResult.ADVANCED;

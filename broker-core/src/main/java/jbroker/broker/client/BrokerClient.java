@@ -215,6 +215,22 @@ public final class BrokerClient implements AutoCloseable {
      */
     public long idempotentProduce(
             String topic, int partition, byte[] value, long producerId, int epoch, int baseSequence) {
+        return idempotentProduceWithAcks(topic, partition, value, producerId, epoch, baseSequence, /*acks*/ 1);
+    }
+
+    /**
+     * Idempotent produce with {@code acks=all} — blocks until every ISR
+     * member has the record. Tests that need replication guaranteed before
+     * a subsequent failover step (e.g., idempotent-dedup-across-failover)
+     * use this variant; in-cluster producers typically do not.
+     */
+    public long idempotentProduceAcksAll(
+            String topic, int partition, byte[] value, long producerId, int epoch, int baseSequence) {
+        return idempotentProduceWithAcks(topic, partition, value, producerId, epoch, baseSequence, /*acks*/ -1);
+    }
+
+    private long idempotentProduceWithAcks(
+            String topic, int partition, byte[] value, long producerId, int epoch, int baseSequence, int acks) {
         var records = List.of(new Record(0, 0L, null, value));
         var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
         long now = System.currentTimeMillis();
@@ -222,7 +238,8 @@ public final class BrokerClient implements AutoCloseable {
         buf.flip();
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
-        var resp = producer.withDeadlineAfter(5, TimeUnit.SECONDS)
+        long deadlineSeconds = acks == -1 ? 7 : 5;
+        var resp = producer.withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
                 .produce(ProduceRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -230,6 +247,7 @@ public final class BrokerClient implements AutoCloseable {
                         .setProducerId(producerId)
                         .setProducerEpoch(epoch)
                         .setBaseSequence(baseSequence)
+                        .setAcks(acks)
                         .build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("produce failed: " + resp.getError().getMessage());

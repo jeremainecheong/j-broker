@@ -49,8 +49,12 @@ public class MetricsController {
             fetchCount += r.getFetchCount();
             windowSeconds = Math.max(windowSeconds, r.getWindowSeconds());
         }
+        // Idle brokers report windowSeconds=0.0 because no sample has fired.
+        // Serialise as null so downstream scrapers can distinguish "no data
+        // yet" from "observed zero over N seconds" and not divide by zero.
+        Double reportedWindow = windowSeconds == 0.0 ? null : windowSeconds;
         return new ThroughputView(
-                windowSeconds, produceCount, produceBytes, fetchCount, fetchBytes, produceBps, fetchBps);
+                reportedWindow, produceCount, produceBytes, fetchCount, fetchBytes, produceBps, fetchBps);
     }
 
     @GetMapping("/latency")
@@ -120,8 +124,12 @@ public class MetricsController {
         return out;
     }
 
+    // `windowSeconds` is boxed (nullable) so an idle broker — which reports
+    // zero sample time — emits `"window_seconds": null` instead of `0.0`.
+    // Lets Prometheus-style scrapers distinguish "no data yet" from a real
+    // zero and skip the div-by-zero computation without special-casing.
     public record ThroughputView(
-            double windowSeconds,
+            Double windowSeconds,
             long produceCount,
             long produceBytes,
             long fetchCount,

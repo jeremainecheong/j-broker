@@ -2,6 +2,15 @@
 <html xmlns:th="http://www.thymeleaf.org">
   <head th:replace="~{fragments/shell :: head ('j-broker admin — Chaos')}"></head>
   <body>
+    <!--
+      chaos.js loads synchronously (no `defer`) BEFORE Alpine's deferred
+      script in shell.html/head fires. This ordering is load-bearing:
+      chaos.js's `alpine:init` listener must be attached before Alpine
+      calls `dispatchEvent(new CustomEvent('alpine:init'))` and walks
+      the DOM, otherwise `x-data="chaosFeed"` resolves to undefined and
+      the Live events rail stays blank (UI audit #26 fix).
+    -->
+    <script th:src="@{/chaos.js}"></script>
     <nav th:replace="~{fragments/shell :: topnav}"></nav>
     <main>
       <h1>Chaos</h1>
@@ -13,9 +22,36 @@
         stack — see <code>docker-compose.yml</code>).
       </div>
 
+      <!--
+        Live topology. Rendered empty; chaos.js paints nodes + partition
+        edges on load and every 3s afterward off `/api/v1/cluster` and
+        `/api/v1/chaos/state`. Data-broker-id hooks below let the JS find
+        each node without re-querying after the initial render.
+      -->
+      <section class="card chaos-topology-card">
+        <header class="chaos-topology-head">
+          <h2 style="margin:0;">Live topology</h2>
+          <div class="chaos-legend" aria-label="node state legend">
+            <span><i class="dot leader"></i>leader</span>
+            <span><i class="dot follower"></i>follower</span>
+            <span><i class="dot dead"></i>dead</span>
+            <span><i class="dot paused"></i>paused</span>
+            <span><i class="dot latency"></i>latency</span>
+            <span class="muted">dashed red edge = partition</span>
+          </div>
+        </header>
+        <svg id="chaos-topology" viewBox="0 0 600 320" preserveAspectRatio="xMidYMid meet">
+          <g id="chaos-edges"></g>
+          <g id="chaos-nodes"></g>
+          <text id="chaos-topology-empty" x="300" y="160" text-anchor="middle" class="muted">
+            loading topology…
+          </text>
+        </svg>
+      </section>
+
       <div class="chaos-layout">
         <section class="chaos-brokers">
-          <h2>Brokers</h2>
+          <h2>Actions</h2>
           <div class="chaos-card-grid">
             <article
               class="chaos-card"
@@ -52,6 +88,19 @@
                   hx-target="#chaos-flash"
                   hx-swap="textContent"
                   title="Nudge the broker to force a new Raft election (dev-only)">Force election</button>
+                <!-- Inject latency. Small inline form so the operator can pick
+                     a value; body is JSON-encoded via htmx json-enc. -->
+                <form
+                  class="chaos-latency-form"
+                  th:attr="hx-post=@{/api/v1/chaos/inject-latency/{id}(id=${n.brokerId()})}"
+                  hx-ext="json-enc"
+                  hx-target="#chaos-flash"
+                  hx-swap="textContent">
+                  <input type="number" name="millis" min="0" max="10000" step="10" value="50"
+                         aria-label="latency ms" />
+                  <button type="submit" class="btn secondary"
+                          title="Inject per-RPC latency on this broker's interceptor">Inject latency</button>
+                </form>
               </div>
             </article>
           </div>
@@ -89,6 +138,8 @@
                 type="button"
                 class="btn secondary"
                 hx-post="/api/v1/chaos/heal-partition"
+                hx-ext="json-enc"
+                hx-vals='{"from":0,"to":0}'
                 hx-target="#chaos-flash"
                 hx-swap="textContent">Heal all</button>
             </form>
@@ -97,10 +148,13 @@
           <div id="chaos-flash" class="chaos-flash" aria-live="polite"></div>
         </section>
 
+        <!--
+          Live events rail. Alpine component registered via alpine:init so
+          the x-data reference is resolvable at init time (see chaos.js).
+        -->
         <aside
           class="chaos-rail"
-          x-data="chaosFeed()"
-          x-init="subscribe()">
+          x-data="chaosFeed">
           <header class="chaos-rail-head">
             <h2 style="margin:0;">Live events</h2>
             <span class="muted">SSE · last <span x-text="events.length"></span></span>
@@ -122,7 +176,6 @@
     </main>
     <footer>j-broker admin</footer>
 
-    <script src="https://unpkg.com/[email protected]/json-enc.js"></script>
-    <script th:src="@{/chaos.js}" defer></script>
+    <script th:src="@{/vendor/htmx-json-enc.js}"></script>
   </body>
 </html>

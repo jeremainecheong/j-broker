@@ -1,36 +1,33 @@
 package jbroker.admin.ui;
 
 import jbroker.admin.api.ClusterController;
-import jbroker.admin.client.BrokerAdminClientPool;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
 
 /**
- * P11.6 — chaos control plane UI. Renders a per-broker card grid with
- * kill/pause/resume buttons plus a partition control, all wired through
- * htmx POSTs to the existing {@code /api/v1/chaos/...} REST surface.
+ * P11.6 — chaos control plane UI. Renders a live topology SVG + per-broker
+ * action grid. State is fetched client-side via {@code /api/v1/cluster}
+ * and {@code /api/v1/chaos/state} on a 3s poll so kill / pause / partition
+ * actions are visible in real time without a page reload.
  *
- * <p>Closes the P9.4 deferred item: the REST layer + broker-side chaos
- * HTTP servers have been live since P9.3, but until now the only way to
- * exercise them was curl. With this page the cluster's failure injection
- * is interactive — kill a leader from the browser, watch SSE-driven
- * events in the right rail update, see the cluster-health pill flip to
- * yellow then green as the system heals.
+ * <p>Uses {@link ClusterController#cluster()} (the merged fan-out) for
+ * the initial render so every broker's role appears correctly on first
+ * paint — the single-broker {@code pool.describeCluster()} shortcut
+ * stamps peers as UNKNOWN in a 3-broker cluster (UI audit #1 root cause).
  */
 @Controller
 public class ChaosViewController {
 
-    private final BrokerAdminClientPool pool;
+    private final ClusterController clusterController;
 
-    public ChaosViewController(BrokerAdminClientPool pool) {
-        this.pool = pool;
+    public ChaosViewController(ClusterController clusterController) {
+        this.clusterController = clusterController;
     }
 
     @GetMapping("/chaos")
     public String chaos(Model model) {
-        var summary = ClusterController.toSummary(pool.describeCluster());
-        model.addAttribute("cluster", summary);
+        model.addAttribute("cluster", clusterController.cluster());
         return "chaos";
     }
 }

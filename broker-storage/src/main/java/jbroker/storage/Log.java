@@ -266,7 +266,8 @@ public final class Log implements AutoCloseable {
         // offsets 2–4 is real, readers fetching offset=3 land on the batch
         // at base=1 (whose lastOffset=5).
         var byKey = new java.util.HashMap<java.nio.ByteBuffer, Long>(); // keyBytes -> abs offset of current winner
-        var survivors = new java.util.TreeMap<Long, Record>(); // abs offset -> surviving record (naked, no offset delta)
+        var survivors =
+                new java.util.TreeMap<Long, Record>(); // abs offset -> surviving record (naked, no offset delta)
         long nowMillis = System.currentTimeMillis();
         long firstTimestamp = nowMillis;
         long maxTimestamp = nowMillis;

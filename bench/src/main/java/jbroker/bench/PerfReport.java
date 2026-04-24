@@ -54,10 +54,7 @@ final class PerfReport {
             Files.createDirectories(csvFile.toAbsolutePath().getParent());
             boolean fresh = !Files.exists(csvFile);
             try (BufferedWriter w = Files.newBufferedWriter(
-                    csvFile,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND,
-                    StandardOpenOption.WRITE)) {
+                    csvFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.WRITE)) {
                 if (fresh) {
                     w.write("mode,records,bytes,elapsed_s,records_per_s,bytes_per_s,p50_us,p99_us,p999_us,max_us\n");
                 }

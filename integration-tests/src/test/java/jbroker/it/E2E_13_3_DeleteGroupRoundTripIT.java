@@ -58,7 +58,10 @@ class E2E_13_3_DeleteGroupRoundTripIT {
                 var admin = AdminGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
                 var metadata = MetadataGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
 
-                var tp = TopicPartition.newBuilder().setTopic("orders").setPartition(0).build();
+                var tp = TopicPartition.newBuilder()
+                        .setTopic("orders")
+                        .setPartition(0)
+                        .build();
 
                 // Join + commit so the group has both coordinator state and
                 // an OffsetCache entry to drop.
@@ -81,7 +84,8 @@ class E2E_13_3_DeleteGroupRoundTripIT {
                 assertThat(commit.getResults(0).getError()).isEqualTo(ErrorCode.OK);
 
                 // Pre-delete observability: group listed + offset present.
-                var preListing = metadata.listConsumerGroups(ListConsumerGroupsRequest.newBuilder().build());
+                var preListing = metadata.listConsumerGroups(
+                        ListConsumerGroupsRequest.newBuilder().build());
                 assertThat(preListing.getError()).isEqualTo(ErrorCode.OK);
                 assertThat(preListing.getGroupsList())
                         .as("group shows up in ListConsumerGroups before deletion")
@@ -101,7 +105,8 @@ class E2E_13_3_DeleteGroupRoundTripIT {
                 assertThat(del.getError()).isEqualTo(ErrorCode.OK);
 
                 // Post-delete: group absent from listing.
-                var postListing = metadata.listConsumerGroups(ListConsumerGroupsRequest.newBuilder().build());
+                var postListing = metadata.listConsumerGroups(
+                        ListConsumerGroupsRequest.newBuilder().build());
                 assertThat(postListing.getError()).isEqualTo(ErrorCode.OK);
                 assertThat(postListing.getGroupsList())
                         .as("group disappears from ListConsumerGroups after deletion")

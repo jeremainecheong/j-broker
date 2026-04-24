@@ -57,10 +57,7 @@ class E2E_9_5_MillionRecordCompactionIT {
                 String value = "v" + i;
                 log.append(
                         List.of(new jbroker.storage.Record(
-                                0,
-                                0L,
-                                key.getBytes(StandardCharsets.UTF_8),
-                                value.getBytes(StandardCharsets.UTF_8))),
+                                0, 0L, key.getBytes(StandardCharsets.UTF_8), value.getBytes(StandardCharsets.UTF_8))),
                         System.currentTimeMillis());
             }
             long appendElapsedMs = (System.nanoTime() - t0) / 1_000_000L;

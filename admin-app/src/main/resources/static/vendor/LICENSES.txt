@@ -9,11 +9,13 @@ Refresh versions by re-downloading with the `@` URL-encoded as `%40`
 
   curl -sL -o alpine-3.13.5.min.js "https://unpkg.com/alpinejs%403.13.5/dist/cdn.min.js"
   curl -sL -o htmx-1.9.12.min.js   "https://unpkg.com/htmx.org%401.9.12/dist/htmx.min.js"
+  curl -sL -o chart-4.4.3.umd.js   "https://unpkg.com/chart.js%404.4.3/dist/chart.umd.js"
 
 File                      Version   Source                                            License
 ---------------------------------------------------------------------------------------------------
 alpine-3.13.5.min.js      3.13.5    https://github.com/alpinejs/alpine                MIT
 htmx-1.9.12.min.js        1.9.12    https://github.com/bigskysoftware/htmx            BSD-2-Clause
+chart-4.4.3.umd.js        4.4.3     https://github.com/chartjs/Chart.js               MIT
 
 Both licenses permit redistribution without attribution in-tree; the
 source repos carry the authoritative license files.

@@ -43,7 +43,8 @@ final class ClusterMergeRolesTest {
 
         var merged = ClusterController.mergeSelfReportedRoles(List.of(r1, r2, r3));
 
-        assertThat(merged.getNodesList()).extracting(BrokerInfo::getRole)
+        assertThat(merged.getNodesList())
+                .extracting(BrokerInfo::getRole)
                 .containsExactly("FOLLOWER", "FOLLOWER", "LEADER");
     }
 
@@ -51,13 +52,13 @@ final class ClusterMergeRolesTest {
     void primaryIsFirstOkResponseEvenIfLaterResponsesHaveMoreConcreteRoles() {
         // Errors ignored entirely: primary is the first OK, merge draws from
         // every OK.
-        var err = DescribeClusterResponse.newBuilder().setError(ErrorCode.UNKNOWN).build();
+        var err =
+                DescribeClusterResponse.newBuilder().setError(ErrorCode.UNKNOWN).build();
         var r1 = resp(2, node(1, "FOLLOWER"), node(2, "UNKNOWN"));
         var r2 = resp(2, node(1, "UNKNOWN"), node(2, "LEADER"));
 
         var merged = ClusterController.mergeSelfReportedRoles(List.of(err, r1, r2));
-        assertThat(merged.getNodesList()).extracting(BrokerInfo::getRole)
-                .containsExactly("FOLLOWER", "LEADER");
+        assertThat(merged.getNodesList()).extracting(BrokerInfo::getRole).containsExactly("FOLLOWER", "LEADER");
     }
 
     @Test
@@ -69,8 +70,7 @@ final class ClusterMergeRolesTest {
         var r2 = resp(1, node(1, "UNKNOWN"), node(2, "UNKNOWN"));
 
         var merged = ClusterController.mergeSelfReportedRoles(List.of(r1, r2));
-        assertThat(merged.getNodesList()).extracting(BrokerInfo::getRole)
-                .containsExactly("LEADER", "FOLLOWER");
+        assertThat(merged.getNodesList()).extracting(BrokerInfo::getRole).containsExactly("LEADER", "FOLLOWER");
     }
 
     @Test
@@ -78,7 +78,6 @@ final class ClusterMergeRolesTest {
         var r1 = resp(-1, node(1, "UNKNOWN"), node(2, "UNKNOWN"));
         var r2 = resp(-1, node(1, "UNKNOWN"), node(2, "UNKNOWN"));
         var merged = ClusterController.mergeSelfReportedRoles(List.of(r1, r2));
-        assertThat(merged.getNodesList()).extracting(BrokerInfo::getRole)
-                .containsExactly("UNKNOWN", "UNKNOWN");
+        assertThat(merged.getNodesList()).extracting(BrokerInfo::getRole).containsExactly("UNKNOWN", "UNKNOWN");
     }
 }

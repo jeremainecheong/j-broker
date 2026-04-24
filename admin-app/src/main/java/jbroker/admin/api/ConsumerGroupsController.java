@@ -158,8 +158,7 @@ public class ConsumerGroupsController {
     @PostMapping("/{id}/reset-offsets")
     public ResponseEntity<?> resetOffsets(@PathVariable("id") String id, @RequestBody ResetOffsetsBody body) {
         if (body == null || body.resets() == null || body.resets().isEmpty()) {
-            return ResponseEntity.badRequest()
-                    .body(RestError.of("INVALID_REQUEST", "resets array must be non-empty"));
+            return ResponseEntity.badRequest().body(RestError.of("INVALID_REQUEST", "resets array must be non-empty"));
         }
         var protoResets = new ArrayList<OffsetReset>(body.resets().size());
         for (var r : body.resets()) {
@@ -180,7 +179,9 @@ public class ConsumerGroupsController {
                     var results = new ArrayList<OffsetResetResult>();
                     for (var r : resp.getResultsList()) {
                         results.add(new OffsetResetResult(
-                                r.getTp().getTopic(), r.getTp().getPartition(), r.getError().name()));
+                                r.getTp().getTopic(),
+                                r.getTp().getPartition(),
+                                r.getError().name()));
                     }
                     return ResponseEntity.ok(new ResetOffsetsResponse(results));
                 }

@@ -82,9 +82,7 @@ public class RedisEventFanout {
         }
         log.info("Redis admin event fan-out enabled (pod_id={}, channel={})", selfPodId, CHANNEL);
         bus.setExternalPublisher(this::publish);
-        subscriberThread = Thread.ofVirtual()
-                .name("redis-event-subscriber")
-                .start(this::subscriberLoop);
+        subscriberThread = Thread.ofVirtual().name("redis-event-subscriber").start(this::subscriberLoop);
     }
 
     @PreDestroy
@@ -224,8 +222,7 @@ public class RedisEventFanout {
         sock.setTcpNoDelay(true);
         sock.setSoTimeout(PUBLISH_READ_TIMEOUT_MS);
         sock.connect(
-                new InetSocketAddress(uri.getHost(), uri.getPort() > 0 ? uri.getPort() : 6379),
-                CONNECT_TIMEOUT_MS);
+                new InetSocketAddress(uri.getHost(), uri.getPort() > 0 ? uri.getPort() : 6379), CONNECT_TIMEOUT_MS);
         this.publisherSocket = sock;
         this.publisherOut = sock.getOutputStream();
         this.publisherIn = new BufferedInputStream(sock.getInputStream());

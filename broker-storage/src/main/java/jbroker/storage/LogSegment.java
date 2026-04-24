@@ -202,20 +202,52 @@ public final class LogSegment implements AutoCloseable {
      * batch was written.
      */
     public int append(long firstTimestamp, long maxTimestamp, List<Record> records) throws IOException {
+        return append(
+                firstTimestamp,
+                maxTimestamp,
+                records, /*producerId*/
+                -1L, /*producerEpoch*/
+                (short) -1, /*baseSequence*/
+                -1);
+    }
+
+    /**
+     * Audit-finding #1 — append that preserves the caller-supplied idempotent-
+     * producer fields (producerId, producerEpoch, baseSequence) in the encoded
+     * batch header. Required so followers replicating the batch can observe
+     * the dedup state and the broker can correctly reject duplicate retries
+     * after a leader failover.
+     */
+    public int append(
+            long firstTimestamp,
+            long maxTimestamp,
+            List<Record> records,
+            long producerId,
+            short producerEpoch,
+            int baseSequence)
+            throws IOException {
         lock.lock();
         try {
-            return appendLocked(firstTimestamp, maxTimestamp, records);
+            return appendLocked(firstTimestamp, maxTimestamp, records, producerId, producerEpoch, baseSequence);
         } finally {
             lock.unlock();
         }
     }
 
-    private int appendLocked(long firstTimestamp, long maxTimestamp, List<Record> records) throws IOException {
+    private int appendLocked(
+            long firstTimestamp,
+            long maxTimestamp,
+            List<Record> records,
+            long producerId,
+            short producerEpoch,
+            int baseSequence)
+            throws IOException {
         if (records.isEmpty()) throw new IllegalArgumentException("records must be non-empty");
         long baseOff = nextOffset;
         int size = RecordBatch.estimatedSize(records);
         var buf = ByteBuffer.allocate(size);
-        int written = RecordBatch.encode(buf, baseOff, 0, firstTimestamp, maxTimestamp, -1L, (short) -1, -1, records);
+        int written = RecordBatch.encode(
+                buf, baseOff, 0, firstTimestamp, maxTimestamp, producerId, producerEpoch, baseSequence, records);
         buf.flip();
         int pos = (int) logChannel.size();
         while (buf.hasRemaining()) {

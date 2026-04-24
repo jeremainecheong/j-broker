@@ -101,12 +101,21 @@ public final class Log implements AutoCloseable {
     }
 
     public long append(List<Record> records, long nowMillis) throws IOException {
+        return append(records, nowMillis, /*producerId*/ -1L, /*producerEpoch*/ (short) -1, /*baseSequence*/ -1);
+    }
+
+    /**
+     * Audit-finding #1 — append that preserves the caller-supplied idempotent-
+     * producer fields so follower replication can observe dedup state.
+     */
+    public long append(List<Record> records, long nowMillis, long producerId, short producerEpoch, int baseSequence)
+            throws IOException {
         lock.lock();
         try {
             var active = segments.get(segments.size() - 1);
             long firstTimestamp = nowMillis;
             long maxTimestamp = nowMillis;
-            active.append(firstTimestamp, maxTimestamp, records);
+            active.append(firstTimestamp, maxTimestamp, records, producerId, producerEpoch, baseSequence);
             long assignedLast = active.nextOffset() - 1;
             if (active.sizeBytes() >= config.segmentBytes()) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());

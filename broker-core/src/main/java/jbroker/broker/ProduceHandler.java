@@ -2,7 +2,6 @@ package jbroker.broker;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.proto.broker.ProduceRequest;
@@ -38,12 +37,7 @@ public final class ProduceHandler {
     private final FollowerStateTracker followerTracker;
     private final BrokerMetrics metrics;
     private final jbroker.broker.quota.QuotaEnforcer quotaEnforcer;
-
-    // TODO(P6.8): idle-producer-state expiration. This map grows unbounded
-    // across (topic, partition, producer_id, producer_epoch) pairs ever
-    // seen. A long-running broker with many transient producers leaks
-    // memory; chaos scripts in P6.8 will need an LRU cap.
-    private final ConcurrentHashMap<DedupKey, DedupEntry> dedup = new ConcurrentHashMap<>();
+    private final ProducerStateManager producerState;
 
     public ProduceHandler(
             LogManager logManager,
@@ -62,12 +56,36 @@ public final class ProduceHandler {
             FollowerStateTracker followerTracker,
             BrokerMetrics metrics,
             jbroker.broker.quota.QuotaEnforcer quotaEnforcer) {
+        this(
+                logManager,
+                topicManager,
+                selfBrokerId,
+                followerTracker,
+                metrics,
+                quotaEnforcer,
+                new ProducerStateManager());
+    }
+
+    /**
+     * Audit-finding #1 — constructor accepting a shared {@link ProducerStateManager}
+     * so the follower's replica-fetch apply path can observe every applied batch,
+     * keeping idempotent-producer dedup state correct across leader failover.
+     */
+    public ProduceHandler(
+            LogManager logManager,
+            TopicManager topicManager,
+            int selfBrokerId,
+            FollowerStateTracker followerTracker,
+            BrokerMetrics metrics,
+            jbroker.broker.quota.QuotaEnforcer quotaEnforcer,
+            ProducerStateManager producerState) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
         this.followerTracker = followerTracker;
         this.metrics = metrics == null ? new BrokerMetrics() : metrics;
         this.quotaEnforcer = quotaEnforcer == null ? jbroker.broker.quota.QuotaEnforcer.NOOP : quotaEnforcer;
+        this.producerState = producerState == null ? new ProducerStateManager() : producerState;
     }
 
     /** Back-compat overload: omits metrics (tests that don't care). */
@@ -130,47 +148,45 @@ public final class ProduceHandler {
             return appendAndRespond(req, parsed);
         }
 
-        // Atomic dedup+append under a per-(producer, partition) key lock so
-        // two concurrent retries for the same sequence can't both append.
-        // The returned response is either a cached-duplicate or a fresh
-        // append; the IOException wrapper below unwraps the IO failure.
-        var result = new ProduceResult();
-        var key = new DedupKey(req.getTopic(), req.getPartition(), req.getProducerId(), req.getProducerEpoch());
-        dedup.compute(key, (k, cached) -> {
-            if (cached != null
-                    && cached.lastBaseSequence == req.getBaseSequence()
-                    && cached.recordCount == parsed.records().size()) {
-                result.response = ProduceResponse.newBuilder()
-                        .setBaseOffset(cached.baseOffset)
-                        .setLastOffset(cached.lastOffset)
-                        .build();
-                return cached;
+        // Atomic dedup+append routed through the shared ProducerStateManager
+        // so every broker (leader + followers) keeps the same view of applied
+        // (pid, epoch, baseSequence) batches — that's what makes idempotent
+        // retries survive leader failover.
+        var key = new ProducerStateManager.DedupKey(
+                req.getTopic(), req.getPartition(), req.getProducerId(), req.getProducerEpoch());
+        var appendHolder = new AppendHolder();
+        var result = producerState.dedupOrAppend(
+                key, req.getBaseSequence(), parsed.records().size(), () -> {
+                    var resp = appendAndRespond(req, parsed);
+                    appendHolder.response = resp;
+                    if (resp.hasError()) {
+                        return null;
+                    }
+                    return new long[] {resp.getBaseOffset(), resp.getLastOffset()};
+                });
+        if (result.hasError()) {
+            // Out-of-order sequence, or append IOException. Either way:
+            // surface the error from the append side when present, else
+            // OUT_OF_ORDER from the dedup check.
+            if (appendHolder.response != null && appendHolder.response.hasError()) {
+                return appendHolder.response;
             }
-            // A retry with the same baseSequence but a different record count
-            // is treated as out-of-order — the client re-batched and we
-            // refuse to return offsets that don't cover the retry's payload.
-            if (cached != null) {
-                int expected = cached.lastBaseSequence + cached.recordCount;
-                if (req.getBaseSequence() != expected) {
-                    result.response = err(
-                            ErrorCodes.OUT_OF_ORDER_SEQUENCE,
-                            "expected base_sequence " + expected + ", got " + req.getBaseSequence());
-                    return cached;
-                }
-            }
-            // First batch or contiguous next batch: append.
-            var appendResult = appendAndRespond(req, parsed);
-            result.response = appendResult;
-            if (!appendResult.hasError()) {
-                return new DedupEntry(
-                        req.getBaseSequence(),
-                        parsed.records().size(),
-                        appendResult.getBaseOffset(),
-                        appendResult.getLastOffset());
-            }
-            return cached;
-        });
-        return result.response;
+            return err(ErrorCodes.OUT_OF_ORDER_SEQUENCE, result.errorMessage());
+        }
+        if (result.cached()) {
+            return ProduceResponse.newBuilder()
+                    .setBaseOffset(result.baseOffset())
+                    .setLastOffset(result.lastOffset())
+                    .build();
+        }
+        // Fresh append — appendAndRespond already built the full response
+        // (including latency metric + JFR event), just surface it verbatim.
+        return appendHolder.response;
+    }
+
+    /** Capture slot so the Appender lambda can hand its full response back to the caller. */
+    private static final class AppendHolder {
+        ProduceResponse response;
     }
 
     private ProduceResponse appendAndRespond(ProduceRequest req, RecordBatch.Parsed parsed) {
@@ -178,7 +194,12 @@ public final class ProduceHandler {
         try {
             var log = logManager.logFor(req.getTopic(), req.getPartition());
             long now = System.currentTimeMillis();
-            long last = log.append(parsed.records(), now);
+            // Audit-finding #1 — preserve producer id / epoch / baseSequence in
+            // the on-disk batch so followers replicating this batch can observe
+            // the dedup state (and a leader rebooting from its own log can
+            // rebuild state without help).
+            long last = log.append(
+                    parsed.records(), now, req.getProducerId(), (short) req.getProducerEpoch(), req.getBaseSequence());
             long first = last - (parsed.records().size() - 1);
             if (req.getAcks() == ACKS_ALL) {
                 var wait = waitForIsrReplication(req.getTopic(), req.getPartition(), last);
@@ -248,13 +269,5 @@ public final class ProduceHandler {
                         .setMessage(message)
                         .build())
                 .build();
-    }
-
-    private record DedupKey(String topic, int partition, long producerId, int producerEpoch) {}
-
-    private record DedupEntry(int lastBaseSequence, int recordCount, long baseOffset, long lastOffset) {}
-
-    private static final class ProduceResult {
-        ProduceResponse response;
     }
 }

@@ -237,6 +237,27 @@ h2 {
   box-shadow: var(--shadow-card);
 }
 
+/*
+ * Full-viewport modal overlay. Externalised from inline `style="display:flex; ..."`
+ * because Alpine's `x-show` toggles `element.style.display` directly — on the
+ * first hide it writes `display: none`, on un-hide it restores the saved inline
+ * value. If the original display was inline, that round-trip works; but if
+ * Alpine reads `element.style.display` AFTER x-cloak has been processed, it can
+ * lose the inline `flex` and fall back to `display: block`, which strips the
+ * centering. Moving display + position into a CSS class means Alpine only
+ * toggles `display: none` vs empty-string (cascade), and the class's `flex`
+ * centering survives every toggle.
+ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
 /* Tables ---------------------------------------------------------------- */
 
 table {

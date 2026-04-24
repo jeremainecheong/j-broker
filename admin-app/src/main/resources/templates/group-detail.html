@@ -39,8 +39,7 @@
            CSS rule (`[x-cloak] { display: none !important; }`) keeps the
            modal hidden until Alpine evaluates x-show. Single-row form for
            now — multi-row add/remove lives in a follow-up PR. -->
-      <div x-show="showReset" x-cloak
-           style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:100;">
+      <div class="modal-overlay" x-show="showReset" x-cloak>
         <div class="card" style="width:420px;">
           <h2 style="margin-top:0; font-size:1.05rem;">Reset offsets</h2>
           <form method="post" th:action="@{/ui/groups/{id}/reset-offsets(id=${detail.groupId()})}">

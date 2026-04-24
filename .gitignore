@@ -1,6 +1,7 @@
-# Markdown — only README.md is tracked
+# Markdown — READMEs are tracked everywhere; other *.md files are not.
 *.md
 !README.md
+!**/README.md
 
 # Gradle
 .gradle/

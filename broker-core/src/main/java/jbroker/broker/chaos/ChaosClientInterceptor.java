@@ -34,7 +34,7 @@ public final class ChaosClientInterceptor implements ClientInterceptor {
     @Override
     public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
             MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
-        if (state.isPaused() || state.isBlocked(peerBrokerId)) {
+        if (state.isPaused() || state.isOutboundBlocked(peerBrokerId)) {
             throw new StatusRuntimeException(Status.UNAVAILABLE.withDescription(
                     "jbroker-chaos: outbound RPC to broker " + peerBrokerId + " blocked"));
         }

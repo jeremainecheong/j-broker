@@ -28,7 +28,12 @@
               <td th:text="${t.replicationFactor()}">-</td>
               <td th:text="${t.internal() ? 'yes' : 'no'}">-</td>
               <td th:text="${t.compact() ? 'yes' : 'no'}">-</td>
-              <td th:text="${t.createdMillis()}">-</td>
+              <td>
+                <!-- Rendered as "Ns/m/h/d ago" by /epoch.js on
+                     DOMContentLoaded; raw millis is the no-JS fallback. -->
+                <time th:attr="data-epoch=${t.createdMillis()}"
+                      th:text="${t.createdMillis()}">-</time>
+              </td>
               <td>
                 <a class="btn secondary" th:href="@{/topics/{name}(name=${t.name()})}">details</a>
               </td>
@@ -63,6 +68,6 @@
         </div>
       </div>
     </main>
-    <footer>j-broker admin — Milestone 8</footer>
+    <footer th:replace="~{fragments/shell :: footer}"></footer>
   </body>
 </html>

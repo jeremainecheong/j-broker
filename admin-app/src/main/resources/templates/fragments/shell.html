@@ -16,6 +16,12 @@
     <script th:src="@{/vendor/htmx-1.9.12.min.js}"></script>
     <script defer th:src="@{/vendor/alpine-3.13.5.min.js}"></script>
     <script defer th:src="@{/app.js}"></script>
+    <!--
+      Relative-time renderer. Rewrites <time data-epoch="…"> elements
+      into "3s ago / 2m ago / 1h ago" labels on DOMContentLoaded. Loaded
+      via the shell so every page gets it without per-template wiring.
+    -->
+    <script defer th:src="@{/epoch.js}"></script>
   </head>
   <body>
     <!--
@@ -72,5 +78,13 @@
     >
       green
     </span>
+
+    <!--
+      Shared page footer. Single source of truth so we don't drift between
+      stale "Milestone 8" labels and current version strings across templates.
+      Keep this static — templating the version from Gradle is a bigger
+      lift and adds zero user value.
+    -->
+    <footer th:fragment="footer">j-broker admin</footer>
   </body>
 </html>

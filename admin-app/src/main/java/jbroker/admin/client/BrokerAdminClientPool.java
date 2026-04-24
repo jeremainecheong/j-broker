@@ -2,11 +2,13 @@ package jbroker.admin.client;
 
 import io.grpc.StatusRuntimeException;
 import jakarta.annotation.PreDestroy;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
 import jbroker.proto.broker.DescribeClusterResponse;
+import jbroker.tls.TlsConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,18 +30,40 @@ public class BrokerAdminClientPool {
     private static final Logger log = LoggerFactory.getLogger(BrokerAdminClientPool.class);
 
     private final List<BrokerAdminClient> clients;
+    private final TlsConfig tls;
 
-    public BrokerAdminClientPool(@Value("${jbroker.admin.brokers:localhost:9092}") String brokers) {
+    public BrokerAdminClientPool(
+            @Value("${jbroker.admin.brokers:localhost:9092}") String brokers,
+            @Value("${jbroker.admin.tls.enabled:false}") boolean tlsEnabled,
+            @Value("${jbroker.admin.tls.cert:}") String certPath,
+            @Value("${jbroker.admin.tls.key:}") String keyPath,
+            @Value("${jbroker.admin.tls.trust:}") String trustPath) {
+        this.tls = buildTlsConfig(tlsEnabled, certPath, keyPath, trustPath);
         var parsed = new ArrayList<BrokerAdminClient>();
         for (var entry : brokers.split(",")) {
             var trimmed = entry.trim();
             if (trimmed.isEmpty()) continue;
-            parsed.add(BrokerAdminClient.parse(trimmed));
+            parsed.add(BrokerAdminClient.parse(trimmed, tls));
         }
         if (parsed.isEmpty()) {
             throw new IllegalStateException("jbroker.admin.brokers must list at least one broker host:port");
         }
         this.clients = List.copyOf(parsed);
+    }
+
+    /** P15.2 — TLS bundle the pool forwards to every {@link BrokerAdminClient} it creates. */
+    public TlsConfig tls() {
+        return tls;
+    }
+
+    private static TlsConfig buildTlsConfig(boolean enabled, String cert, String key, String trust) {
+        if (!enabled) return TlsConfig.DISABLED;
+        if (trust == null || trust.isBlank()) {
+            throw new IllegalStateException("jbroker.admin.tls.trust is required when tls.enabled=true");
+        }
+        Path certP = cert == null || cert.isBlank() ? null : Path.of(cert);
+        Path keyP = key == null || key.isBlank() ? null : Path.of(key);
+        return new TlsConfig(true, certP, keyP, Path.of(trust), false);
     }
 
     public List<BrokerAdminClient> clients() {

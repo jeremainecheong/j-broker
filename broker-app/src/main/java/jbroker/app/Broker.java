@@ -37,6 +37,8 @@ import jbroker.raft.core.RaftConfig;
 import jbroker.raft.transport.RaftDriver;
 import jbroker.raft.transport.RaftPeerClient;
 import jbroker.storage.LogManager;
+import jbroker.tls.TlsConfig;
+import jbroker.tls.TlsContexts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,7 +73,12 @@ public final class Broker implements AutoCloseable {
             /** P13.4 — PreferredLeaderBalancer tick interval, ms. Default 15_000. */
             long balancerTickMillis,
             /** P13.4 — PreferredLeaderBalancer stability window, ms. Default 30_000. */
-            long balancerStabilityMillis) {
+            long balancerStabilityMillis,
+            /**
+             * P15.2 — TLS configuration for every gRPC server + inter-broker client the broker opens.
+             * {@link TlsConfig#DISABLED} keeps the plaintext default (existing tests depend on this).
+             */
+            TlsConfig tls) {
         public Config {
             voters = List.copyOf(voters);
             if (consumerOffsetsPartitions < 1) {
@@ -85,6 +92,7 @@ public final class Broker implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "balancerStabilityMillis must be ≥ 0, got " + balancerStabilityMillis);
             }
+            if (tls == null) tls = TlsConfig.DISABLED;
         }
 
         /** P13.4 pre-existing-call-sites overload: balancer timings default to 15_000 / 30_000. */
@@ -96,7 +104,41 @@ public final class Broker implements AutoCloseable {
                 List<VoterAddress> voters,
                 int consumerOffsetsPartitions,
                 int chaosPort) {
-            this(selfId, dataDir, raftPort, brokerPort, voters, consumerOffsetsPartitions, chaosPort, 15_000L, 30_000L);
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    15_000L,
+                    30_000L,
+                    TlsConfig.DISABLED);
+        }
+
+        /** P15.2 — full-9-arg overload keeping the pre-TLS shape callable. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    TlsConfig.DISABLED);
         }
 
         /** P9.3 — 5-arg ctor back-compat: chaos disabled (chaosPort = -1). */
@@ -120,7 +162,23 @@ public final class Broker implements AutoCloseable {
                     consumerOffsetsPartitions,
                     port,
                     balancerTickMillis,
-                    balancerStabilityMillis);
+                    balancerStabilityMillis,
+                    tls);
+        }
+
+        /** P15.2 — set or replace the TLS bundle on an existing Config. */
+        public Config withTls(TlsConfig newTls) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    newTls == null ? TlsConfig.DISABLED : newTls);
         }
 
         /**
@@ -165,7 +223,8 @@ public final class Broker implements AutoCloseable {
                     n,
                     chaosPort,
                     balancerTickMillis,
-                    balancerStabilityMillis);
+                    balancerStabilityMillis,
+                    tls);
         }
 
         /**
@@ -184,7 +243,8 @@ public final class Broker implements AutoCloseable {
                     consumerOffsetsPartitions,
                     chaosPort,
                     tickMillis,
-                    stabilityMillis);
+                    stabilityMillis,
+                    tls);
         }
     }
 
@@ -317,7 +377,12 @@ public final class Broker implements AutoCloseable {
         };
         var brokerRegistry = new jbroker.broker.BrokerRegistry();
         var fetcherFactory = new jbroker.broker.replication.DefaultFetcherFactory(
-                config.selfId().value(), logManager, topicManager, /*pollIntervalMs*/ 25L, /*fetchTimeoutMs*/ 2_000L);
+                config.selfId().value(),
+                logManager,
+                topicManager,
+                /*pollIntervalMs*/ 25L,
+                /*fetchTimeoutMs*/ 2_000L,
+                config.tls());
         var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
                 config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
         MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt, ah, ap) -> {
@@ -342,11 +407,11 @@ public final class Broker implements AutoCloseable {
         var peerMap = new java.util.HashMap<NodeId, RaftPeerClient>();
         for (var v : config.voters()) {
             if (v.id().equals(config.selfId())) continue;
-            peerMap.put(v.id(), new RaftPeerClient(v.id(), v.host(), v.raftPort()));
+            peerMap.put(v.id(), new RaftPeerClient(v.id(), v.host(), v.raftPort(), config.tls()));
         }
         var raftDriver = new RaftDriver(
                 config.selfId(), core, waitingSm, Map.copyOf(peerMap), TimeUnit.MILLISECONDS.toNanos(30));
-        raftDriver.start(config.raftPort());
+        raftDriver.start(config.raftPort(), config.tls());
 
         // --- Broker gRPC server ---
         var brokerMetrics = new jbroker.broker.BrokerMetrics();
@@ -460,16 +525,21 @@ public final class Broker implements AutoCloseable {
         // broker RPCs as well as client traffic.
         var chaosState = new jbroker.broker.chaos.ChaosState();
         var chaosInterceptor = new jbroker.broker.chaos.ChaosServerInterceptor(chaosState);
-        var server = NettyServerBuilder.forPort(config.brokerPort())
+        var brokerServerBuilder = NettyServerBuilder.forPort(config.brokerPort())
                 .intercept(chaosInterceptor)
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
                 .addService(BrokerGrpcServices.cluster(heartbeatHandler))
                 .addService(BrokerGrpcServices.admin(admin, consumerHandler))
-                .addService(BrokerGrpcServices.metadata(metadataHandler))
-                .build()
-                .start();
+                .addService(BrokerGrpcServices.metadata(metadataHandler));
+        try {
+            var sslCtx = TlsContexts.serverContext(config.tls());
+            if (sslCtx != null) brokerServerBuilder.sslContext(sslCtx);
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IOException("TLS server context build failed", e);
+        }
+        var server = brokerServerBuilder.build().start();
 
         jbroker.broker.chaos.ChaosHttpServer chaosHttp = null;
         if (config.chaosPort() >= 0) {
@@ -782,7 +852,12 @@ public final class Broker implements AutoCloseable {
         // every peer's BrokerLiveness, the fencer kicks in, and the
         // admin's health pill correctly flips to yellow/red.
         var heartbeatSender = new jbroker.broker.BrokerHeartbeatSender(
-                config.selfId().value(), heartbeatPeers, () -> 0L, /*intervalMs*/ 250L, chaosState::isPaused);
+                config.selfId().value(),
+                heartbeatPeers,
+                () -> 0L,
+                /*intervalMs*/ 250L,
+                chaosState::isPaused,
+                config.tls());
         heartbeatSender.start();
 
         return new Broker(

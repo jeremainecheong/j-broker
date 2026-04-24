@@ -33,6 +33,14 @@ jbroker:
     # Comma-separated list of broker host:port endpoints the admin-app
     # talks to. Overridable per environment.
     brokers: localhost:9092
+    # P15.2 — mTLS to the broker gRPC surface. Enabled only when tls.enabled
+    # is true AND cert/key/trust paths all resolve to PEM files. Default is
+    # plaintext so existing Docker Compose deployments keep working unchanged.
+    tls:
+      enabled: false
+      cert: ""
+      key: ""
+      trust: ""
   redis:
     # Empty → admin-app uses its in-process ring buffer for the SSE event
     # stream and does not attempt a Redis connection. Set to e.g.

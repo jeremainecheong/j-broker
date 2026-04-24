@@ -22,6 +22,7 @@ import jbroker.raft.core.NodeId;
  *   j-broker topics create|list|describe|...  --broker HOST:PORT --topic T ...
  *   j-broker produce --broker HOST:PORT --topic T --partition N   (stdin = one message per line)
  *   j-broker console-consumer --broker HOST:PORT --topic T --partition N [--from-beginning]
+ *   j-broker consume --broker HOST:PORT --group G --topic T [--topic T2 ...]
  * </pre>
  */
 public final class BrokerApp {
@@ -36,13 +37,14 @@ public final class BrokerApp {
             case "topics" -> runTopics(Arrays.copyOfRange(args, 1, args.length));
             case "produce" -> runProduce(Arrays.copyOfRange(args, 1, args.length));
             case "console-consumer" -> runConsumer(Arrays.copyOfRange(args, 1, args.length));
+            case "consume" -> runGroupConsume(Arrays.copyOfRange(args, 1, args.length));
             case "admin" -> AdminCli.run(Arrays.copyOfRange(args, 1, args.length));
             default -> usage();
         }
     }
 
     private static void usage() {
-        System.err.println("Usage: j-broker server|topics|produce|console-consumer|admin ...");
+        System.err.println("Usage: j-broker server|topics|produce|console-consumer|consume|admin ...");
     }
 
     private static String flag(String[] args, String name, String defaultValue) {
@@ -218,6 +220,74 @@ public final class BrokerApp {
                     System.out.println(new String(rec, StandardCharsets.UTF_8));
                 }
                 offset += batch.size();
+            }
+        }
+    }
+
+    /**
+     * P14.4 — real consumer-group-aware CLI. Unlike {@code console-consumer}
+     * (single-partition raw Fetch, no coordinator), this drives a full
+     * {@link jbroker.broker.client.consumer.Consumer} session: join →
+     * heartbeat → auto-assigned partitions → poll → commitSync on every
+     * tick → clean leave on Ctrl-C. The Groups admin page populates while
+     * this process runs.
+     *
+     * <p>Accepts repeated {@code --topic}.
+     */
+    private static void runGroupConsume(String[] args) throws Exception {
+        String brokerAddr = flag(args, "--broker", "127.0.0.1:9092");
+        String groupId = flag(args, "--group", null);
+        if (groupId == null || groupId.isBlank()) {
+            System.err.println("--group is required");
+            System.exit(2);
+        }
+        var topics = new ArrayList<String>();
+        for (int i = 0; i < args.length - 1; i++) {
+            if ("--topic".equals(args[i])) topics.add(args[i + 1]);
+        }
+        if (topics.isEmpty()) {
+            System.err.println("at least one --topic is required");
+            System.exit(2);
+        }
+        var running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> running.set(false), "j-broker-consume-shutdown"));
+        consumeGroupLoop(brokerAddr, groupId, topics, running);
+    }
+
+    /**
+     * P14.4 — extracted for testability. Joins the group, polls until
+     * {@code running} flips false, commits on every non-empty poll,
+     * prints each record to stdout. Leaving is the consumer's close()
+     * on try-with-resources; the caller flips {@code running} to stop.
+     */
+    static void consumeGroupLoop(
+            String brokerAddr, String groupId, List<String> topics, java.util.concurrent.atomic.AtomicBoolean running)
+            throws Exception {
+        int colon = brokerAddr.indexOf(':');
+        var host = brokerAddr.substring(0, colon);
+        var port = Integer.parseInt(brokerAddr.substring(colon + 1));
+        var cfg = jbroker.broker.client.consumer.ConsumerConfig.builder(groupId, host, port)
+                .pollFetchDeadline(java.time.Duration.ofSeconds(5))
+                .build();
+
+        var keyDe = new jbroker.broker.client.consumer.StringDeserializer();
+        var valueDe = new jbroker.broker.client.consumer.StringDeserializer();
+
+        try (var consumer = new jbroker.broker.client.consumer.Consumer<>(cfg, keyDe, valueDe)) {
+            consumer.subscribe(topics, jbroker.broker.client.consumer.RebalanceListener.NO_OP);
+            System.err.println("j-broker consume: group=" + groupId + " subscribed=" + topics + " — Ctrl-C to leave");
+            while (running.get()) {
+                var batch = consumer.poll(java.time.Duration.ofMillis(500));
+                if (batch.isEmpty()) continue;
+                for (var rec : batch) {
+                    System.out.println(rec.tp().getTopic() + "-" + rec.tp().getPartition() + "@" + rec.offset() + ": "
+                            + rec.value());
+                }
+                try {
+                    consumer.commitSync();
+                } catch (Exception commitErr) {
+                    System.err.println("commit failed (will retry on next tick): " + commitErr.getMessage());
+                }
             }
         }
     }

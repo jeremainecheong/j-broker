@@ -4,14 +4,11 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import jbroker.admin.api.TopicsController;
 import jbroker.admin.client.BrokerAdminClient;
 import jbroker.admin.client.BrokerAdminClientPool;
-import jbroker.admin.dto.TopicDetail;
 import jbroker.admin.dto.TopicSummary;
 import jbroker.broker.ErrorCodes;
-import jbroker.proto.broker.DescribeTopicPartitionsResponse;
-import jbroker.proto.broker.PartitionStateInfo;
-import jbroker.proto.common.ErrorCode;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,14 +19,24 @@ import org.springframework.web.bind.annotation.RequestParam;
 /**
  * Thymeleaf view controller for topic list + detail pages and the
  * create/delete POST handlers the modal forms submit to.
+ *
+ * <p>The detail page delegates to
+ * {@link TopicsController#describeTopic(String)} (merged fan-out) so every
+ * partition card renders real HWM/LEO instead of the follower-sentinel
+ * fallback. Calling {@code pool.firstSuccessful} directly here would pin
+ * the response to whichever broker answers first — fine if that broker
+ * happens to lead every partition, wrong otherwise (see P11.4 / 2026-04-24
+ * admin-UI audit root cause).
  */
 @Controller
 public class TopicsViewController {
 
     private final BrokerAdminClientPool pool;
+    private final TopicsController topicsController;
 
-    public TopicsViewController(BrokerAdminClientPool pool) {
+    public TopicsViewController(BrokerAdminClientPool pool, TopicsController topicsController) {
         this.pool = pool;
+        this.topicsController = topicsController;
     }
 
     @GetMapping("/topics")
@@ -45,13 +52,13 @@ public class TopicsViewController {
 
     @GetMapping("/topics/{name}")
     public String detail(@PathVariable("name") String name, Model model, HttpServletResponse httpResponse) {
-        var resp = pool.firstSuccessful(c -> c.describeTopicPartitions(name));
-        if (resp.getError() == ErrorCode.UNKNOWN) {
+        var detail = topicsController.describeTopic(name);
+        if (detail.isEmpty()) {
             httpResponse.setStatus(404);
             model.addAttribute("topicName", name);
             return "topic-not-found";
         }
-        model.addAttribute("topic", toDetail(resp));
+        model.addAttribute("topic", detail.get());
         return "topic-detail";
     }
 
@@ -72,30 +79,6 @@ public class TopicsViewController {
         pool.firstNonNotLeader(
                 c -> c.deleteTopic(name), r -> r.hasError() ? r.getError().getCode() : 0, ErrorCodes.NOT_LEADER);
         return "redirect:/topics";
-    }
-
-    private TopicDetail toDetail(DescribeTopicPartitionsResponse r) {
-        var parts = new ArrayList<TopicDetail.PartitionState>();
-        for (PartitionStateInfo ps : r.getPartitionStatesList()) {
-            parts.add(new TopicDetail.PartitionState(
-                    ps.getPartition(),
-                    ps.getLeader(),
-                    ps.getIsrList(),
-                    ps.getReplicasList(),
-                    ps.getLeaderEpoch(),
-                    ps.getPartitionEpoch(),
-                    ps.getHighWatermark(),
-                    ps.getLogEndOffset()));
-        }
-        return new TopicDetail(
-                r.getTopic(),
-                r.getPartitions(),
-                r.getReplicationFactor(),
-                r.getInternal(),
-                r.getCompact(),
-                r.getCreatedMillis(),
-                r.getConfigMap(),
-                parts);
     }
 
     @SuppressWarnings("unused")

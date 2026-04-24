@@ -5,6 +5,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Optional;
 import jbroker.admin.client.BrokerAdminClient;
 import jbroker.admin.client.BrokerAdminClientPool;
 import jbroker.admin.dto.RestError;
@@ -56,12 +57,28 @@ public class TopicsController {
 
     @GetMapping("/{name}")
     public ResponseEntity<?> describe(@PathVariable("name") String name) {
+        return describeTopic(name).<ResponseEntity<?>>map(ResponseEntity::ok).orElseGet(() -> ResponseEntity.status(
+                        HttpStatus.NOT_FOUND)
+                .body(RestError.of("UNKNOWN_TOPIC", "unknown topic: " + name)));
+    }
+
+    /**
+     * Typed accessor for Thymeleaf view controllers (and anywhere else that
+     * wants the merged topic snapshot without HTTP plumbing). Returns empty
+     * when the topic doesn't exist on any broker; otherwise a
+     * {@link TopicDetail} with leader-reported HWM/LEO overlaid per
+     * partition (see {@link #mergeLeaderReportedOffsets}).
+     *
+     * <p>The Thymeleaf {@code /topics/{name}} path previously called
+     * {@code pool.firstSuccessful(describeTopicPartitions)} directly, which
+     * bypasses the merge and renders the sentinel "HWM / LEO unavailable"
+     * alongside a real leader badge for every partition the first-
+     * successful broker doesn't lead. View controllers now delegate here.
+     */
+    public Optional<TopicDetail> describeTopic(String name) {
         var resp = fetchTopicPartitions(name);
-        if (resp == null) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(RestError.of("UNKNOWN_TOPIC", "unknown topic: " + name));
-        }
-        return ResponseEntity.ok(toDetail(resp));
+        if (resp == null) return Optional.empty();
+        return Optional.of(toDetail(resp));
     }
 
     @GetMapping("/{name}/partitions/{p}")

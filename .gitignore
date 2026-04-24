@@ -66,3 +66,7 @@ jacoco.exec
 data/
 var/
 
+# Dev-only mTLS cert bundles produced by scripts/tls/bootstrap-ca.sh or
+# ad-hoc openssl commands for Kind / compose smoke. Never check in keys.
+.tls/
+.tls-kind/

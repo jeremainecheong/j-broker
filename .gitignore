@@ -68,3 +68,6 @@ jacoco.exec
 # Data dirs (local dev broker state)
 data/
 var/
+
+# Playwright MCP browser traces (generated during docs / admin-UI verification)
+.playwright-mcp/

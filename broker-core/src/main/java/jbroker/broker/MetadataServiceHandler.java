@@ -301,7 +301,11 @@ public final class MetadataServiceHandler {
         var known = new java.util.TreeSet<>(brokerRegistry.knownBrokerIds());
         if (known.isEmpty()) known.add(selfBrokerId);
         for (int bid : known) {
-            var addr = brokerRegistry.addressFor(bid);
+            // DescribeCluster is a client-facing RPC (admin-app
+            // fans it out for its topology view); expose the advertised
+            // address so the admin UI shows something an operator can
+            // actually dial. Falls back to internal when unset.
+            var addr = brokerRegistry.advertisedAddressFor(bid);
             String host = addr.map(BrokerRegistry.HostPort::host).orElse("");
             int port = addr.map(BrokerRegistry.HostPort::port).orElse(0);
             String role = bid == selfBrokerId ? selfRole.get() : "UNKNOWN";

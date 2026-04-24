@@ -17,7 +17,7 @@ class MetadataStateBrokerRegistrationTest {
     void brokerRegistrationListenerFiresOnApply() {
         var seen = new ArrayList<Reg>();
         MetadataStateMachine.BrokerRegistrationListener listener =
-                (id, host, port) -> seen.add(new Reg(id, host, port));
+                (id, host, port, advHost, advPort) -> seen.add(new Reg(id, host, port));
         var sm = new MetadataStateMachine(
                 new TopicManager(), new ProducerIdRegistry(), (t, p, e, l) -> {}, listener, (t, p, s) -> {});
 

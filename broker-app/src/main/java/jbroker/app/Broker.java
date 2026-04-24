@@ -320,9 +320,9 @@ public final class Broker implements AutoCloseable {
                 config.selfId().value(), logManager, topicManager, /*pollIntervalMs*/ 25L, /*fetchTimeoutMs*/ 2_000L);
         var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
                 config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
-        MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt) -> {
-            brokerRegistry.onBrokerRegistration(bid, h, pt);
-            fetcherManager.onBrokerRegistration(bid, h, pt);
+        MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt, ah, ap) -> {
+            brokerRegistry.onBrokerRegistration(bid, h, pt, ah, ap);
+            fetcherManager.onBrokerRegistration(bid, h, pt, ah, ap);
             long id = eventPublisher.allocateId();
             eventPublisher.publish(new jbroker.broker.events.BrokerEvent.BrokerRegistered(id, bid, h, pt));
         };
@@ -555,12 +555,22 @@ public final class Broker implements AutoCloseable {
                             // same value) so the duplicate is harmless.
                             if (brokerRegistry.addressFor(bid).isPresent()) continue;
                             try {
+                                // propagate the advertised listener
+                                // fields into the registration record so
+                                // client-facing RPCs (FindCoordinator,
+                                // DescribeCluster) on every broker can
+                                // return an externally-reachable address.
+                                var brokerRecord = jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
+                                        .setBrokerId(bid)
+                                        .setHost(v.host())
+                                        .setPort(v.brokerPort());
+                                if (v.hasAdvertised()) {
+                                    brokerRecord
+                                            .setAdvertisedHost(v.advertisedHost())
+                                            .setAdvertisedPort(v.advertisedBrokerPort());
+                                }
                                 var record = jbroker.proto.raft.MetadataRecord.newBuilder()
-                                        .setBroker(jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
-                                                .setBrokerId(bid)
-                                                .setHost(v.host())
-                                                .setPort(v.brokerPort())
-                                                .build())
+                                        .setBroker(brokerRecord.build())
                                         .build()
                                         .toByteArray();
                                 raftDriver.propose(record);

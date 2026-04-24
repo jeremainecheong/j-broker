@@ -114,8 +114,18 @@ message PartitionRecord {
 
 message BrokerRegistrationRecord {
   int32 broker_id = 1;
+  // Inter-broker address — what peer brokers dial for Raft, ReplicaFetch,
+  // and Cluster heartbeat RPCs. Typically the service name in a container
+  // deployment or the private-network IP on bare metal.
   string host = 2;
   int32 port = 3;
+  // advertised address surfaced in FindCoordinator /
+  // DescribeCluster replies so external clients can reach this broker
+  // via its published port even when that differs from the inter-broker
+  // bind address. When unset (empty string / 0), falls back to host/port
+  // — preserves earliersingle-network behavior.
+  string advertised_host = 4;
+  int32 advertised_port = 5;
 }
 
 // Emitted by the partition leader (via the controller's Raft log) whenever

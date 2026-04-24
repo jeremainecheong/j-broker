@@ -19,15 +19,43 @@ public final class BrokerRegistry implements MetadataStateMachine.BrokerRegistra
 
     public record HostPort(String host, int port) {}
 
-    private final ConcurrentHashMap<Integer, HostPort> entries = new ConcurrentHashMap<>();
+    /** Inter-broker dial target + optional externally-reachable advertised target (P15.1). */
+    private record Entry(HostPort internal, HostPort advertised) {}
 
-    @Override
+    private final ConcurrentHashMap<Integer, Entry> entries = new ConcurrentHashMap<>();
+
+    /** Pre-P15.1 signature kept for call sites that only know an inter-broker address. */
     public void onBrokerRegistration(int brokerId, String host, int port) {
-        entries.put(brokerId, new HostPort(host, port));
+        onBrokerRegistration(brokerId, host, port, "", 0);
     }
 
+    @Override
+    public void onBrokerRegistration(int brokerId, String host, int port, String advertisedHost, int advertisedPort) {
+        var internal = new HostPort(host, port);
+        HostPort advertised;
+        if (advertisedHost == null || advertisedHost.isEmpty() || advertisedPort <= 0) {
+            advertised = internal;
+        } else {
+            advertised = new HostPort(advertisedHost, advertisedPort);
+        }
+        entries.put(brokerId, new Entry(internal, advertised));
+    }
+
+    /** Internal address used by inter-broker RPCs (Raft, ReplicaFetch, heartbeat). */
     public Optional<HostPort> addressFor(int brokerId) {
-        return Optional.ofNullable(entries.get(brokerId));
+        var e = entries.get(brokerId);
+        return e == null ? Optional.empty() : Optional.of(e.internal());
+    }
+
+    /**
+     * P15.1 — advertised address used in client-facing replies
+     * (FindCoordinator, DescribeCluster). Falls back to the internal
+     * address when the broker did not advertise a separate listener —
+     * matches pre-P15.1 behavior for single-network deployments.
+     */
+    public Optional<HostPort> advertisedAddressFor(int brokerId) {
+        var e = entries.get(brokerId);
+        return e == null ? Optional.empty() : Optional.of(e.advertised());
     }
 
     public Set<Integer> knownBrokerIds() {

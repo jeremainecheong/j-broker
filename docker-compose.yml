@@ -54,6 +54,8 @@ services:
       - "9192"
       - --voters
       - *voters
+      - --advertised-listeners
+      - 1=localhost:9092,2=localhost:9093,3=localhost:9094
       - --chaos-port
       - ${JBROKER_CHAOS_PORT:--1}
 
@@ -78,6 +80,8 @@ services:
       - "9192"
       - --voters
       - *voters
+      - --advertised-listeners
+      - 1=localhost:9092,2=localhost:9093,3=localhost:9094
       - --chaos-port
       - ${JBROKER_CHAOS_PORT:--1}
 
@@ -102,6 +106,8 @@ services:
       - "9192"
       - --voters
       - *voters
+      - --advertised-listeners
+      - 1=localhost:9092,2=localhost:9093,3=localhost:9094
       - --chaos-port
       - ${JBROKER_CHAOS_PORT:--1}
 

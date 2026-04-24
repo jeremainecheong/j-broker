@@ -145,7 +145,10 @@ public final class ConsumerHandler {
                     .build();
         }
         int leaderId = partitionState.get().leader();
-        var address = brokerRegistry.addressFor(leaderId);
+        // P15.1 — clients get the advertised address so they can dial
+        // coordinators from outside the broker-internal network. Falls
+        // back to internal when advertised wasn't configured.
+        var address = brokerRegistry.advertisedAddressFor(leaderId);
         if (address.isEmpty()) {
             return FindCoordinatorResponse.newBuilder()
                     .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)

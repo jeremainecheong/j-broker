@@ -42,7 +42,14 @@ public final class MetadataStateMachine implements StateMachine {
     /** Fires after every applied {@code BrokerRegistrationRecord}. */
     @FunctionalInterface
     public interface BrokerRegistrationListener {
-        void onBrokerRegistration(int brokerId, String host, int port);
+        /**
+         * @param brokerId        broker id from the record
+         * @param host            inter-broker dial host (Raft / ReplicaFetch)
+         * @param port            inter-broker dial port
+         * @param advertisedHost  P15.1 externally-reachable host, "" when unset
+         * @param advertisedPort  P15.1 externally-reachable port, 0 when unset
+         */
+        void onBrokerRegistration(int brokerId, String host, int port, String advertisedHost, int advertisedPort);
     }
 
     /**
@@ -70,16 +77,16 @@ public final class MetadataStateMachine implements StateMachine {
     private final TopicDeletionListener topicDeletionListener;
 
     public MetadataStateMachine(TopicManager topicManager) {
-        this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt) -> {}, (t, p, s) -> {});
+        this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt, ah, ap) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(TopicManager topicManager, ProducerIdRegistry producerIdRegistry) {
-        this(topicManager, producerIdRegistry, (t, p, e, l) -> {}, (b, h, pt) -> {}, (t, p, s) -> {});
+        this(topicManager, producerIdRegistry, (t, p, e, l) -> {}, (b, h, pt, ah, ap) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(
             TopicManager topicManager, ProducerIdRegistry producerIdRegistry, LeaderEpochListener leaderEpochListener) {
-        this(topicManager, producerIdRegistry, leaderEpochListener, (b, h, pt) -> {}, (t, p, s) -> {});
+        this(topicManager, producerIdRegistry, leaderEpochListener, (b, h, pt, ah, ap) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(
@@ -163,9 +170,12 @@ public final class MetadataStateMachine implements StateMachine {
             case PRODUCER_ID_ASSIGNMENT -> producerIdRegistry.applyAssignment(
                     record.getProducerIdAssignment().getNextProducerId());
             case BROKER -> {
-                // P6.5.a: broker-gRPC address discovery.
+                // P6.5.a: broker-gRPC address discovery. P15.1 extends this
+                // with optional advertised_host / advertised_port so external
+                // clients can reach the broker via its published listener.
                 var r = record.getBroker();
-                brokerRegistrationListener.onBrokerRegistration(r.getBrokerId(), r.getHost(), r.getPort());
+                brokerRegistrationListener.onBrokerRegistration(
+                        r.getBrokerId(), r.getHost(), r.getPort(), r.getAdvertisedHost(), r.getAdvertisedPort());
             }
             case DELETE_TOPIC -> {
                 // P8.3 — drop the topic from the catalogue, then let the

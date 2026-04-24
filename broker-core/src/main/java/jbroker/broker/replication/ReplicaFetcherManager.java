@@ -144,8 +144,15 @@ public final class ReplicaFetcherManager
     }
 
     @Override
-    public void onBrokerRegistration(int brokerId, String host, int port) {
+    public void onBrokerRegistration(int brokerId, String host, int port, String advertisedHost, int advertisedPort) {
+        // ReplicaFetcher always dials the inter-broker address, so the
+        // advertised fields (P15.1) are irrelevant here.
         scheduleReconcile();
+    }
+
+    /** Pre-P15.1 signature kept for test call sites. */
+    public void onBrokerRegistration(int brokerId, String host, int port) {
+        onBrokerRegistration(brokerId, host, port, "", 0);
     }
 
     @Override

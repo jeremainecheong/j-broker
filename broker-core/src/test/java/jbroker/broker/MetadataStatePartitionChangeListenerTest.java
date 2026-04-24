@@ -19,7 +19,7 @@ class MetadataStatePartitionChangeListenerTest {
         var firings = new AtomicInteger();
         MetadataStateMachine.PartitionChangeListener listener = (topic, partition, state) -> firings.incrementAndGet();
         var sm = new MetadataStateMachine(
-                tm, new ProducerIdRegistry(), (t, p, e, l) -> {}, (bid, h, pt) -> {}, listener);
+                tm, new ProducerIdRegistry(), (t, p, e, l) -> {}, (bid, h, pt, ah, ap) -> {}, listener);
 
         // First leader_epoch bump -> fire.
         sm.apply(wrap(record("orders", 0, /*leader*/ 1, List.of(1, 2, 3), /*epoch*/ 5, /*partEpoch*/ 0), 1));

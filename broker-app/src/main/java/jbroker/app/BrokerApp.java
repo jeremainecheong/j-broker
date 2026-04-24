@@ -65,6 +65,14 @@ public final class BrokerApp {
         int raftPort = Integer.parseInt(flag(args, "--raft-port", "9192"));
         int id = Integer.parseInt(flag(args, "--id", "1"));
         String votersSpec = flag(args, "--voters", null);
+        // P15.1 — advertised listeners. Format: "id=host:port,id=host:port,..."
+        // Applies per broker id on top of the voter list. Only the advertised
+        // entry for THIS broker gets used in our own BrokerRegistrationRecord,
+        // but the leader's propose path reads every voter's advertised slot
+        // to register the whole cluster in one tick; pass a matching spec on
+        // each broker for consistent behavior. Absent → fall back to voter
+        // host/port (pre-P15.1 behavior).
+        String advertisedListenersSpec = flag(args, "--advertised-listeners", null);
         int chaosPort = Integer.parseInt(flag(args, "--chaos-port", "-1"));
         int consumerOffsetsPartitions = Integer.parseInt(flag(
                 args,
@@ -82,6 +90,9 @@ public final class BrokerApp {
             if (voters.stream().noneMatch(v -> v.id().value() == id)) {
                 throw new IllegalArgumentException("--voters must include self (id=" + id + "), got: " + votersSpec);
             }
+        }
+        if (advertisedListenersSpec != null && !advertisedListenersSpec.isBlank()) {
+            voters = overlayAdvertisedListeners(voters, advertisedListenersSpec);
         }
 
         var config = new Broker.Config(
@@ -144,6 +155,45 @@ public final class BrokerApp {
         }
         if (out.isEmpty()) {
             throw new IllegalArgumentException("--voters must contain at least one entry");
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * P15.1 — parse a {@code --advertised-listeners id=host:port,...} spec
+     * and return a new voter list with those entries overlaid on top of
+     * the bind-time list. Voter ids missing from the spec keep their bind
+     * host/port as the advertised value (falls back to current behavior).
+     * Malformed entries are rejected at startup with a clear message.
+     */
+    static List<VoterAddress> overlayAdvertisedListeners(List<VoterAddress> voters, String spec) {
+        var advertised = new java.util.HashMap<Integer, String[]>();
+        for (var entry : spec.split(",")) {
+            var trimmed = entry.trim();
+            if (trimmed.isEmpty()) continue;
+            int eq = trimmed.indexOf('=');
+            if (eq <= 0 || eq == trimmed.length() - 1) {
+                throw new IllegalArgumentException("advertised-listeners entry must be ID=HOST:PORT, got: " + trimmed);
+            }
+            int vid = parseIntOrReject(trimmed.substring(0, eq), "advertised id", trimmed);
+            var hp = trimmed.substring(eq + 1).split(":");
+            if (hp.length != 2 || hp[0].isBlank()) {
+                throw new IllegalArgumentException("advertised-listeners entry must be ID=HOST:PORT, got: " + trimmed);
+            }
+            int port = parseIntOrReject(hp[1], "advertised port", trimmed);
+            if (advertised.putIfAbsent(vid, new String[] {hp[0], Integer.toString(port)}) != null) {
+                throw new IllegalArgumentException("duplicate advertised id " + vid + " in --advertised-listeners");
+            }
+        }
+        var out = new ArrayList<VoterAddress>(voters.size());
+        for (var v : voters) {
+            var ov = advertised.get(v.id().value());
+            if (ov == null) {
+                out.add(v);
+            } else {
+                out.add(new VoterAddress(
+                        v.id(), v.host(), v.raftPort(), v.brokerPort(), ov[0], Integer.parseInt(ov[1])));
+            }
         }
         return List.copyOf(out);
     }

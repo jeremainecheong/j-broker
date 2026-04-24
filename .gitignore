@@ -76,3 +76,6 @@ var/
 # ad-hoc openssl commands for Kind / compose smoke. Never check in keys.
 .tls/
 .tls-kind/
+chaos-*.png
+metrics-page.png
+topics-create-modal.png

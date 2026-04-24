@@ -4,17 +4,23 @@ import io.grpc.StatusRuntimeException;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
+import jbroker.admin.client.BrokerAdminClient;
 import jbroker.admin.client.BrokerAdminClientPool;
 import jbroker.admin.dto.ConsumerGroupDetail;
 import jbroker.admin.dto.ConsumerGroupSummary;
 import jbroker.proto.broker.DescribeConsumerGroupResponse;
+import jbroker.proto.broker.OffsetReset;
 import jbroker.proto.common.ErrorCode;
+import jbroker.proto.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 
 /**
  * Thymeleaf view controller for consumer-group list + detail pages. The
@@ -81,6 +87,65 @@ public class GroupsViewController {
         }
         model.addAttribute("detail", toDetail(best));
         return "group-detail";
+    }
+
+    /**
+     * Form-POST handler the group-detail delete button submits to. Mirrors the
+     * topic-delete pattern ({@link TopicsViewController#delete}): fan across
+     * brokers until one returns OK (or UNKNOWN_GROUP), then redirect to the
+     * group list. Non-OK responses still redirect — the group list will reflect
+     * the actual post-delete state, which is the source of truth.
+     */
+    @PostMapping("/ui/groups/{id}/delete")
+    public String delete(@PathVariable("id") String id) {
+        for (var c : pool.clients()) {
+            try {
+                var resp = c.deleteConsumerGroup(id);
+                if (resp.getError() == ErrorCode.OK || resp.getError() == ErrorCode.UNKNOWN_GROUP) {
+                    break;
+                }
+            } catch (StatusRuntimeException e) {
+                log.debug("broker {} failed deleteConsumerGroup({}): {}", c.address(), id, e.getStatus());
+            }
+        }
+        return "redirect:/groups";
+    }
+
+    /**
+     * Form-POST handler the reset-offsets modal submits to. A single
+     * {@code (topic, partition, offset, leaderEpoch)} row is translated into
+     * a one-element {@link OffsetReset} list and dispatched to whichever
+     * broker owns the group's coordinator partition. We redirect back to the
+     * group page on every path (success or failure) so the re-rendered table
+     * shows the authoritative post-reset state.
+     */
+    @PostMapping("/ui/groups/{id}/reset-offsets")
+    public String resetOffsets(
+            @PathVariable("id") String id,
+            @RequestParam String topic,
+            @RequestParam int partition,
+            @RequestParam long offset,
+            @RequestParam(defaultValue = "0") int leaderEpoch) {
+        var reset = OffsetReset.newBuilder()
+                .setTp(TopicPartition.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .build())
+                .setOffset(offset)
+                .setLeaderEpoch(leaderEpoch)
+                .build();
+        List<OffsetReset> resets = List.of(reset);
+        for (BrokerAdminClient c : pool.clients()) {
+            try {
+                var resp = c.resetConsumerGroupOffsets(id, resets);
+                if (resp.getError() == ErrorCode.OK) {
+                    break;
+                }
+            } catch (StatusRuntimeException e) {
+                log.debug("broker {} failed resetConsumerGroupOffsets({}): {}", c.address(), id, e.getStatus());
+            }
+        }
+        return "redirect:/groups/" + id;
     }
 
     private ConsumerGroupDetail toDetail(DescribeConsumerGroupResponse r) {

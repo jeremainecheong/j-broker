@@ -13,8 +13,8 @@ final class HealthBadgeTest {
 
     @Test
     void greenWhenAllAliveAndControllerKnown() {
-        var cluster =
-                new ClusterSummary(1, 5L, 0L, List.of(node(1, true, "LEADER"), node(2, true, "FOLLOWER"), node(3, true, "FOLLOWER")));
+        var cluster = new ClusterSummary(
+                1, 5L, 0L, List.of(node(1, true, "LEADER"), node(2, true, "FOLLOWER"), node(3, true, "FOLLOWER")));
         var badge = HealthBadge.from(cluster);
         assertThat(badge.status()).isEqualTo("green");
         assertThat(badge.reason()).contains("3/3").contains("controller 1");

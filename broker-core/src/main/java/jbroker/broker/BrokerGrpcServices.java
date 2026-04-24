@@ -348,8 +348,8 @@ public final class BrokerGrpcServices {
                 try {
                     results = consumer.resetConsumerGroupOffsetsAdmin(req.getGroupId(), req.getResetsList(), topLevel);
                 } catch (java.io.IOException ioe) {
-                    results = java.util.Collections.nCopies(
-                            req.getResetsCount(), jbroker.proto.common.ErrorCode.UNKNOWN);
+                    results =
+                            java.util.Collections.nCopies(req.getResetsCount(), jbroker.proto.common.ErrorCode.UNKNOWN);
                 }
                 b.setError(topLevel[0]);
                 for (int i = 0; i < req.getResetsCount(); i++) {

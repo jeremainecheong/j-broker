@@ -114,7 +114,8 @@ public final class RedisQuotaEnforcer implements QuotaEnforcer {
         var sock = new Socket();
         sock.setTcpNoDelay(true);
         sock.setSoTimeout(READ_TIMEOUT_MS);
-        sock.connect(new InetSocketAddress(uri.getHost(), uri.getPort() > 0 ? uri.getPort() : 6379), CONNECT_TIMEOUT_MS);
+        sock.connect(
+                new InetSocketAddress(uri.getHost(), uri.getPort() > 0 ? uri.getPort() : 6379), CONNECT_TIMEOUT_MS);
         this.socket = sock;
         this.out = sock.getOutputStream();
         this.in = new BufferedInputStream(sock.getInputStream());

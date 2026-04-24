@@ -119,9 +119,11 @@ final class LogCompactionTest {
         var b = batches.get(0);
         assertThat(b.baseOffset()).isEqualTo(2L);
         assertThat(b.lastOffset()).isEqualTo(4L);
-        assertThat(b.records()).extracting(r -> new String(r.key(), StandardCharsets.UTF_8))
+        assertThat(b.records())
+                .extracting(r -> new String(r.key(), StandardCharsets.UTF_8))
                 .containsExactly("A", "C", "B");
-        assertThat(b.records()).extracting(r -> new String(r.value(), StandardCharsets.UTF_8))
+        assertThat(b.records())
+                .extracting(r -> new String(r.value(), StandardCharsets.UTF_8))
                 .containsExactly("v2", "v3", "v4");
         assertThat(b.records()).extracting(Record::offsetDelta).containsExactly(0, 1, 2);
 

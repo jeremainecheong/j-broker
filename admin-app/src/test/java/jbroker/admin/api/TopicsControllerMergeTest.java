@@ -27,7 +27,9 @@ final class TopicsControllerMergeTest {
     }
 
     private static DescribeTopicPartitionsResponse resp(String topic, List<PartitionStateInfo> states) {
-        var b = DescribeTopicPartitionsResponse.newBuilder().setError(ErrorCode.OK).setTopic(topic);
+        var b = DescribeTopicPartitionsResponse.newBuilder()
+                .setError(ErrorCode.OK)
+                .setTopic(topic);
         for (var s : states) b.addPartitionStates(s);
         return b.build();
     }
@@ -39,9 +41,11 @@ final class TopicsControllerMergeTest {
         var leader = resp("hello", List.of(ps(0, 3, 42, 42), ps(1, 3, 17, 17)));
 
         var merged = TopicsController.mergeLeaderReportedOffsets(follower, List.of(follower, leader));
-        assertThat(merged.getPartitionStatesList()).extracting(PartitionStateInfo::getHighWatermark)
+        assertThat(merged.getPartitionStatesList())
+                .extracting(PartitionStateInfo::getHighWatermark)
                 .containsExactly(42L, 17L);
-        assertThat(merged.getPartitionStatesList()).extracting(PartitionStateInfo::getLogEndOffset)
+        assertThat(merged.getPartitionStatesList())
+                .extracting(PartitionStateInfo::getLogEndOffset)
                 .containsExactly(42L, 17L);
     }
 
@@ -53,7 +57,8 @@ final class TopicsControllerMergeTest {
         var broker3 = resp("hello", List.of(ps(0, 1, -1, -1), ps(1, 3, 9, 9)));
 
         var merged = TopicsController.mergeLeaderReportedOffsets(broker1, List.of(broker1, broker3));
-        assertThat(merged.getPartitionStatesList()).extracting(PartitionStateInfo::getHighWatermark)
+        assertThat(merged.getPartitionStatesList())
+                .extracting(PartitionStateInfo::getHighWatermark)
                 .containsExactly(5L, 9L);
     }
 

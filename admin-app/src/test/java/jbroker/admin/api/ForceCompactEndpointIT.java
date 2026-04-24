@@ -56,8 +56,7 @@ class ForceCompactEndpointIT {
         dataDir = Files.createTempDirectory("jbroker-admin-force-compact");
         broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
         long deadline = System.currentTimeMillis() + 5_000;
-        while (broker.brokerRegistry().knownBrokerIds().isEmpty()
-                && System.currentTimeMillis() < deadline) {
+        while (broker.brokerRegistry().knownBrokerIds().isEmpty() && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
         }
     }
@@ -67,7 +66,8 @@ class ForceCompactEndpointIT {
         if (broker != null) broker.close();
         if (dataDir != null) {
             try (var paths = Files.walk(dataDir)) {
-                paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+                paths.sorted(java.util.Comparator.reverseOrder())
+                        .forEach(p -> p.toFile().delete());
             }
         }
     }
@@ -81,7 +81,14 @@ class ForceCompactEndpointIT {
     void postToCompactEndpointReturnsSnakeCaseCountOfSurvivors() throws Exception {
         rest.postForEntity(
                 "http://localhost:" + port + "/api/v1/topics",
-                Map.of("name", "prices", "partitions", 1, "replication_factor", 1, "config",
+                Map.of(
+                        "name",
+                        "prices",
+                        "partitions",
+                        1,
+                        "replication_factor",
+                        1,
+                        "config",
                         Map.of("cleanup.policy", "compact")),
                 String.class);
 
@@ -94,14 +101,11 @@ class ForceCompactEndpointIT {
             String key = "k" + (i % 4);
             String value = "v" + i;
             log.append(
-                    List.of(new Record(0, 0L, key.getBytes(UTF_8), value.getBytes(UTF_8))),
-                    System.currentTimeMillis());
+                    List.of(new Record(0, 0L, key.getBytes(UTF_8), value.getBytes(UTF_8))), System.currentTimeMillis());
         }
 
         var response = rest.postForEntity(
-                "http://localhost:" + port + "/api/v1/topics/prices/partitions/0/compact",
-                null,
-                String.class);
+                "http://localhost:" + port + "/api/v1/topics/prices/partitions/0/compact", null, String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody())
@@ -114,9 +118,7 @@ class ForceCompactEndpointIT {
     @Test
     void postToCompactEndpointReturnsErrorForUnknownTopic() {
         var response = rest.postForEntity(
-                "http://localhost:" + port + "/api/v1/topics/does-not-exist/partitions/0/compact",
-                null,
-                String.class);
+                "http://localhost:" + port + "/api/v1/topics/does-not-exist/partitions/0/compact", null, String.class);
 
         assertThat(response.getStatusCode().is4xxClientError()).isTrue();
         assertThat(response.getBody()).contains("UNKNOWN_TOPIC");

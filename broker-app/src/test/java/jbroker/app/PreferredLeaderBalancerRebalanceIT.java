@@ -34,8 +34,8 @@ class PreferredLeaderBalancerRebalanceIT {
     private static final long FAST_BALANCER_STABILITY_MS = 300L;
 
     @Test
-    void balancerMovesLeadershipBackToPreferredReplica(
-            @TempDir Path d1, @TempDir Path d2, @TempDir Path d3) throws Exception {
+    void balancerMovesLeadershipBackToPreferredReplica(@TempDir Path d1, @TempDir Path d2, @TempDir Path d3)
+            throws Exception {
         int r1 = freePort(), r2 = freePort(), r3 = freePort();
         int b1 = freePort(), b2 = freePort(), b3 = freePort();
         var voters = List.of(
@@ -111,7 +111,8 @@ class PreferredLeaderBalancerRebalanceIT {
             }
 
             assertThat(allOnPreferred)
-                    .as("balancer should have converged leadership onto preferred replica (broker 1) for all 3 partitions")
+                    .as(
+                            "balancer should have converged leadership onto preferred replica (broker 1) for all 3 partitions")
                     .isTrue();
 
             // Sanity: every broker's local TopicManager eventually sees the

@@ -27,10 +27,14 @@ final class BrokerHeartbeatSenderPauseTest {
         // metadataOffset supplier doubles as a "tick ran" counter. If the
         // tick short-circuits on paused, the supplier is never called.
         var sender = new BrokerHeartbeatSender(
-                1, List.of(), () -> {
+                1,
+                List.of(),
+                () -> {
                     offsetCalls.incrementAndGet();
                     return 0L;
-                }, 10L, paused::get);
+                },
+                10L,
+                paused::get);
         try {
             sender.start();
 

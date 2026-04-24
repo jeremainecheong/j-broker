@@ -27,8 +27,7 @@ public class ClusterViewController {
     private final TopicsController topics;
     private final ConsumerGroupsController groups;
 
-    public ClusterViewController(
-            BrokerAdminClientPool pool, TopicsController topics, ConsumerGroupsController groups) {
+    public ClusterViewController(BrokerAdminClientPool pool, TopicsController topics, ConsumerGroupsController groups) {
         this.pool = pool;
         this.topics = topics;
         this.groups = groups;

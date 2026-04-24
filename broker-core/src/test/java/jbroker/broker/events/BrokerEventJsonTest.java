@@ -16,13 +16,19 @@ final class BrokerEventJsonTest {
     @Test
     void leaderChangedUsesSnakeCase() {
         var json = BrokerEventJson.encode(new BrokerEvent.LeaderChanged(1, "orders", 3, 1, 2, 7));
-        assertThat(json).contains("\"old_leader\":1").contains("\"new_leader\":2").contains("\"leader_epoch\":7");
+        assertThat(json)
+                .contains("\"old_leader\":1")
+                .contains("\"new_leader\":2")
+                .contains("\"leader_epoch\":7");
     }
 
     @Test
     void brokerRegisteredUsesSnakeCase() {
         var json = BrokerEventJson.encode(new BrokerEvent.BrokerRegistered(1, 3, "broker3", 9092));
-        assertThat(json).contains("\"broker_id\":3").contains("\"host\":\"broker3\"").contains("\"port\":9092");
+        assertThat(json)
+                .contains("\"broker_id\":3")
+                .contains("\"host\":\"broker3\"")
+                .contains("\"port\":9092");
     }
 
     @Test

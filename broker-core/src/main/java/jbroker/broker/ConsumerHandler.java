@@ -522,9 +522,7 @@ public final class ConsumerHandler {
         var result = new java.util.ArrayList<ErrorCode>(resets.size());
         for (var r : resets) {
             offsetCache.put(
-                    groupId,
-                    r.getTp(),
-                    new OffsetCache.OffsetAndMetadata(r.getOffset(), r.getLeaderEpoch(), "", now));
+                    groupId, r.getTp(), new OffsetCache.OffsetAndMetadata(r.getOffset(), r.getLeaderEpoch(), "", now));
             result.add(ErrorCode.OK);
         }
         return result;

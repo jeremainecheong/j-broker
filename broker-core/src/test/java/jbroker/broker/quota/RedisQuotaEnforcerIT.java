@@ -22,8 +22,8 @@ import org.testcontainers.utility.DockerImageName;
 final class RedisQuotaEnforcerIT {
 
     @Container
-    static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
-            .withExposedPorts(6379);
+    static final GenericContainer<?> REDIS =
+            new GenericContainer<>(DockerImageName.parse("redis:7-alpine")).withExposedPorts(6379);
 
     private static String redisUrl() {
         return "redis://" + REDIS.getHost() + ":" + REDIS.getMappedPort(6379);
@@ -64,7 +64,8 @@ final class RedisQuotaEnforcerIT {
     void denyTriggersWhenCounterExceedsRate() throws Exception {
         var enforcer = new RedisQuotaEnforcer(redisUrl(), /*produceRate*/ 1_000, Long.MAX_VALUE);
         try {
-            assertThat(enforcer.check("alice", QuotaEnforcer.Op.PRODUCE, 600).allow()).isTrue();
+            assertThat(enforcer.check("alice", QuotaEnforcer.Op.PRODUCE, 600).allow())
+                    .isTrue();
             // 600 + 500 = 1100 > 1000 → deny.
             var denied = enforcer.check("alice", QuotaEnforcer.Op.PRODUCE, 500);
             assertThat(denied.allow()).isFalse();

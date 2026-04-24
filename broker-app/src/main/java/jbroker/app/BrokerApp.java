@@ -78,8 +78,7 @@ public final class BrokerApp {
         } else {
             voters = parseVoters(votersSpec);
             if (voters.stream().noneMatch(v -> v.id().value() == id)) {
-                throw new IllegalArgumentException(
-                        "--voters must include self (id=" + id + "), got: " + votersSpec);
+                throw new IllegalArgumentException("--voters must include self (id=" + id + "), got: " + votersSpec);
             }
         }
 

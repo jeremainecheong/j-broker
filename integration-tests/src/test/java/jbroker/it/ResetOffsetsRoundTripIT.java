@@ -65,7 +65,10 @@ class ResetOffsetsRoundTripIT {
                         .build());
                 assertThat(join.getError()).isEqualTo(ErrorCode.OK);
 
-                var tp = TopicPartition.newBuilder().setTopic("orders").setPartition(0).build();
+                var tp = TopicPartition.newBuilder()
+                        .setTopic("orders")
+                        .setPartition(0)
+                        .build();
 
                 var commit = consumer.commitOffsets(CommitOffsetsRequest.newBuilder()
                         .setGroupId("g1")
@@ -138,11 +141,15 @@ class ResetOffsetsRoundTripIT {
                 client.createTopic("orders", 1, 1);
                 var admin = AdminGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
                 var consumer = ConsumerGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-                var tp = TopicPartition.newBuilder().setTopic("orders").setPartition(0).build();
+                var tp = TopicPartition.newBuilder()
+                        .setTopic("orders")
+                        .setPartition(0)
+                        .build();
 
                 var reset = admin.resetConsumerGroupOffsets(ResetConsumerGroupOffsetsRequest.newBuilder()
                         .setGroupId("pre-seeded")
-                        .addResets(OffsetReset.newBuilder().setTp(tp).setOffset(7L).build())
+                        .addResets(
+                                OffsetReset.newBuilder().setTp(tp).setOffset(7L).build())
                         .build());
                 assertThat(reset.getError()).isEqualTo(ErrorCode.OK);
                 assertThat(reset.getResults(0).getError()).isEqualTo(ErrorCode.OK);

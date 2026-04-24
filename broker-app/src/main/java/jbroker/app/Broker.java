@@ -96,16 +96,7 @@ public final class Broker implements AutoCloseable {
                 List<VoterAddress> voters,
                 int consumerOffsetsPartitions,
                 int chaosPort) {
-            this(
-                    selfId,
-                    dataDir,
-                    raftPort,
-                    brokerPort,
-                    voters,
-                    consumerOffsetsPartitions,
-                    chaosPort,
-                    15_000L,
-                    30_000L);
+            this(selfId, dataDir, raftPort, brokerPort, voters, consumerOffsetsPartitions, chaosPort, 15_000L, 30_000L);
         }
 
         /** 5-arg ctor back-compat: chaos disabled (chaosPort = -1). */
@@ -723,7 +714,8 @@ public final class Broker implements AutoCloseable {
                 () -> {
                     try {
                         for (var proposal : preferredBalancer.proposeRebalances(System.currentTimeMillis())) {
-                            var ps = topicManager.partitionState(proposal.topic(), proposal.partition())
+                            var ps = topicManager
+                                    .partitionState(proposal.topic(), proposal.partition())
                                     .orElse(null);
                             if (ps == null) continue;
                             var record = jbroker.proto.raft.PartitionChangeRecord.newBuilder()
@@ -779,11 +771,7 @@ public final class Broker implements AutoCloseable {
         // every peer's BrokerLiveness, the fencer kicks in, and the
         // admin's health pill correctly flips to yellow/red.
         var heartbeatSender = new jbroker.broker.BrokerHeartbeatSender(
-                config.selfId().value(),
-                heartbeatPeers,
-                () -> 0L,
-                /*intervalMs*/ 250L,
-                chaosState::isPaused);
+                config.selfId().value(), heartbeatPeers, () -> 0L, /*intervalMs*/ 250L, chaosState::isPaused);
         heartbeatSender.start();
 
         return new Broker(

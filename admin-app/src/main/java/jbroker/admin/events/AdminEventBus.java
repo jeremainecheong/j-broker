@@ -71,8 +71,8 @@ public class AdminEventBus {
      * whether it arrived via its own gRPC stream or via another pod's
      * Redis publish.
      */
-    private final java.util.Set<String> seenBrokerEvents = java.util.Collections.newSetFromMap(
-            new java.util.LinkedHashMap<>() {
+    private final java.util.Set<String> seenBrokerEvents =
+            java.util.Collections.newSetFromMap(new java.util.LinkedHashMap<>() {
                 @Override
                 protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
                     return size() > RING_CAPACITY;

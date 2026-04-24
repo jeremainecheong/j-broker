@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jbroker.broker.headless" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  # Headless service so StatefulSet pods get stable DNS at
+  # {pod}.{service}.{namespace}.svc.cluster.local. Raft voter discovery
+  # depends on these names being resolvable.
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: grpc
+      port: {{ .Values.broker.ports.grpc }}
+      targetPort: grpc
+      protocol: TCP
+    - name: raft
+      port: {{ .Values.broker.ports.raft }}
+      targetPort: raft
+      protocol: TCP
+  selector:
+    {{- include "jbroker.broker.selectorLabels" . | nindent 4 }}
+{{- if .Values.brokerService.external.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jbroker.broker.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  type: {{ .Values.brokerService.external.type }}
+  ports:
+    - name: grpc
+      port: {{ .Values.brokerService.external.port }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "jbroker.broker.selectorLabels" . | nindent 4 }}
+{{- end }}

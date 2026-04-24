@@ -1,0 +1,25 @@
+j-broker is installing.
+
+Cluster layout:
+  broker StatefulSet  : {{ include "jbroker.broker.fullname" . }} ({{ .Values.broker.replicaCount }} replicas)
+  admin Deployment    : {{ include "jbroker.admin.fullname" . }} ({{ .Values.admin.replicaCount }} replicas)
+  {{- if .Values.redis.enabled }}
+  redis Deployment    : {{ include "jbroker.redis.fullname" . }}
+  {{- end }}
+
+Raft voters: {{ include "jbroker.voters" . }}
+
+Admin UI:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "jbroker.admin.fullname" . }} {{ .Values.admin.service.port }}:{{ .Values.admin.service.port }}
+  open http://localhost:{{ .Values.admin.service.port }}
+
+{{- if .Values.tls.enabled }}
+
+TLS is enabled — the broker gRPC surface demands mutual-TLS. Clients must
+present a cert signed by the CA in secret "{{ .Values.tls.secretName }}".
+Generate a bundle via scripts/tls/bootstrap-ca.sh, then:
+  kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.tls.secretName }} \
+      --from-file=tls.crt=broker1.crt \
+      --from-file=tls.key=broker1.key \
+      --from-file=ca.crt=ca.crt
+{{- end }}

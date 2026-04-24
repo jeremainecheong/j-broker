@@ -20,42 +20,60 @@ class AppendThroughputTest {
 
     /**
      * Throughput floor is hardware-dependent. GitHub Actions runners and
-     * similar shared CI disks routinely fall below 50 MB/s under noisy-
-     * neighbour load, producing meaningless red builds. The test still
-     * runs on demand for perf-regression detection — opt-in via
-     * {@code -PincludeTags=perf} or {@code JBROKER_RUN_PERF=1}.
+     * similar shared CI disks routinely fall below 50 MB/s for a SINGLE
+     * trial under noisy-neighbour load — occasional 200 ms fsync stalls
+     * are enough to flunk a 50k×1KiB run that nominally takes ~300 ms.
+     *
+     * <p>Best-of-3 instead of a single trial: three independent runs, each
+     * with its own temp directory, and we assert on the fastest. Real
+     * regressions (compiler deopt, fsync amplification, missing batching)
+     * show up in every trial; transient noise affects at most one. Runs
+     * on demand — opt-in via {@code -PincludeTags=perf} or
+     * {@code JBROKER_RUN_PERF=1}.
      */
     @Test
     @Tag("perf")
     void appendThroughputFloor(@TempDir Path dir) throws Exception {
         final int recordBytes = 1024;
         final int records = 50_000;
+        final int trials = 3;
 
-        try (var log = Log.open(dir, new Log.Config(256L * 1024 * 1024, 0, 4096))) {
-            byte[] payload = new byte[recordBytes];
-            // Warm up.
-            for (int i = 0; i < 1_000; i++) {
-                log.append(List.of(new Record(0, 0L, null, payload)), 1L);
+        double bestMbPerSec = 0;
+        double bestSeconds = Double.POSITIVE_INFINITY;
+        for (int trial = 0; trial < trials; trial++) {
+            Path trialDir = dir.resolve("trial-" + trial);
+            java.nio.file.Files.createDirectories(trialDir);
+            try (var log = Log.open(trialDir, new Log.Config(256L * 1024 * 1024, 0, 4096))) {
+                byte[] payload = new byte[recordBytes];
+                // Warm up.
+                for (int i = 0; i < 1_000; i++) {
+                    log.append(List.of(new Record(0, 0L, null, payload)), 1L);
+                }
+                log.force();
+
+                long start = System.nanoTime();
+                for (int i = 0; i < records; i++) {
+                    log.append(List.of(new Record(0, 0L, null, payload)), 1_000L + i);
+                }
+                log.force();
+                long elapsedNs = System.nanoTime() - start;
+
+                double bytes = (double) records * recordBytes;
+                double seconds = elapsedNs / 1e9;
+                double mbPerSec = bytes / seconds / (1024 * 1024);
+                System.out.printf(
+                        "Log append throughput trial %d/%d: %.1f MB/s (%.2fs for %d x %d-byte records)%n",
+                        trial + 1, trials, mbPerSec, seconds, records, recordBytes);
+                if (mbPerSec > bestMbPerSec) {
+                    bestMbPerSec = mbPerSec;
+                    bestSeconds = seconds;
+                }
             }
-            log.force();
-
-            long start = System.nanoTime();
-            for (int i = 0; i < records; i++) {
-                log.append(List.of(new Record(0, 0L, null, payload)), 1_000L + i);
-            }
-            log.force();
-            long elapsedNs = System.nanoTime() - start;
-
-            double bytes = (double) records * recordBytes;
-            double seconds = elapsedNs / 1e9;
-            double mbPerSec = bytes / seconds / (1024 * 1024);
-            System.out.printf(
-                    "Log append throughput: %.1f MB/s (%.2fs for %d x %d-byte records)%n",
-                    mbPerSec, seconds, records, recordBytes);
-            // CI may run on slow IO; lower bar here than PRD's 200 MB/s so we
-            // still catch catastrophic regressions (compiler deopt, fsync
-            // amplification). The PRD's 200 MB/s claim is for a laptop SSD.
-            assertThat(mbPerSec).isGreaterThan(50.0);
         }
+        System.out.printf("Log append throughput best-of-%d: %.1f MB/s (%.2fs)%n", trials, bestMbPerSec, bestSeconds);
+        // CI may run on slow IO; lower bar here than PRD's 200 MB/s so we
+        // still catch catastrophic regressions (compiler deopt, fsync
+        // amplification). The PRD's 200 MB/s claim is for a laptop SSD.
+        assertThat(bestMbPerSec).isGreaterThan(50.0);
     }
 }

@@ -21,6 +21,8 @@ import jbroker.proto.broker.TopicDescription;
 import jbroker.proto.broker.UpdateTopicConfigRequest;
 import jbroker.storage.Record;
 import jbroker.storage.RecordBatch;
+import jbroker.tls.TlsConfig;
+import jbroker.tls.TlsContexts;
 
 /**
  * Minimal single-broker client surface for Milestone 5. Bundles Producer,
@@ -36,7 +38,23 @@ public final class BrokerClient implements AutoCloseable {
     private final AdminGrpc.AdminBlockingStub admin;
 
     public BrokerClient(String host, int port) {
-        this.channel = NettyChannelBuilder.forAddress(host, port).usePlaintext().build();
+        this(host, port, TlsConfig.DISABLED);
+    }
+
+    /** TLS-aware constructor. Pass {@link TlsConfig#DISABLED} for plaintext. */
+    public BrokerClient(String host, int port, TlsConfig tls) {
+        var b = NettyChannelBuilder.forAddress(host, port);
+        try {
+            var sslCtx = TlsContexts.clientContext(tls);
+            if (sslCtx == null) {
+                b.usePlaintext();
+            } else {
+                b.sslContext(sslCtx);
+            }
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException("TLS client context build failed", e);
+        }
+        this.channel = b.build();
         this.producer = ProducerGrpc.newBlockingStub(channel);
         this.consumer = ConsumerGrpc.newBlockingStub(channel);
         this.admin = AdminGrpc.newBlockingStub(channel);

@@ -103,9 +103,18 @@ public class AdminEventBus {
         int colon = address.indexOf(':');
         String host = address.substring(0, colon);
         int port = Integer.parseInt(address.substring(colon + 1));
-        var channel = io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forAddress(host, port)
-                .usePlaintext()
-                .build();
+        var b = io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forAddress(host, port);
+        try {
+            var sslCtx = jbroker.tls.TlsContexts.clientContext(pool.tls());
+            if (sslCtx == null) {
+                b.usePlaintext();
+            } else {
+                b.sslContext(sslCtx);
+            }
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException("TLS client context build failed", e);
+        }
+        var channel = b.build();
         synchronized (streamChannels) {
             streamChannels.add(channel);
         }

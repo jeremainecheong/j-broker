@@ -28,6 +28,7 @@ import jbroker.proto.common.ErrorCode;
 import jbroker.proto.common.TopicPartition;
 import jbroker.storage.Record;
 import jbroker.storage.RecordBatch;
+import jbroker.tls.TlsContexts;
 
 /**
  * Milestone 7 consumer client. Single-threaded — the application drives the
@@ -98,10 +99,23 @@ public final class Consumer<K, V> implements AutoCloseable {
         this.cfg = cfg;
         this.keyDe = keyDe;
         this.valueDe = valueDe;
-        this.bootstrapChannel = NettyChannelBuilder.forAddress(cfg.bootstrapHost(), cfg.bootstrapPort())
-                .usePlaintext()
-                .build();
+        this.bootstrapChannel = buildChannel(cfg, cfg.bootstrapHost(), cfg.bootstrapPort());
         this.bootstrapStub = ConsumerGrpc.newBlockingStub(bootstrapChannel);
+    }
+
+    private static ManagedChannel buildChannel(ConsumerConfig cfg, String host, int port) {
+        var b = NettyChannelBuilder.forAddress(host, port);
+        try {
+            var sslCtx = TlsContexts.clientContext(cfg.tls());
+            if (sslCtx == null) {
+                b.usePlaintext();
+            } else {
+                b.sslContext(sslCtx);
+            }
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException("TLS client context build failed", e);
+        }
+        return b.build();
     }
 
     public synchronized void subscribe(Collection<String> topics, RebalanceListener listener) {
@@ -395,9 +409,7 @@ public final class Consumer<K, V> implements AutoCloseable {
             coordinatorChannel = null;
             coordinatorStub = bootstrapStub;
         } else {
-            coordinatorChannel = NettyChannelBuilder.forAddress(ep.host(), ep.port())
-                    .usePlaintext()
-                    .build();
+            coordinatorChannel = buildChannel(cfg, ep.host(), ep.port());
             coordinatorStub = ConsumerGrpc.newBlockingStub(coordinatorChannel);
         }
         return coordinatorStub;

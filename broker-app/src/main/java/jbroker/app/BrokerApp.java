@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Set;
 import jbroker.broker.client.BrokerClient;
 import jbroker.raft.core.NodeId;
+import jbroker.tls.TlsConfig;
 
 /**
  * {@code j-broker} top-level entry point. Two modes:
@@ -78,6 +79,22 @@ public final class BrokerApp {
                 args,
                 "--consumer-offsets-partitions",
                 String.valueOf(jbroker.broker.ConsumerOffsetsTopic.PARTITION_COUNT)));
+        // mTLS opt-in. Enabled only when --tls-enabled is set AND the
+        // required --tls-cert / --tls-key / --tls-trust all point at PEM
+        // files. Absent → plaintext (earlierdefault).
+        boolean tlsEnabled = switchFlag(args, "--tls-enabled");
+        String tlsCert = flag(args, "--tls-cert", null);
+        String tlsKey = flag(args, "--tls-key", null);
+        String tlsTrust = flag(args, "--tls-trust", null);
+        TlsConfig tlsConfig = TlsConfig.DISABLED;
+        if (tlsEnabled) {
+            if (tlsCert == null || tlsKey == null || tlsTrust == null) {
+                throw new IllegalArgumentException(
+                        "--tls-enabled requires --tls-cert, --tls-key, --tls-trust (all PEM paths)");
+            }
+            tlsConfig = TlsConfig.mtlsServer(
+                    java.nio.file.Path.of(tlsCert), java.nio.file.Path.of(tlsKey), java.nio.file.Path.of(tlsTrust));
+        }
 
         List<VoterAddress> voters;
         if (votersSpec == null || votersSpec.isBlank()) {
@@ -97,12 +114,14 @@ public final class BrokerApp {
 
         var config = new Broker.Config(
                         new NodeId(id), Path.of(dataDir), raftPort, brokerPort, voters, consumerOffsetsPartitions)
-                .withChaosPort(chaosPort);
+                .withChaosPort(chaosPort)
+                .withTls(tlsConfig);
         var broker = Broker.start(config);
         Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
         System.out.println("j-broker listening on " + brokerPort
                 + " (id=" + id + ", raft=" + raftPort + ", data=" + dataDir
                 + ", voters=" + voters.size() + (chaosPort >= 0 ? ", chaos=" + chaosPort : "")
+                + (tlsConfig.enabled() ? ", tls=mTLS" : "")
                 + ")");
         Thread.currentThread().join();
     }

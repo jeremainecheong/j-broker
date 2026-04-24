@@ -11,6 +11,8 @@ import jbroker.proto.raft.RaftGrpc;
 import jbroker.proto.raft.RequestVoteRequest;
 import jbroker.proto.raft.RequestVoteResponse;
 import jbroker.raft.core.NodeId;
+import jbroker.tls.TlsConfig;
+import jbroker.tls.TlsContexts;
 
 public final class RaftPeerClient implements AutoCloseable {
 
@@ -19,8 +21,24 @@ public final class RaftPeerClient implements AutoCloseable {
     private final RaftGrpc.RaftBlockingStub stub;
 
     public RaftPeerClient(NodeId peerId, String host, int port) {
+        this(peerId, host, port, TlsConfig.DISABLED);
+    }
+
+    /** TLS-aware constructor. Raft peers share the cluster TLS bundle. */
+    public RaftPeerClient(NodeId peerId, String host, int port, TlsConfig tls) {
         this.peerId = peerId;
-        this.channel = NettyChannelBuilder.forAddress(host, port).usePlaintext().build();
+        var b = NettyChannelBuilder.forAddress(host, port);
+        try {
+            var sslCtx = TlsContexts.clientContext(tls == null ? TlsConfig.DISABLED : tls);
+            if (sslCtx == null) {
+                b.usePlaintext();
+            } else {
+                b.sslContext(sslCtx);
+            }
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException("TLS client context build failed", e);
+        }
+        this.channel = b.build();
         this.stub = RaftGrpc.newBlockingStub(channel);
     }
 

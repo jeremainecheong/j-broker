@@ -28,6 +28,8 @@ import jbroker.raft.core.RaftEvent;
 import jbroker.raft.core.Role;
 import jbroker.raft.core.StateMachine;
 import jbroker.raft.core.Term;
+import jbroker.tls.TlsConfig;
+import jbroker.tls.TlsContexts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -81,13 +83,25 @@ public final class RaftDriver implements AutoCloseable {
     }
 
     public void start(int grpcPort) throws IOException {
+        start(grpcPort, TlsConfig.DISABLED);
+    }
+
+    /**
+     * TLS-aware start. When {@code tls.enabled()}, binds the Raft
+     * gRPC server with an mTLS-demanding {@link io.grpc.netty.shaded.io.netty.handler.ssl.SslContext}.
+     */
+    public void start(int grpcPort, TlsConfig tls) throws IOException {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        grpcServer = NettyServerBuilder.forPort(grpcPort)
-                .addService(new RaftGrpcService(this))
-                .build()
-                .start();
+        var b = NettyServerBuilder.forPort(grpcPort).addService(new RaftGrpcService(this));
+        try {
+            var sslCtx = TlsContexts.serverContext(tls == null ? TlsConfig.DISABLED : tls);
+            if (sslCtx != null) b.sslContext(sslCtx);
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IOException("TLS server context build failed", e);
+        }
+        grpcServer = b.build().start();
         pumpThread = Thread.ofVirtual().name("raft-pump-" + selfId.value()).start(this::pumpLoop);
         tickerThread = Thread.ofVirtual().name("raft-ticker-" + selfId.value()).start(this::tickerLoop);
     }

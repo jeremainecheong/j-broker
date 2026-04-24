@@ -8,6 +8,10 @@ plugins {
 dependencies {
     implementation(project(":broker-core"))
     implementation(project(":proto"))
+    // jbroker.tls.TlsConfig / TlsContexts live in raft-transport;
+    // admin-app now builds gRPC channels with mTLS support, so pull it in
+    // directly (broker-core's dep is implementation-scoped).
+    implementation(project(":raft-transport"))
     // gRPC shaded netty channel builder. Not exported transitively by
     // broker-core (only raft-transport apis it), so bring it in directly
     // here so admin-app client code can dial brokers.

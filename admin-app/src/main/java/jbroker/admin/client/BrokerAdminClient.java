@@ -27,6 +27,8 @@ import jbroker.proto.broker.ListTopicsResponse;
 import jbroker.proto.broker.MetadataGrpc;
 import jbroker.proto.broker.UpdateTopicConfigRequest;
 import jbroker.proto.broker.UpdateTopicConfigResponse;
+import jbroker.tls.TlsConfig;
+import jbroker.tls.TlsContexts;
 
 /**
  * Thin gRPC wrapper the admin-app uses to talk to a single broker. One
@@ -45,16 +47,38 @@ public final class BrokerAdminClient implements AutoCloseable {
     private final AdminGrpc.AdminBlockingStub admin;
 
     public BrokerAdminClient(String host, int port) {
+        this(host, port, TlsConfig.DISABLED);
+    }
+
+    /** TLS-aware constructor. Admin-app→broker shares the cluster TLS bundle. */
+    public BrokerAdminClient(String host, int port, TlsConfig tls) {
         this.address = host + ":" + port;
-        this.channel = NettyChannelBuilder.forAddress(host, port).usePlaintext().build();
+        var b = NettyChannelBuilder.forAddress(host, port);
+        try {
+            var sslCtx = TlsContexts.clientContext(tls == null ? TlsConfig.DISABLED : tls);
+            if (sslCtx == null) {
+                b.usePlaintext();
+            } else {
+                b.sslContext(sslCtx);
+            }
+        } catch (javax.net.ssl.SSLException e) {
+            throw new IllegalStateException("TLS client context build failed", e);
+        }
+        this.channel = b.build();
         this.metadata = MetadataGrpc.newBlockingStub(channel);
         this.admin = AdminGrpc.newBlockingStub(channel);
     }
 
     public static BrokerAdminClient parse(String hostPort) {
+        return parse(hostPort, TlsConfig.DISABLED);
+    }
+
+    /** parse helper that threads a TLS bundle into the created client. */
+    public static BrokerAdminClient parse(String hostPort, TlsConfig tls) {
         int colon = hostPort.indexOf(':');
         if (colon < 0) throw new IllegalArgumentException("broker address needs host:port, got " + hostPort);
-        return new BrokerAdminClient(hostPort.substring(0, colon), Integer.parseInt(hostPort.substring(colon + 1)));
+        return new BrokerAdminClient(
+                hostPort.substring(0, colon), Integer.parseInt(hostPort.substring(colon + 1)), tls);
     }
 
     public String address() {

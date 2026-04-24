@@ -11,6 +11,7 @@ import jbroker.broker.TopicManager;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
 import jbroker.storage.LogManager;
+import jbroker.tls.TlsConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,6 +37,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     private final ScheduledExecutorService pump;
     private final long pollIntervalMs;
     private final long fetchTimeoutMs;
+    private final TlsConfig tls;
 
     public DefaultFetcherFactory(
             int selfBrokerId,
@@ -43,11 +45,23 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
             TopicManager topicManager,
             long pollIntervalMs,
             long fetchTimeoutMs) {
+        this(selfBrokerId, logManager, topicManager, pollIntervalMs, fetchTimeoutMs, TlsConfig.DISABLED);
+    }
+
+    /** TLS-aware constructor. Wires the same TLS bundle into each {@link ReplicaPeerClient}. */
+    public DefaultFetcherFactory(
+            int selfBrokerId,
+            LogManager logManager,
+            TopicManager topicManager,
+            long pollIntervalMs,
+            long fetchTimeoutMs,
+            TlsConfig tls) {
         this.selfBrokerId = selfBrokerId;
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.pollIntervalMs = pollIntervalMs;
         this.fetchTimeoutMs = fetchTimeoutMs;
+        this.tls = tls == null ? TlsConfig.DISABLED : tls;
         this.pump = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "replica-fetcher-pump-" + selfBrokerId);
             t.setDaemon(true);
@@ -58,7 +72,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     @Override
     public ReplicaFetcherManager.FetcherHandle start(
             String topic, int partition, int leaderBrokerId, BrokerRegistry.HostPort leaderAddr) {
-        var client = new ReplicaPeerClient(leaderAddr.host(), leaderAddr.port());
+        var client = new ReplicaPeerClient(leaderAddr.host(), leaderAddr.port(), tls);
         ReplicaFetcher.Peer peer = new ReplicaFetcher.Peer() {
             @Override
             public ReplicaFetchResponse fetch(ReplicaFetchRequest req) {

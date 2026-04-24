@@ -89,13 +89,44 @@
     if (series[kind].length > HISTORY) series[kind].shift();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () {
+  // P14.3 — hydrate from the server-side ring on first load so the
+  // sparkline shows persisted history across page navigations and pod
+  // restarts instead of a blank canvas that only fills while the tab
+  // is open.
+  function hydrate() {
+    return fetch("/api/v1/metrics/timeseries?window=1m")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !Array.isArray(d.samples) || d.samples.length === 0) return;
+        // Keep only the last HISTORY points so the ring stays bounded
+        // even if the server serves a longer window than we expect.
+        var recent = d.samples.slice(-HISTORY);
+        recent.forEach(function (s) {
+          pushSample("produce", s.produce_bytes_per_sec || 0);
+          pushSample("fetch", s.fetch_bytes_per_sec || 0);
+        });
+        var last = recent[recent.length - 1];
+        updateCurrent("produce", last.produce_bytes_per_sec || 0);
+        updateCurrent("fetch", last.fetch_bytes_per_sec || 0);
+        redraw("produce");
+        redraw("fetch");
+      })
+      .catch(function () {
+        // If hydrate fails (e.g. fresh admin with no history yet) just
+        // start live polling — first tick will paint the first point.
+      });
+  }
+
+  function start() {
+    hydrate().finally(function () {
       tick();
       setInterval(tick, INTERVAL_MS);
     });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
   } else {
-    tick();
-    setInterval(tick, INTERVAL_MS);
+    start();
   }
 })();

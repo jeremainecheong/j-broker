@@ -49,7 +49,7 @@ j-broker is a Kafka-shaped message broker that I built from scratch as a learnin
 - **Idempotent producer** — `(producer_id, epoch, base_sequence)` triple deduplicates retries server-side.
 - **Consumer groups** — join/heartbeat/leave, cooperative-sticky-ish assignment, offset commit + fetch, coordinator-partition sharding over `__consumer_offsets`.
 - **Log compaction** — Kafka-style latest-value-per-key; preserves original absolute offsets so pre-compaction consumer offsets still resolve ().
-- **Admin REST + Thymeleaf UI** — RabbitMQ-management-plugin flavour: list topics, describe partitions, force-compact, reset/delete consumer groups, Raft state, metrics sparklines, chaos controls.
+- **Admin REST + Thymeleaf UI** — RabbitMQ-management-plugin flavour: list topics, describe partitions with live HWM/LEO, edit topic config in-browser, force-compact from the UI, reset / delete consumer groups, Raft state, metrics sparklines, chaos controls with live topology, SSE-driven events rail.
 - **Chaos HTTP** — kill / pause / network-partition / force-election endpoints on each broker, driven from the admin Chaos page or cURL.
 - **Prometheus + Grafana** — `/actuator/prometheus` on admin-app, two dashboards auto-provisioned.
 - **JFR + async-profiler** — six custom JFR events on hot paths (`RaftTermChange`, `PartitionLeaderChange`, `FsyncDuration`, `ReplicationLag`, `ProduceLatency`, `FetchLatency`).
@@ -137,13 +137,13 @@ The admin UI is a RabbitMQ-management-plugin-inspired dashboard served from `adm
 
 ### Cluster overview
 
-High-level counts, live throughput, and a force-directed topology of the cluster. Controller (Raft leader) is rendered with a yellow ring.
+High-level counts, live throughput, a force-directed topology of the cluster, and the nodes table with role + last-seen. Controller (Raft leader) renders with a yellow ring; peer brokers contribute their own self-reported roles so the UI never shows `UNKNOWN` on live members (the view controller fans out across brokers and merges self-reports — see `ClusterController.mergeSelfReportedRoles`). Epoch-millis timestamps render as relative times (`just now`, `3s ago`) via a small client-side helper.
 
 ![Cluster overview](docs/screenshots/overview.png)
 
 ### Topics
 
-List of user + internal topics with partition counts, replication factor, compact-policy flag, and creation time.
+List of user + internal topics with partition counts, replication factor, the effective compact flag (OR of the proto field and `cleanup.policy=compact`), and creation time formatted relative to now.
 
 ![Topics list](docs/screenshots/topics.png)
 
@@ -151,11 +151,11 @@ List of user + internal topics with partition counts, replication factor, compac
 
 ### Topic detail
 
-Per-partition state: leader broker, leader epoch, ISR (green pills for in-sync replicas), high-watermark and log-end-offset when the partition has a live leader.
+Per-partition state: leader broker, leader epoch, ISR (green pills for in-sync replicas, red for out-of-sync), high-watermark and log-end-offset. HWM/LEO come from the merge of every broker's response — a non-leader replica returns `-1` sentinels and the UI overlays leader-reported values so every partition card shows real numbers, not "no live leader" next to a real leader badge.
 
 ![Topic detail](docs/screenshots/topic-detail.png)
 
-Force-compact sends `POST /api/v1/topics/{name}/partitions/{p}/compact`, fans across every broker hosting the partition, sums the retained counts and returns `{records_kept, brokers_compacted}`.
+**Force compact** (per-partition button) sends `POST /api/v1/topics/{name}/partitions/{p}/compact`, fans across every broker hosting the partition, sums the retained counts, and flashes `compacted N records across M broker(s)` in-page. **Edit config** opens a modal pre-filled with the current overlay; the key/value textarea submits as `PATCH /api/v1/topics/{name}/config` and the page reloads to show the merged values. **Delete** is a confirm-gated form POST that routes to the Raft leader.
 
 ### Consumer groups
 
@@ -163,9 +163,11 @@ Lists every group tracked by the coordinator with state, member count, generatio
 
 ![Consumer groups](docs/screenshots/groups.png)
 
-Group detail shows the member slot, which partitions it owns, and a per-partition lag table with progress bars.
+Group detail shows the member slot, which partitions it owns, and a per-partition lag table with progress bars. Lag rendered as `—` (neutral pill) when the responding broker isn't a partition leader and can't read HWM — avoids the false "lag 0, healthy" signal on groups whose coordinator lives elsewhere.
 
 ![Consumer group detail](docs/screenshots/group-detail.png)
+
+**Reset offsets** opens a modal with `{topic, partition, offset, leader_epoch}` fields and POSTs to `/api/v1/consumer-groups/{id}/reset-offsets`. **Delete group** is a confirm-gated red button that calls `DELETE /api/v1/consumer-groups/{id}` through the view controller.
 
 ### Raft
 
@@ -183,12 +185,13 @@ Backed by `GET /api/v1/metrics/timeseries?window={30s|5m|1h}`; the `ThroughputHi
 
 ### Chaos
 
-Live failure-injection controls. Requires `JBROKER_CHAOS_PORT` to be set in the compose env. Actions:
+Live failure-injection controls. Requires `JBROKER_CHAOS_PORT` to be set in the compose env. A live topology SVG at the top repaints every 3s off `/api/v1/cluster` + `/api/v1/chaos/state` so injected states (paused, latency, partition) show up visually within a tick. Actions:
 
 - **Kill** a broker (process exits, Docker's restart policy brings it back).
 - **Pause / Resume** — freezes the broker's reactor without closing sockets, so heartbeats stop flowing.
 - **Force election** — sends the broker a self-addressed `TimeoutNow` to trigger immediate candidate transition.
-- **Network partition** — bidirectional block between two brokers on the gRPC plane.
+- **Inject latency** — adds N ms to every outbound gRPC reply on the target broker.
+- **Network partition** — bidirectional block between two brokers on the gRPC plane. **Heal all** clears every partition cluster-wide in one shot.
 - The SSE-backed **Live events** panel on the right replays broker events as they happen.
 
 ![Chaos controls](docs/screenshots/chaos.png)
@@ -531,6 +534,7 @@ All paths are under `/api/v1/`. JSON is snake_case throughout (Jackson configure
 | `GET` | `/metrics/timeseries?window=5m` | Server-side history for sparklines () |
 | `GET` | `/events` | Server-Sent Events stream (`Last-Event-ID` supported) |
 | `GET` | `/health/badge` | 5s-polled health pill for the top nav |
+| `GET` | `/chaos/state` | Per-broker chaos snapshot `{available, paused, latency_ms, outbound_blocked_peers, inbound_blocked_peers}` — drives the live topology SVG |
 | `POST` | `/chaos/kill-broker/{id}` | Exit the broker process (requires chaos port) |
 | `POST` | `/chaos/pause-broker/{id}` | Freeze the broker's reactor |
 | `POST` | `/chaos/resume-broker/{id}` | Unfreeze |
@@ -547,14 +551,14 @@ The admin app serves eight Thymeleaf pages under the same top-nav shell (`fragme
 
 | Route | Template | What it shows |
 |---|---|---|
-| `/` | `index.html` | Overview dashboard + topology |
+| `/` | `index.html` | Overview dashboard + topology (delegates to `ClusterController.cluster()` merge) |
 | `/topics` | `topics.html` | Topic list + create modal |
-| `/topics/{name}` | `topic-detail.html` | Per-partition state + delete button |
+| `/topics/{name}` | `topic-detail.html` | Per-partition state + force-compact buttons + edit-config modal + delete (delegates to `TopicsController.describeTopic` merge) |
 | `/groups` | `groups.html` | Consumer group list |
-| `/groups/{id}` | `group-detail.html` | Members + partition lag |
+| `/groups/{id}` | `group-detail.html` | Members + partition lag + reset-offsets modal + delete-group button |
 | `/raft` | `raft.html` | Raft state table |
-| `/metrics` | `metrics.html` | Throughput + latency sparklines |
-| `/chaos` | `chaos.html` | Failure-injection panel |
+| `/metrics` | `metrics.html` | Throughput + latency line charts (Chart.js inside `.chart-frame` wrappers for stable sizing) |
+| `/chaos` | `chaos.html` | Live topology SVG + per-broker action grid + SSE events rail |
 
 The top-nav carries a live health pill (green/yellow/red) polled from `/api/v1/health/badge` every 5s. Pages use htmx for partial refreshes and Alpine.js for tiny interactions (modals, toggles) — no build step, no webpack.
 
@@ -751,7 +755,7 @@ Raw CSV in `docs/bench/results.csv`. Regenerate via `scripts/bench/run-readme-be
 
 ## Testing
 
-- **Unit tests** — ~200 across `raft-core`, `raft-transport`, `broker-storage`, `broker-core`, `admin-app`. Log append/read/fsync/recovery, Raft election safety, log-matching + truncation, conflict-index backoff, HWM advancement, sparse-offset compaction, consumer-group coordinator, idempotent producer dedup, admin-REST merging.
+- **Unit tests** — ~550 across `raft-core` (~80), `raft-transport` (~10), `broker-storage` (~35), `broker-core` (~270), `admin-app` (~70), `broker-app` (~60). Log append/read/fsync/recovery, Raft election safety, log-matching + truncation, conflict-index backoff, HWM advancement, sparse-offset compaction, consumer-group coordinator, idempotent producer dedup, admin-REST cluster + topic merge logic, view-controller delegation (proves the UI uses merged fan-out, not single-broker snapshots).
 - **Integration tests** — in `integration-tests/` and `broker-app/src/test`. Multi-broker replication, acks=all durability, partition-leader failover, group churn, chaos-kill-broker, 10k concurrent clients (CI-grade variant), 1M-record compaction (@slow), force-compact round-trip, preferred-leader balancer convergence.
 - **Stress** — `./gradlew :integration-tests:stressTest` — 100 randomized election cycles.
 - **Chaos simulator** — `simulator/` runs deterministic Raft scenarios with crash injection and invariant assertions across 10k seeds.
@@ -799,11 +803,8 @@ Where the project is, phase by phase:
 - [x] **Milestone 12** — Perf bench module, sparse-offset compaction, preferred-leader balancer wiring, real-RESP Redis quota enforcer, admin consumer-group mutations.
 - [x] **Milestone 13** — v1.1 correctness-gap closers: force-compact admin RPC + IT, consumer-group admin-mutation round-trip ITs, balancer-rebalance IT, CI-grade 10k-client smoke, README bench table, Redis pub/sub SSE fan-out.
 - [x] **Milestone 14** — Admin UI reliability: `x-cloak` modal-flash fix + self-hosted Alpine/htmx/Chart.js in `admin-app/.../static/vendor/` (Chrome ORB was blocking the unpkg CDN); `/metrics` sparklines wired to snake_case fields; `GET /api/v1/metrics/timeseries` + `ThroughputHistory` ring so overview + metrics hydrate on load instead of starting blank; `j-broker consume --group G --topic T` subcommand backed by the real `Consumer` library so the Groups page actually populates.
-
-Milestone 15 (in flight — production hardening):
-- **** — Broker advertised host/port so external clients reach published Docker ports without `docker exec`.
-- **** — mTLS between brokers + admin + clients on the gRPC plane.
-- **** — Helm chart for Kubernetes.
+- [x] **Milestone 15** — Production hardening: broker advertised host/port (external clients reach published Docker ports without `docker exec`), mTLS on the gRPC plane between brokers + admin + clients, Helm chart for Kubernetes.
+- [x] **Milestone 16** — Admin UI depth + post-merge audit cycle: live chaos topology SVG + `GET /api/v1/chaos/state` endpoint; view controllers delegate to the REST-merge path so overview + topic-detail render concrete roles and real HWM/LEO on every page load (not the first-successful-broker's self-centric snapshot); `/groups/{id}` reset-offsets modal + delete-group button wired to the existing REST; `/topics/{name}` force-compact + edit-config actions; unified `<footer>` fragment, favicon placeholder, relative-time rendering for epoch-millis columns; post-merge Playwright audit closed with modal centring (`.modal-overlay` CSS class — Alpine's `x-show` stomps inline `display: flex`), metrics chart sizing (Chart.js needs a `position: relative` wrapper with explicit height), LAG column em-dash fallback when HWM is sentinel, Compact-column derivation from `cleanup.policy`, Alpine init-race guard on the chaos feed, and `window_seconds: null` on idle `/metrics/throughput` so scrapers don't divide by zero.
 
 ---
 

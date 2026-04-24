@@ -359,68 +359,82 @@ public final class LogSegment implements AutoCloseable {
      * a no-op. If {@code targetOffset <= baseOffset}, the segment is
      * emptied.
      */
-    public synchronized void truncateAtOrAbove(long targetOffset) throws IOException {
-        if (targetOffset <= baseOffset) {
-            logChannel.truncate(0);
-            offsetIndex.truncateAll();
-            timeIndex.truncateAll();
-            nextOffset = baseOffset;
-            bytesSinceLastIndex = 0;
-            maxTimestamp = 0L;
-            return;
-        }
-        if (targetOffset >= nextOffset) return;
-        long size = logChannel.size();
-        if (size == 0) return;
-        var buf = ByteBuffer.allocate((int) size);
-        int read = 0;
-        while (read < size) {
-            int n = logChannel.read(buf, read);
-            if (n <= 0) break;
-            read += n;
-        }
-        buf.flip();
+    public void truncateAtOrAbove(long targetOffset) throws IOException {
+        lock.lock();
+        try {
+            if (targetOffset <= baseOffset) {
+                logChannel.truncate(0);
+                offsetIndex.truncateAll();
+                timeIndex.truncateAll();
+                nextOffset = baseOffset;
+                bytesSinceLastIndex = 0;
+                maxTimestamp = 0L;
+                return;
+            }
+            if (targetOffset >= nextOffset) return;
+            long size = logChannel.size();
+            if (size == 0) return;
+            var buf = ByteBuffer.allocate((int) size);
+            int read = 0;
+            while (read < size) {
+                int n = logChannel.read(buf, read);
+                if (n <= 0) break;
+                read += n;
+            }
+            buf.flip();
 
-        int cutPos = 0;
-        long newNextOffset = baseOffset;
-        long newMaxTs = 0L;
-        while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
-            int startPos = buf.position();
-            RecordBatch.Parsed parsed;
-            try {
-                parsed = RecordBatch.decode(buf);
-            } catch (IllegalArgumentException e) {
-                break;
+            int cutPos = 0;
+            long newNextOffset = baseOffset;
+            long newMaxTs = 0L;
+            while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
+                int startPos = buf.position();
+                RecordBatch.Parsed parsed;
+                try {
+                    parsed = RecordBatch.decode(buf);
+                } catch (IllegalArgumentException e) {
+                    break;
+                }
+                if (parsed.baseOffset() >= targetOffset) {
+                    break;
+                }
+                cutPos = buf.position();
+                newNextOffset = parsed.baseOffset() + parsed.lastOffsetDelta() + 1;
+                if (parsed.maxTimestamp() > newMaxTs) newMaxTs = parsed.maxTimestamp();
+                if (cutPos - startPos <= 0) break; // defensive
             }
-            if (parsed.baseOffset() >= targetOffset) {
-                break;
-            }
-            cutPos = buf.position();
-            newNextOffset = parsed.baseOffset() + parsed.lastOffsetDelta() + 1;
-            if (parsed.maxTimestamp() > newMaxTs) newMaxTs = parsed.maxTimestamp();
-            if (cutPos - startPos <= 0) break; // defensive
+            logChannel.truncate(cutPos);
+            offsetIndex.truncateAtOrAbove(targetOffset);
+            timeIndex.truncateAtOrAbove(targetOffset);
+            nextOffset = newNextOffset;
+            maxTimestamp = newMaxTs;
+            bytesSinceLastIndex = 0;
+        } finally {
+            lock.unlock();
         }
-        logChannel.truncate(cutPos);
-        offsetIndex.truncateAtOrAbove(targetOffset);
-        timeIndex.truncateAtOrAbove(targetOffset);
-        nextOffset = newNextOffset;
-        maxTimestamp = newMaxTs;
-        bytesSinceLastIndex = 0;
     }
 
     @Override
-    public synchronized void close() throws IOException {
+    public void close() throws IOException {
         // P9.2 — fsync on close so a clean shutdown durably persists the tail
         // of the active segment. Previously the active segment relied on
         // the OS page cache to flush post-process-exit, which is unsafe for
         // kill -9. FsyncDurationEvent also fires here, which is what the
-        // E2E-9-2 teardown observes.
+        // E2E-9-2 teardown observes. audit-06 — must use the same
+        // ReentrantLock as transferTo() so concurrent fetches drain before
+        // the channel is closed (pre-fix this raced as synchronized vs
+        // lock, yielding ClosedChannelException for in-flight reads during
+        // compaction).
+        lock.lock();
         try {
-            force();
+            try {
+                forceLocked();
+            } finally {
+                logChannel.close();
+                offsetIndex.close();
+                timeIndex.close();
+            }
         } finally {
-            logChannel.close();
-            offsetIndex.close();
-            timeIndex.close();
+            lock.unlock();
         }
     }
 

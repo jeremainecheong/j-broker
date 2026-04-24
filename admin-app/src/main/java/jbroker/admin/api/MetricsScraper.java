@@ -35,6 +35,7 @@ public class MetricsScraper {
 
     private final BrokerAdminClientPool pool;
     private final PrometheusMetricsBinder binder;
+    private final ThroughputHistory history;
     private final int intervalSeconds;
     private final AtomicReference<Snapshot> latest = new AtomicReference<>(Snapshot.empty());
     private ScheduledExecutorService exec;
@@ -42,9 +43,11 @@ public class MetricsScraper {
     public MetricsScraper(
             BrokerAdminClientPool pool,
             PrometheusMetricsBinder binder,
+            ThroughputHistory history,
             @Value("${jbroker.metrics.scrape.intervalSeconds:5}") int intervalSeconds) {
         this.pool = pool;
         this.binder = binder;
+        this.history = history;
         this.intervalSeconds = intervalSeconds;
     }
 
@@ -100,6 +103,7 @@ public class MetricsScraper {
             var snap = new Snapshot(Map.copyOf(byBroker));
             latest.set(snap);
             binder.refresh(snap);
+            history.append(snap);
         } catch (Exception e) {
             log.warn("metrics scrape cycle failed", e);
         }

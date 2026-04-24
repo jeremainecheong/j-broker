@@ -1,6 +1,7 @@
 package jbroker.admin.api;
 
 import io.grpc.StatusRuntimeException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import jbroker.admin.client.BrokerAdminClientPool;
@@ -10,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -25,9 +27,11 @@ public class MetricsController {
     private static final Logger log = LoggerFactory.getLogger(MetricsController.class);
 
     private final BrokerAdminClientPool pool;
+    private final ThroughputHistory history;
 
-    public MetricsController(BrokerAdminClientPool pool) {
+    public MetricsController(BrokerAdminClientPool pool, ThroughputHistory history) {
         this.pool = pool;
+        this.history = history;
     }
 
     @GetMapping("/throughput")
@@ -68,6 +72,41 @@ public class MetricsController {
                 new Percentiles(produceP50, produceP99, produceP999), new Percentiles(fetchP50, fetchP99, fetchP999));
     }
 
+    /**
+     * persistent time-series over the admin-app-side
+     * {@link ThroughputHistory} ring. Browsers hydrate their sparklines
+     * from this endpoint on page load so navigation no longer resets
+     * history. {@code window} accepts simple "5m", "30s", "1h" style
+     * tokens; absent / malformed falls back to 5 min.
+     */
+    @GetMapping("/timeseries")
+    public TimeseriesView timeseries(@RequestParam(name = "window", defaultValue = "5m") String window) {
+        Duration requested = parseWindow(window);
+        var samples = history.since(requested);
+        var out = new ArrayList<TimeseriesSample>(samples.size());
+        for (var s : samples) {
+            out.add(new TimeseriesSample(
+                    s.ts(), s.produceBytesPerSec(), s.fetchBytesPerSec(), s.produceP99Nanos(), s.fetchP99Nanos()));
+        }
+        return new TimeseriesView(requested.getSeconds(), out);
+    }
+
+    private static Duration parseWindow(String token) {
+        if (token == null || token.isBlank()) return Duration.ofMinutes(5);
+        try {
+            char unit = token.charAt(token.length() - 1);
+            long n = Long.parseLong(token.substring(0, token.length() - 1));
+            return switch (unit) {
+                case 's' -> Duration.ofSeconds(n);
+                case 'm' -> Duration.ofMinutes(n);
+                case 'h' -> Duration.ofHours(n);
+                default -> Duration.ofMinutes(5);
+            };
+        } catch (Exception e) {
+            return Duration.ofMinutes(5);
+        }
+    }
+
     private List<DescribeMetricsResponse> collectMetrics() {
         var out = new ArrayList<DescribeMetricsResponse>();
         for (var c : pool.clients()) {
@@ -93,4 +132,9 @@ public class MetricsController {
     public record LatencyView(Percentiles produce, Percentiles fetch) {}
 
     public record Percentiles(long p50Nanos, long p99Nanos, long p999Nanos) {}
+
+    public record TimeseriesSample(
+            long ts, double produceBytesPerSec, double fetchBytesPerSec, long produceP99Nanos, long fetchP99Nanos) {}
+
+    public record TimeseriesView(long windowSeconds, List<TimeseriesSample> samples) {}
 }

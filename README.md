@@ -1,5 +1,3 @@
-<img src="docs/brand/logo.svg" alt="j-broker logo" width="140" align="right" />
-
 # j-broker
 
 **A log-structured distributed message broker with hand-rolled Raft, written in Java 21.**

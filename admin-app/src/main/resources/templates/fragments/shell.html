@@ -4,12 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title th:text="${title}">j-broker admin</title>
-    <!--
-      Modern browsers prefer SVG; keep favicon.ico as a fallback for old UAs
-      + tools that hard-code the filename. Source in docs/brand/logo.svg.
-    -->
-    <link rel="icon" type="image/svg+xml" th:href="@{/favicon.svg}" />
-    <link rel="alternate icon" type="image/x-icon" th:href="@{/favicon.ico}" />
     <link rel="stylesheet" th:href="@{/app.css}" />
     <!--
       self-host htmx + Alpine.js.

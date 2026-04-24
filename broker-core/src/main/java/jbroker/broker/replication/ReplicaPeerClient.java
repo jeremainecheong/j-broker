@@ -1,5 +1,6 @@
 package jbroker.broker.replication;
 
+import io.grpc.ClientInterceptor;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,15 @@ public final class ReplicaPeerClient implements AutoCloseable {
 
     /** P15.2 — TLS-aware constructor. Inter-broker replication uses the same cert bundle as Raft. */
     public ReplicaPeerClient(String host, int port, TlsConfig tls) {
+        this(host, port, tls, null);
+    }
+
+    /**
+     * Audit-finding #3 — constructor accepting an optional outbound
+     * {@link ClientInterceptor} (chaos partition in practice). Null is
+     * tolerated for legacy tests.
+     */
+    public ReplicaPeerClient(String host, int port, TlsConfig tls, ClientInterceptor chaosInterceptor) {
         var b = NettyChannelBuilder.forAddress(host, port);
         try {
             var sslCtx = TlsContexts.clientContext(tls);
@@ -37,6 +47,9 @@ public final class ReplicaPeerClient implements AutoCloseable {
             }
         } catch (javax.net.ssl.SSLException e) {
             throw new IllegalStateException("TLS client context build failed", e);
+        }
+        if (chaosInterceptor != null) {
+            b.intercept(chaosInterceptor);
         }
         this.channel = b.build();
         this.stub = ReplicaConsumerGrpc.newBlockingStub(channel);

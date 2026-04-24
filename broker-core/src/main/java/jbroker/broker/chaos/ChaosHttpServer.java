@@ -132,9 +132,26 @@ public final class ChaosHttpServer implements AutoCloseable {
             respond(ex, 400, "{\"error\":\"peer query param required\"}");
             return;
         }
-        state.blockPeer(peer);
+        // Audit-finding #3 — optional direction=outbound|inbound|both. Default
+        // is "both" (symmetric, pre-audit-03 behavior). "outbound" blocks only
+        // self→peer; "inbound" blocks only peer→self. Asymmetric partitions
+        // are what Raft elections actually need to defend against.
+        String direction = q.getOrDefault("direction", "both").toLowerCase();
+        switch (direction) {
+            case "outbound" -> state.blockOutboundToPeer(peer);
+            case "inbound" -> state.blockInboundFromPeer(peer);
+            case "both" -> state.blockPeer(peer);
+            default -> {
+                respond(ex, 400, "{\"error\":\"direction must be one of outbound|inbound|both\"}");
+                return;
+            }
+        }
         publish("partition", peer, null);
-        respond(ex, 200, "{\"action\":\"partition\",\"brokerId\":" + selfBrokerId + ",\"peer\":" + peer + "}");
+        respond(
+                ex,
+                200,
+                "{\"action\":\"partition\",\"brokerId\":" + selfBrokerId + ",\"peer\":" + peer + ",\"direction\":\""
+                        + direction + "\"}");
     }
 
     private void handleHealPartition(HttpExchange ex) throws IOException {
@@ -150,9 +167,22 @@ public final class ChaosHttpServer implements AutoCloseable {
             respond(ex, 200, "{\"action\":\"heal-all\",\"brokerId\":" + selfBrokerId + "}");
             return;
         }
-        state.unblockPeer(peer);
+        String direction = q.getOrDefault("direction", "both").toLowerCase();
+        switch (direction) {
+            case "outbound" -> state.unblockOutboundToPeer(peer);
+            case "inbound" -> state.unblockInboundFromPeer(peer);
+            case "both" -> state.unblockPeer(peer);
+            default -> {
+                respond(ex, 400, "{\"error\":\"direction must be one of outbound|inbound|both\"}");
+                return;
+            }
+        }
         publish("heal-partition", peer, null);
-        respond(ex, 200, "{\"action\":\"heal-partition\",\"brokerId\":" + selfBrokerId + ",\"peer\":" + peer + "}");
+        respond(
+                ex,
+                200,
+                "{\"action\":\"heal-partition\",\"brokerId\":" + selfBrokerId + ",\"peer\":" + peer
+                        + ",\"direction\":\"" + direction + "\"}");
     }
 
     private void handleInjectLatency(HttpExchange ex) throws IOException {

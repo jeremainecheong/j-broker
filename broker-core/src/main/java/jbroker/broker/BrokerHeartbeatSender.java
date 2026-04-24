@@ -80,6 +80,22 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             long intervalMs,
             BooleanSupplier paused,
             TlsConfig tls) {
+        this(selfBrokerId, peers, metadataOffset, intervalMs, paused, tls, null);
+    }
+
+    /**
+     * Audit-finding #3 — per-peer {@code ClientInterceptor} factory so chaos
+     * outbound-partition gating actually fires on heartbeat RPCs. Null factory
+     * is tolerated and skips the install.
+     */
+    public BrokerHeartbeatSender(
+            int selfBrokerId,
+            java.util.List<PeerAddress> peers,
+            LongSupplier metadataOffset,
+            long intervalMs,
+            BooleanSupplier paused,
+            TlsConfig tls,
+            java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory) {
         this.selfBrokerId = selfBrokerId;
         this.peers = java.util.List.copyOf(peers);
         this.metadataOffset = metadataOffset;
@@ -102,6 +118,10 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
                 b.usePlaintext();
             } else {
                 b.sslContext(sslCtx);
+            }
+            if (chaosInterceptorFactory != null) {
+                var interceptor = chaosInterceptorFactory.apply(p.brokerId());
+                if (interceptor != null) b.intercept(interceptor);
             }
             var ch = b.build();
             channels.put(p.brokerId(), ch);

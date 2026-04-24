@@ -1,5 +1,6 @@
 package jbroker.raft.transport;
 
+import io.grpc.ClientInterceptor;
 import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
@@ -26,6 +27,16 @@ public final class RaftPeerClient implements AutoCloseable {
 
     /** TLS-aware constructor. Raft peers share the cluster TLS bundle. */
     public RaftPeerClient(NodeId peerId, String host, int port, TlsConfig tls) {
+        this(peerId, host, port, tls, null);
+    }
+
+    /**
+     * Audit-finding #3 — constructor accepting an optional
+     * {@link ClientInterceptor} that gates every outbound RPC (chaos
+     * partition in practice). Null is tolerated for legacy tests and
+     * production paths that don't need chaos gating.
+     */
+    public RaftPeerClient(NodeId peerId, String host, int port, TlsConfig tls, ClientInterceptor chaosInterceptor) {
         this.peerId = peerId;
         var b = NettyChannelBuilder.forAddress(host, port);
         try {
@@ -37,6 +48,9 @@ public final class RaftPeerClient implements AutoCloseable {
             }
         } catch (javax.net.ssl.SSLException e) {
             throw new IllegalStateException("TLS client context build failed", e);
+        }
+        if (chaosInterceptor != null) {
+            b.intercept(chaosInterceptor);
         }
         this.channel = b.build();
         this.stub = RaftGrpc.newBlockingStub(channel);

@@ -36,7 +36,7 @@ public final class ChaosServerInterceptor implements ServerInterceptor {
         if (fromId != null) {
             try {
                 int peer = Integer.parseInt(fromId);
-                if (state.isBlocked(peer)) {
+                if (state.isInboundBlocked(peer)) {
                     call.close(
                             Status.UNAVAILABLE.withDescription(
                                     "jbroker-chaos: inbound from broker " + peer + " blocked"),

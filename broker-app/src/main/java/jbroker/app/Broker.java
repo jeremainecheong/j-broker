@@ -381,6 +381,16 @@ public final class Broker implements AutoCloseable {
         // ReplicaFetcher (follower observe). Keeps idempotent-producer
         // dedup state correct across leader failover.
         var producerState = new jbroker.broker.ProducerStateManager();
+        // Audit-finding #3 — single ChaosState instance shared by the inbound
+        // ChaosServerInterceptor (constructed later with the gRPC server) and
+        // by outbound ChaosClientInterceptors threaded through RaftPeerClient,
+        // ReplicaPeerClient (via DefaultFetcherFactory), and
+        // BrokerHeartbeatSender. Hoisted here so all outbound factories can
+        // reference it.
+        var chaosState = new jbroker.broker.chaos.ChaosState();
+        int selfBrokerId = config.selfId().value();
+        java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory =
+                peerId -> new jbroker.broker.chaos.ChaosClientInterceptor(chaosState, selfBrokerId, peerId);
         var fetcherFactory = new jbroker.broker.replication.DefaultFetcherFactory(
                 config.selfId().value(),
                 logManager,
@@ -388,7 +398,8 @@ public final class Broker implements AutoCloseable {
                 /*pollIntervalMs*/ 25L,
                 /*fetchTimeoutMs*/ 2_000L,
                 config.tls(),
-                producerState);
+                producerState,
+                chaosInterceptorFactory);
         var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
                 config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
         MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt, ah, ap) -> {
@@ -416,7 +427,14 @@ public final class Broker implements AutoCloseable {
         var peerMap = new java.util.HashMap<NodeId, RaftPeerClient>();
         for (var v : config.voters()) {
             if (v.id().equals(config.selfId())) continue;
-            peerMap.put(v.id(), new RaftPeerClient(v.id(), v.host(), v.raftPort(), config.tls()));
+            peerMap.put(
+                    v.id(),
+                    new RaftPeerClient(
+                            v.id(),
+                            v.host(),
+                            v.raftPort(),
+                            config.tls(),
+                            chaosInterceptorFactory.apply(v.id().value())));
         }
         var raftDriver = new RaftDriver(
                 config.selfId(), core, waitingSm, Map.copyOf(peerMap), TimeUnit.MILLISECONDS.toNanos(30));
@@ -537,7 +555,9 @@ public final class Broker implements AutoCloseable {
         // config exposes a chaos port (≥ 0); interceptor is installed on
         // every inbound service so pause + peer-block affect broker-to-
         // broker RPCs as well as client traffic.
-        var chaosState = new jbroker.broker.chaos.ChaosState();
+        // Audit-finding #3 — {@code chaosState} was hoisted above so every
+        // outbound factory can reuse it; here we only need the inbound
+        // interceptor.
         var chaosInterceptor = new jbroker.broker.chaos.ChaosServerInterceptor(chaosState);
         var brokerServerBuilder = NettyServerBuilder.forPort(config.brokerPort())
                 .intercept(chaosInterceptor)
@@ -871,7 +891,8 @@ public final class Broker implements AutoCloseable {
                 () -> 0L,
                 /*intervalMs*/ 250L,
                 chaosState::isPaused,
-                config.tls());
+                config.tls(),
+                chaosInterceptorFactory);
         heartbeatSender.start();
 
         return new Broker(

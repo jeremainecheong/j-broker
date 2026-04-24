@@ -40,6 +40,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     private final long fetchTimeoutMs;
     private final TlsConfig tls;
     private final ProducerStateManager producerState;
+    private final java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory;
 
     public DefaultFetcherFactory(
             int selfBrokerId,
@@ -58,7 +59,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
             long pollIntervalMs,
             long fetchTimeoutMs,
             TlsConfig tls) {
-        this(selfBrokerId, logManager, topicManager, pollIntervalMs, fetchTimeoutMs, tls, null);
+        this(selfBrokerId, logManager, topicManager, pollIntervalMs, fetchTimeoutMs, tls, null, null);
     }
 
     /**
@@ -75,6 +76,25 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
             long fetchTimeoutMs,
             TlsConfig tls,
             ProducerStateManager producerState) {
+        this(selfBrokerId, logManager, topicManager, pollIntervalMs, fetchTimeoutMs, tls, producerState, null);
+    }
+
+    /**
+     * Full constructor — combines hardening pass (ProducerStateManager for
+     * idempotent dedup across failover) and hardening pass (per-peer
+     * {@code ClientInterceptor} factory so chaos outbound-partition gating
+     * actually fires on replica-fetch RPCs). Null is tolerated for either
+     * optional dependency.
+     */
+    public DefaultFetcherFactory(
+            int selfBrokerId,
+            LogManager logManager,
+            TopicManager topicManager,
+            long pollIntervalMs,
+            long fetchTimeoutMs,
+            TlsConfig tls,
+            ProducerStateManager producerState,
+            java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory) {
         this.selfBrokerId = selfBrokerId;
         this.logManager = logManager;
         this.topicManager = topicManager;
@@ -82,6 +102,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
         this.fetchTimeoutMs = fetchTimeoutMs;
         this.tls = tls == null ? TlsConfig.DISABLED : tls;
         this.producerState = producerState;
+        this.chaosInterceptorFactory = chaosInterceptorFactory;
         this.pump = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "replica-fetcher-pump-" + selfBrokerId);
             t.setDaemon(true);
@@ -92,7 +113,8 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     @Override
     public ReplicaFetcherManager.FetcherHandle start(
             String topic, int partition, int leaderBrokerId, BrokerRegistry.HostPort leaderAddr) {
-        var client = new ReplicaPeerClient(leaderAddr.host(), leaderAddr.port(), tls);
+        var interceptor = chaosInterceptorFactory == null ? null : chaosInterceptorFactory.apply(leaderBrokerId);
+        var client = new ReplicaPeerClient(leaderAddr.host(), leaderAddr.port(), tls, interceptor);
         ReplicaFetcher.Peer peer = new ReplicaFetcher.Peer() {
             @Override
             public ReplicaFetchResponse fetch(ReplicaFetchRequest req) {

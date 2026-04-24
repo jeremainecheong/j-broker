@@ -7,6 +7,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import jbroker.broker.BrokerRegistry;
 import jbroker.broker.PartitionState;
+import jbroker.broker.ProducerStateManager;
 import jbroker.broker.TopicManager;
 import jbroker.proto.broker.ReplicaFetchRequest;
 import jbroker.proto.broker.ReplicaFetchResponse;
@@ -38,6 +39,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     private final long pollIntervalMs;
     private final long fetchTimeoutMs;
     private final TlsConfig tls;
+    private final ProducerStateManager producerState;
 
     public DefaultFetcherFactory(
             int selfBrokerId,
@@ -56,12 +58,30 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
             long pollIntervalMs,
             long fetchTimeoutMs,
             TlsConfig tls) {
+        this(selfBrokerId, logManager, topicManager, pollIntervalMs, fetchTimeoutMs, tls, null);
+    }
+
+    /**
+     * Audit-finding #1 — constructor threading a shared {@link ProducerStateManager}
+     * into every {@link ReplicaFetcher} so the follower's replica-fetch apply
+     * path keeps dedup state in sync with the leader. Null is tolerated for
+     * legacy tests that don't exercise idempotent producers.
+     */
+    public DefaultFetcherFactory(
+            int selfBrokerId,
+            LogManager logManager,
+            TopicManager topicManager,
+            long pollIntervalMs,
+            long fetchTimeoutMs,
+            TlsConfig tls,
+            ProducerStateManager producerState) {
         this.selfBrokerId = selfBrokerId;
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.pollIntervalMs = pollIntervalMs;
         this.fetchTimeoutMs = fetchTimeoutMs;
         this.tls = tls == null ? TlsConfig.DISABLED : tls;
+        this.producerState = producerState;
         this.pump = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "replica-fetcher-pump-" + selfBrokerId);
             t.setDaemon(true);
@@ -84,7 +104,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
                 return client.offsetsForLeaderEpoch(t, p, e, fetchTimeoutMs);
             }
         };
-        var fetcher = new ReplicaFetcher(logManager, topic, partition, selfBrokerId, peer);
+        var fetcher = new ReplicaFetcher(logManager, topic, partition, selfBrokerId, peer, producerState);
         ScheduledFuture<?> task = pump.scheduleWithFixedDelay(
                 () -> {
                     try {

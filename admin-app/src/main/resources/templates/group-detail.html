@@ -3,8 +3,23 @@
   <head th:replace="~{fragments/shell :: head ('j-broker admin — Consumer group')}"></head>
   <body>
     <nav th:replace="~{fragments/shell :: topnav}"></nav>
-    <main>
-      <h1 th:text="|Consumer group: ${detail.groupId()}|">Consumer group</h1>
+    <main x-data="{ showReset: false }">
+      <!--/*
+        P15.x — admin actions. Reset-offsets opens an Alpine modal; delete
+        submits a form (mirrors TopicsViewController.delete). Both post to
+        /ui/groups/{id}/... view-controller handlers that redirect back to
+        the authoritative view of the group's state. Buttons live *outside*
+        the h1 because `th:text` on the heading would otherwise erase them.
+      */-->
+      <h1 style="display:flex; align-items:center; gap:0.5rem;">
+        <span th:text="|Consumer group: ${detail.groupId()}|">Consumer group</span>
+        <span class="spacer" style="flex:1;"></span>
+        <button class="btn secondary" type="button" @click="showReset = true">Reset offsets</button>
+        <form method="post" style="display:inline;"
+              th:action="@{/ui/groups/{id}/delete(id=${detail.groupId()})}">
+          <button class="btn danger" type="submit" onclick="return confirm('Delete group?');">Delete group</button>
+        </form>
+      </h1>
 
       <div class="card">
         <div class="kv-row">
@@ -16,6 +31,36 @@
           <span><strong>Generation:</strong> <span th:text="${detail.generation()}">-</span></span>
           <span><strong>Assignor:</strong> <span th:text="${detail.assignor()}">range</span></span>
           <span><strong>Members:</strong> <span th:text="${detail.members().size()}">0</span></span>
+        </div>
+      </div>
+
+      <!-- Alpine.js-powered reset-offsets modal. x-cloak is load-bearing:
+           AlpineCloakIT asserts every modal ships with it so the companion
+           CSS rule (`[x-cloak] { display: none !important; }`) keeps the
+           modal hidden until Alpine evaluates x-show. Single-row form for
+           now — multi-row add/remove lives in a follow-up PR. -->
+      <div x-show="showReset" x-cloak
+           style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:100;">
+        <div class="card" style="width:420px;">
+          <h2 style="margin-top:0; font-size:1.05rem;">Reset offsets</h2>
+          <form method="post" th:action="@{/ui/groups/{id}/reset-offsets(id=${detail.groupId()})}">
+            <label style="display:block; margin-bottom:0.5rem;">
+              Topic <input type="text" name="topic" required style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:0.5rem;">
+              Partition <input type="number" name="partition" value="0" min="0" required style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:0.5rem;">
+              Offset <input type="number" name="offset" value="0" min="0" required style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:1rem;">
+              Leader epoch <input type="number" name="leaderEpoch" value="0" min="0" style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+              <button type="button" class="btn secondary" @click="showReset = false">Cancel</button>
+              <button type="submit" class="btn">Reset</button>
+            </div>
+          </form>
         </div>
       </div>
 

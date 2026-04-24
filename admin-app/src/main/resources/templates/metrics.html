@@ -16,12 +16,21 @@
         <canvas id="latencyChart" width="800" height="240" data-testid="latency-chart"></canvas>
       </div>
 
-      <script src="https://unpkg.com/[email protected]/dist/chart.umd.min.js"></script>
+      <!--
+        P14.2 — self-hosted Chart.js 4.4.3 (UMD). Previously loaded from
+        unpkg which (a) 404'd the old `chart.umd.min.js` path on v4
+        drops and (b) was ORB-blocked by Chrome anyway — which is why
+        the canvases above stayed blank pre-fix.
+      -->
+      <script th:src="@{/vendor/chart-4.4.3.umd.js}"></script>
       <script th:inline="javascript">
         /*<![CDATA[*/
         // Rolling 30-sample in-page ring; each tick we poll the admin REST
-        // endpoints and push the latest (produceBytesPerSec, fetchBytesPerSec)
+        // endpoints and push the latest (produce_bytes_per_sec, fetch_bytes_per_sec)
         // onto each chart. Labels are relative seconds since page load.
+        // P14.2 — admin JSON is snake_case (application.yml property
+        // naming strategy). Pre-fix this code read camelCase field names
+        // so every tick pushed zeros even when the API had data.
         const MAX_POINTS = 30;
         const startMillis = Date.now();
 
@@ -56,9 +65,9 @@
               fetch('/api/v1/metrics/latency').then(r => r.json())
             ]);
             const label = Math.round((Date.now() - startMillis) / 1000) + 's';
-            pushPoint(tput, label, [tRes.produceBytesPerSec || 0, tRes.fetchBytesPerSec || 0]);
+            pushPoint(tput, label, [tRes.produce_bytes_per_sec || 0, tRes.fetch_bytes_per_sec || 0]);
             pushPoint(lat, label,
-              [(lRes.produce?.p99Nanos || 0) / 1000, (lRes.fetch?.p99Nanos || 0) / 1000]);
+              [(lRes.produce?.p99_nanos || 0) / 1000, (lRes.fetch?.p99_nanos || 0) / 1000]);
           } catch (e) {
             // Network glitch during a chart refresh — skip; Chart.js will
             // catch up on the next tick.

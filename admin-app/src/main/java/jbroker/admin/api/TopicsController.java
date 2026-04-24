@@ -148,8 +148,7 @@ public class TopicsController {
             // unless the partition has literally never been touched.
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(RestError.of(
-                            "NO_REPLICA_HOSTS_PARTITION",
-                            "no broker has an open log for " + name + "/" + p));
+                            "NO_REPLICA_HOSTS_PARTITION", "no broker has an open log for " + name + "/" + p));
         }
         return ResponseEntity.ok(new CompactResult(keptTotal, hostingReplicas));
     }
@@ -226,8 +225,10 @@ public class TopicsController {
             if (offsets == null) {
                 rebuiltStates.add(ps);
             } else {
-                rebuiltStates.add(
-                        ps.toBuilder().setHighWatermark(offsets[0]).setLogEndOffset(offsets[1]).build());
+                rebuiltStates.add(ps.toBuilder()
+                        .setHighWatermark(offsets[0])
+                        .setLogEndOffset(offsets[1])
+                        .build());
             }
         }
         builder.clearPartitionStates();

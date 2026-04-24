@@ -52,8 +52,7 @@ class SnakeCaseJsonIT {
         broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
         // Wait for the broker to register itself so DescribeCluster has a node.
         long deadline = System.currentTimeMillis() + 5_000;
-        while (broker.brokerRegistry().knownBrokerIds().isEmpty()
-                && System.currentTimeMillis() < deadline) {
+        while (broker.brokerRegistry().knownBrokerIds().isEmpty() && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
         }
     }
@@ -63,7 +62,8 @@ class SnakeCaseJsonIT {
         if (broker != null) broker.close();
         if (dataDir != null) {
             try (var paths = Files.walk(dataDir)) {
-                paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+                paths.sorted(java.util.Comparator.reverseOrder())
+                        .forEach(p -> p.toFile().delete());
             }
         }
     }
@@ -105,8 +105,7 @@ class SnakeCaseJsonIT {
                 String.class);
         assertThat(createRes.getStatusCode().value()).isEqualTo(201);
 
-        var detail = rest.getForObject(
-                "http://localhost:" + port + "/api/v1/topics/snake-case-probe", String.class);
+        var detail = rest.getForObject("http://localhost:" + port + "/api/v1/topics/snake-case-probe", String.class);
         assertThat(detail)
                 .contains("\"replication_factor\"")
                 .contains("\"partition_states\"")
@@ -122,8 +121,7 @@ class SnakeCaseJsonIT {
 
     @Test
     void throughputMetricsUseSnakeCaseKeys() {
-        String body = rest.getForObject(
-                "http://localhost:" + port + "/api/v1/metrics/throughput", String.class);
+        String body = rest.getForObject("http://localhost:" + port + "/api/v1/metrics/throughput", String.class);
         assertThat(body)
                 .contains("\"produce_bytes_per_sec\"")
                 .contains("\"fetch_bytes_per_sec\"")

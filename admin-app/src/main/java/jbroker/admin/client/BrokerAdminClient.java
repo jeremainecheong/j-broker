@@ -151,7 +151,8 @@ public final class BrokerAdminClient implements AutoCloseable {
     /** P12.7 — admin-initiated offset reset for a group. */
     public jbroker.proto.broker.ResetConsumerGroupOffsetsResponse resetConsumerGroupOffsets(
             String groupId, java.util.List<jbroker.proto.broker.OffsetReset> resets) {
-        var b = jbroker.proto.broker.ResetConsumerGroupOffsetsRequest.newBuilder().setGroupId(groupId);
+        var b = jbroker.proto.broker.ResetConsumerGroupOffsetsRequest.newBuilder()
+                .setGroupId(groupId);
         for (var r : resets) b.addResets(r);
         return admin.withDeadlineAfter(5, TimeUnit.SECONDS).resetConsumerGroupOffsets(b.build());
     }

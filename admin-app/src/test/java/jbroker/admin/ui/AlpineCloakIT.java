@@ -59,8 +59,7 @@ class AlpineCloakIT {
         dataDir = Files.createTempDirectory("p14-1-cloak");
         broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
         long deadline = System.currentTimeMillis() + 5_000;
-        while (broker.brokerRegistry().knownBrokerIds().isEmpty()
-                && System.currentTimeMillis() < deadline) {
+        while (broker.brokerRegistry().knownBrokerIds().isEmpty() && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
         }
     }
@@ -70,7 +69,8 @@ class AlpineCloakIT {
         if (broker != null) broker.close();
         if (dataDir != null) {
             try (var paths = Files.walk(dataDir)) {
-                paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+                paths.sorted(java.util.Comparator.reverseOrder())
+                        .forEach(p -> p.toFile().delete());
             }
         }
     }
@@ -124,23 +124,15 @@ class AlpineCloakIT {
                 .contains("/vendor/htmx-")
                 .contains("/vendor/alpine-");
 
-        String alpine =
-                rest.getForObject("http://localhost:" + port + "/vendor/alpine-3.13.5.min.js", String.class);
-        assertThat(alpine)
-                .as("self-hosted alpine-3.13.5.min.js must serve")
-                .isNotNull();
+        String alpine = rest.getForObject("http://localhost:" + port + "/vendor/alpine-3.13.5.min.js", String.class);
+        assertThat(alpine).as("self-hosted alpine-3.13.5.min.js must serve").isNotNull();
         assertThat(alpine.length())
                 .as("alpine bundle should be ~40KB+ (guard against a truncated stub)")
                 .isGreaterThan(10_000);
 
-        String htmxJs =
-                rest.getForObject("http://localhost:" + port + "/vendor/htmx-1.9.12.min.js", String.class);
-        assertThat(htmxJs)
-                .as("self-hosted htmx-1.9.12.min.js must serve")
-                .isNotNull();
-        assertThat(htmxJs.length())
-                .as("htmx bundle should be ~40KB+")
-                .isGreaterThan(10_000);
+        String htmxJs = rest.getForObject("http://localhost:" + port + "/vendor/htmx-1.9.12.min.js", String.class);
+        assertThat(htmxJs).as("self-hosted htmx-1.9.12.min.js must serve").isNotNull();
+        assertThat(htmxJs.length()).as("htmx bundle should be ~40KB+").isGreaterThan(10_000);
     }
 
     private static int freePort() {

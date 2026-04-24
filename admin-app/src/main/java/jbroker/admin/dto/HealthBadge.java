@@ -40,8 +40,7 @@ public record HealthBadge(String status, String reason) {
                             : alive + "/" + total + " brokers alive — below majority (" + quorum + ")");
         }
         if (alive < total) {
-            return new HealthBadge(
-                    "yellow", alive + "/" + total + " brokers alive — majority up but degraded");
+            return new HealthBadge("yellow", alive + "/" + total + " brokers alive — majority up but degraded");
         }
         return new HealthBadge("green", total + "/" + total + " brokers alive — controller " + cluster.controllerId());
     }

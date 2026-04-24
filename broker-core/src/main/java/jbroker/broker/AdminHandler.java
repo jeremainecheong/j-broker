@@ -242,8 +242,7 @@ public final class AdminHandler {
             var kept = compactor.compactLogNowIfPresent(req.getTopic(), req.getPartition());
             return b.setRecordsKept(kept.orElse(-1)).build();
         } catch (java.io.IOException e) {
-            return b.setError(buildError(
-                            ErrorCodes.IO_ERROR, e.getMessage() == null ? e.toString() : e.getMessage()))
+            return b.setError(buildError(ErrorCodes.IO_ERROR, e.getMessage() == null ? e.toString() : e.getMessage()))
                     .build();
         }
     }

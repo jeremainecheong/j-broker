@@ -31,11 +31,7 @@ class RedisEventFanoutJsonTest {
     @Test
     void embeddedQuotesAndNewlinesSurviveRoundTrip() {
         var e = new AdminEventBus.LocalEvent(
-                1L,
-                "broker\"weird",
-                "type\nwith\nnewlines",
-                "{\"key\":\"value with \\\"nested\\\" quotes\"}",
-                99L);
+                1L, "broker\"weird", "type\nwith\nnewlines", "{\"key\":\"value with \\\"nested\\\" quotes\"}", 99L);
         String encoded = fanout.encode(e);
         var decoded = fanout.decode(encoded);
 

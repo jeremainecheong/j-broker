@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "jbroker.broker.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  # podManagementPolicy=Parallel: Raft tolerates simultaneous pod startup,
+  # and an election-of-three cannot complete until at least two pods are
+  # up — ordered startup would deadlock on the first deploy.
+  podManagementPolicy: Parallel
+  serviceName: {{ include "jbroker.broker.headless" . }}
+  replicas: {{ .Values.broker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "jbroker.broker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "jbroker.broker.selectorLabels" . | nindent 8 }}
+      {{- with .Values.broker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "jbroker.serviceAccountName" . }}
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+      containers:
+        - name: broker
+          image: "{{ .Values.broker.image.repository }}:{{ .Values.broker.image.tag }}"
+          imagePullPolicy: {{ .Values.broker.image.pullPolicy }}
+          # The broker id is derived from the pod ordinal at runtime. The
+          # ordinal is the trailing -N in $HOSTNAME (stable because this is
+          # a StatefulSet, not a Deployment).
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              ORD=${HOSTNAME##*-}
+              ID=$((ORD + 1))
+              exec /opt/jbroker/bin/broker-app server \
+                --id ${ID} \
+                --data-dir /var/lib/jbroker \
+                --broker-port {{ .Values.broker.ports.grpc }} \
+                --raft-port {{ .Values.broker.ports.raft }} \
+                --voters "${JBROKER_VOTERS}" \
+                --consumer-offsets-partitions {{ .Values.broker.consumerOffsetsPartitions }} \
+                {{- if include "jbroker.advertisedListeners" . }}
+                --advertised-listeners "${JBROKER_ADVERTISED_LISTENERS}" \
+                {{- end }}
+                {{- if .Values.tls.enabled }}
+                --tls-enabled \
+                --tls-cert /etc/jbroker/tls/tls.crt \
+                --tls-key /etc/jbroker/tls/tls.key \
+                --tls-trust /etc/jbroker/tls/ca.crt \
+                {{- end }}
+                {{- if ge (int .Values.broker.chaosPort) 0 }}
+                --chaos-port {{ .Values.broker.chaosPort }} \
+                {{- end }}
+                {{- range .Values.broker.extraArgs }}
+                {{ . | quote }} \
+                {{- end }}
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: JBROKER_VOTERS
+              value: {{ include "jbroker.voters" . | quote }}
+            {{- if include "jbroker.advertisedListeners" . }}
+            - name: JBROKER_ADVERTISED_LISTENERS
+              value: {{ include "jbroker.advertisedListeners" . | quote }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.broker.ports.grpc }}
+              protocol: TCP
+            - name: raft
+              containerPort: {{ .Values.broker.ports.raft }}
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.broker.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/jbroker
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /etc/jbroker/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName | quote }}
+        {{- end }}
+        {{- if not .Values.broker.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.broker.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          {{- toYaml .Values.broker.persistence.accessModes | nindent 10 }}
+        {{- if .Values.broker.persistence.storageClassName }}
+        storageClassName: {{ .Values.broker.persistence.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.broker.persistence.size | quote }}
+  {{- end }}

@@ -126,14 +126,27 @@
                 th:attr="data-partition=${p.partition()}, data-lag=${p.lag()}"
                 th:with="committed=${p.committedOffset() < 0 ? 0 : p.committedOffset()},
                          hwm=${p.highWatermark() < 0 ? 0 : p.highWatermark()},
+                         hwmSentinel=${p.highWatermark() < 0 or p.lag() < 0},
                          progressPct=${hwm > 0 ? (committed * 100.0 / hwm) : (committed == 0 ? 100 : 0)}">
               <td th:text="${p.topic()}">-</td>
               <td th:text="${p.partition()}">-</td>
               <td th:text="${p.committedOffset()}">0</td>
               <td th:text="${p.highWatermark() < 0 ? '—' : p.highWatermark()}">0</td>
               <td>
-                <!-- Colour-code lag: green < 100, yellow 100..1000, red > 1000. -->
+                <!--/*
+                  Lag == -1 is a sentinel the non-leader replica returns
+                  when it can't read HWM. Render as an em-dash in a neutral
+                  pill rather than a green "healthy" pill, which would
+                  falsely imply the group is caught up.
+
+                  Colour-code real lag: green < 100, yellow 100..1000, red > 1000.
+                */-->
                 <span class="pill"
+                      th:if="${hwmSentinel}"
+                      th:classappend="unknown"
+                      title="HWM unavailable — lag can't be computed">—</span>
+                <span class="pill"
+                      th:unless="${hwmSentinel}"
                       th:classappend="${p.lag() < 100 ? 'alive' : (p.lag() < 1000 ? 'unknown' : 'dead')}"
                       th:text="${p.lag()}">0</span>
               </td>

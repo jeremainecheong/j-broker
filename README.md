@@ -6,11 +6,11 @@ j-broker is a Kafka-shaped message broker I built from scratch as a learning exe
 
 ![Overview dashboard](docs/screenshots/overview.png)
 
-### Tech stack
+### System architecture
 
-![Tech stack](docs/diagrams/tech-stack.png)
+![System architecture](docs/diagrams/architecture.png)
 
-> Source: [`docs/diagrams/tech-stack.drawio`](docs/diagrams/tech-stack.drawio) — open in [draw.io](https://app.diagrams.net) to edit. Vendor SVG icons live in [`docs/icons/`](docs/icons/).
+> Source: [`docs/diagrams/architecture.drawio`](docs/diagrams/architecture.drawio) — open in [draw.io](https://app.diagrams.net) to edit. Vendor SVG icons live in [`docs/icons/`](docs/icons/).
 
 ---
 
@@ -119,13 +119,7 @@ Raft: per-broker term / commit-index / last-applied / voted-for. Metrics: throug
 
 ## Architecture
 
-### Deployment topology
-
-![Deployment topology](docs/diagrams/deployment.png)
-
-> Source: [`docs/diagrams/deployment.drawio`](docs/diagrams/deployment.drawio).
-
-### Component view
+### Component view (Raft + replication detail)
 
 ```mermaid
 flowchart TB

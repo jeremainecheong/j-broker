@@ -2,6 +2,36 @@
 
 Deterministic Raft chaos simulator. Drives `raft-core`'s `RaftCore.step` with seeded random scenarios — node crashes, network partitions, message drops, message reorders — and asserts safety invariants never fire.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Sim[simulator]
+        Driver[Seeded scenario driver<br/>--seed N reproduces exactly]
+        Bus[Mock event bus]
+        Clock[Virtual clock]
+        Inv[Invariant checkers:<br/>· election safety<br/>· log matching<br/>· leader completeness<br/>· state-machine safety]
+    end
+
+    subgraph Core[raft-core]
+        RC[RaftCore.step<br/>pure step-function]
+    end
+
+    Pinned[(pinned-seeds/<br/>seeds that ever<br/>caught a real bug)]
+
+    Driver -->|RaftEvents| Bus
+    Bus --> RC
+    RC -->|RaftEffects| Bus
+    Clock -->|tick events| Bus
+    Bus --> Inv
+    Inv -->|on violation| Trace[Failure trace<br/>full event log]
+    Pinned -->|always run| Driver
+
+    Real[Real ITs in integration-tests/<br/>real gRPC · real timing] -.complement.-> Sim
+```
+
+The pure step-function design in `raft-core` is what enables this: no I/O, no threads, no clock, so the entire scenario state space is deterministic given a seed. 10k seeds run in seconds; a real-cluster IT alternative would take hours and still miss reorderings the simulator can exercise directly.
+
 ## What it checks
 
 Across 10k seeded scenarios per CI run:

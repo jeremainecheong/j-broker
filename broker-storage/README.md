@@ -63,6 +63,30 @@ Force-compact () lets operators trigger compaction synchronously instead of wait
 1. `log.retain(cutoff = now - retentionMillis)` — closes and deletes any segment whose last timestamp is older than the cutoff. The active segment is never eligible.
 2. For compact-policy topics, also call `log.compactByKey()` — merges segments, sparse-offset preserving.
 
+## Fetch with sparse-index resolution
+
+The offset index is sparse — one entry per ~4 KiB of log. A fetch at offset N walks forward from the largest indexed offset ≤ N until it finds the actual record:
+
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant L as LogManager
+    participant SI as OffsetIndex (mmap'd)
+    participant LS as LogSegment (FileChannel)
+
+    C->>L: Fetch(topic, partition, offset=42, max_bytes)
+    L->>L: segmentContaining(42) → segment at base 0
+    L->>SI: floorEntry(42)
+    SI-->>L: (indexedOffset=40, bytePosition=12288)
+    Note over L: linear walk forward from byte 12288<br/>until record-batch firstOffset ≥ 42
+    L->>LS: read(byte 12288 → max_bytes)
+    LS-->>L: bytes
+    L->>L: decode batches, drop any below 42
+    L-->>C: records [42..N] + HWM
+```
+
+Cost: O(log K) for the binary search (K = number of indexed entries, typically a few thousand) plus O(records-since-last-index) for the linear walk. The fetch path uses `FileChannel.transferTo` (kernel-space `sendfile`) when streaming the bytes to the wire — see `ReplicaFetchHandler` and `FetchHandler`.
+
 ## Performance
 
 - Append throughput: sustained >200 MB/s on a laptop SSD, floor of 50 MB/s on GitHub Actions shared disks (see `AppendThroughputTest` — best-of-3 trials).

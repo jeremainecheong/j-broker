@@ -58,6 +58,32 @@ Top-nav carries a live health pill polled from `/api/v1/health/badge` every 5s. 
 
 Thymeleaf view controllers (`ClusterViewController`, `TopicsViewController`) DO NOT call `BrokerAdminClientPool.firstSuccessful` directly for cluster / topic state. They call the REST controller's typed method — `ClusterController.cluster()` or `TopicsController.describeTopic(name)` — which fans out and merges. Skipping the merge was the root cause of the 2026-04-24 audit: peers rendered as `UNKNOWN` and partitions rendered "HWM / LEO unavailable" next to real leader badges.
 
+## Server-Sent Event flow
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Admin as admin-app<br/>EventsController
+    participant Bus as AdminEventBus<br/>(2048-slot ring)
+    participant B as Broker (any of N)
+
+    Note over Admin,B: on admin-app start, AdminEventBus opens a<br/>Metadata.SubscribeEvents stream to every broker
+
+    Browser->>Admin: GET /api/v1/events<br/>(Last-Event-ID: 4126)
+    Admin->>Bus: replay(after=4126)
+    Bus-->>Admin: ring entries 4127..NOW
+    Admin-->>Browser: SSE replay frames
+
+    B->>Bus: leader_changed (eventId 4131)
+    Bus->>Bus: dedup on (broker, eventId)
+    Bus-->>Admin: dispatch to live subscribers
+    Admin-->>Browser: SSE event 4131
+
+    Note over Browser: on disconnect/reconnect,<br/>browser auto-sends Last-Event-ID:4131<br/>so no events are missed
+```
+
+Reliable delivery without WebSockets, without a message queue, without a polling loop. The browser's built-in `EventSource` handles reconnection; the server's ring buffer handles replay; everything between is plain HTTP.
+
 ## Server-Sent Events + Redis pub/sub fan-out
 
 Each broker emits `EventMessage` records on state changes:

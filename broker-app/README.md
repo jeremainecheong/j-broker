@@ -2,6 +2,51 @@
 
 The broker JVM entrypoint and CLI. Spring-free — wires `raft-core` + `raft-transport` + `broker-storage` + `broker-core` into a running process by hand. Shipping binary built by `./gradlew :broker-app:installDist` and packaged into the `jbroker-broker:local` Docker image.
 
+## Bootstrap wiring
+
+How `Broker.main` assembles a running broker out of the four core modules:
+
+```mermaid
+flowchart TB
+    Args[CLI flags<br/>--data-dir · --broker-port · --raft-port ·<br/>--id · --voters · --chaos-port ·<br/>--advertised-host/port · --tls-*]
+
+    subgraph Storage[broker-storage]
+        LM[LogManager]
+    end
+    subgraph RaftCore[raft-core]
+        FPS[FilePersistentState]
+        FRL[FileRaftLog]
+        RC[DefaultRaftCore]
+    end
+    subgraph Transport[raft-transport]
+        RD[RaftDriver]
+    end
+    subgraph Core[broker-core]
+        State[TopicManager · GroupCoordinator ·<br/>ProducerIdRegistry · OffsetCache ·<br/>BrokerRegistry · BrokerLiveness]
+        Bg[BrokerFencer · PreferredLeaderBalancer<br/>controller tickers]
+        Handlers[Handlers:<br/>Produce · Consumer · Admin ·<br/>ReplicaFetch · Metadata · BrokerHeartbeat]
+    end
+    subgraph Servers[Servers]
+        Grpc[gRPC :brokerPort]
+        Chaos[Chaos HTTP :chaosPort]
+    end
+
+    Args --> LM
+    Args --> FPS & FRL
+    FPS --> RC
+    FRL --> RC
+    RC --> RD
+    LM --> Handlers
+    State --> Handlers
+    RC --> Bg
+    Bg --> RD
+    Handlers --> Grpc
+    Args --> Chaos
+    Chaos -.affects.-> RD & State
+```
+
+No Spring, no DI container — just constructor wiring inside `Broker.start()`. Every dependency edge above is a constructor argument.
+
 ## CLI
 
 `broker-app/build/install/broker-app/bin/broker-app` (alias this to `j-broker` for your shell):

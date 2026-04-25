@@ -2,6 +2,38 @@
 
 Single source of truth for every RPC + on-wire record type in the cluster. `src/main/proto/*.proto` → generated Java stubs via the `com.google.protobuf` + `io.grpc:protoc-gen-grpc-java` plugins.
 
+## Service surface at a glance
+
+```mermaid
+flowchart LR
+    Client((Client)) --> Producer
+    Client --> Consumer
+    Admin_app((admin-app)) --> Admin
+    Admin_app --> Metadata
+    CLI((j-broker CLI)) --> Producer
+    CLI --> Consumer
+    CLI --> Admin
+
+    subgraph DataPlane[Data plane — exposed to clients]
+        Producer[Producer<br/>InitProducerId · Produce]
+        Consumer[Consumer<br/>Fetch · FindCoordinator ·<br/>ConsumerGroupHeartbeat ·<br/>CommitOffsets · FetchOffsets]
+        Admin[Admin<br/>CreateTopic · DeleteTopic ·<br/>UpdateTopicConfig · ListTopics ·<br/>DescribeTopic · ForceCompactPartition ·<br/>DeleteConsumerGroup · ResetConsumerGroupOffsets]
+        Metadata[Metadata<br/>DescribeCluster · DescribeTopicPartitions ·<br/>DescribeRaft · DescribeMetrics ·<br/>SubscribeEvents]
+    end
+
+    subgraph InternalPlane[Internal plane — broker ↔ broker only]
+        Cluster[Cluster<br/>BrokerHeartbeat]
+        ReplicaConsumer[ReplicaConsumer<br/>ReplicaFetch ·<br/>OffsetsForLeaderEpoch]
+        RaftService[RaftService<br/>AppendEntries · RequestVote ·<br/>TimeoutNow · InstallSnapshot]
+    end
+
+    Broker((Broker)) -.heartbeat.-> Broker
+    Broker -.ReplicaFetch.-> Broker
+    Broker -.Raft.-> Broker
+```
+
+Public services are reachable from any client; internal services are only used between brokers and require mTLS in production deployments.
+
 ## Services
 
 | Service | File | Consumers |

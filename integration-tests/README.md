@@ -2,6 +2,27 @@
 
 Real 3-node loopback-cluster ITs and heavy scenario tests. Anything that boots multiple `Broker`s and exercises cross-broker interactions lives here; single-broker handler tests live in `broker-core/` and `broker-app/`.
 
+## Test tier policy
+
+```mermaid
+flowchart TD
+    PR[PR / push to main] --> Always{Always run on CI}
+    Always --> Fast[Fast IT suite<br/>~60 tests · ~2 min]
+    Always --> PerfGate[Perf gates<br/>E2E_Audit08_PerfGateIT +<br/>AppendThroughputTest best-of-3]
+    Always --> VTPin[VT-pinning gate<br/>E2E_Audit10 · 2000 produce + 2000 fetch]
+
+    Manual[Manual / nightly] --> Slow["@slow tag<br/>JBROKER_RUN_SLOW_TESTS=1<br/>1M-record compaction · 10k clients ·<br/>Testcontainers-Redis"]
+    Manual --> Stress[stressTest<br/>100 randomised election cycles]
+
+    Fast --> Verdict{green?}
+    PerfGate --> Verdict
+    VTPin --> Verdict
+    Verdict -->|yes| Merge[Mergeable]
+    Verdict -->|no| Block[Block · root-cause fix<br/>NO RERUNS]
+```
+
+Flake policy: every CI failure gets a root-cause fix, not a rerun. See "Flake policy" below for the failure modes the project has explicitly hardened against.
+
 ## Scenarios
 
 | Test | What it covers |

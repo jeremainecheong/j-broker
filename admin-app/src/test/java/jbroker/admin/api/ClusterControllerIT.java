@@ -3,13 +3,13 @@ package jbroker.admin.api;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import jbroker.admin.AdminApp;
 import jbroker.admin.dto.ClusterSummary;
 import jbroker.admin.dto.NodeInfo;
 import jbroker.app.Broker;
+import jbroker.app.testkit.BindRetry;
 import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -44,11 +44,11 @@ class ClusterControllerIT {
     TestRestTemplate rest;
 
     @BeforeAll
-    static void startBroker() throws IOException, InterruptedException {
-        brokerPort = freePort();
-        int raftPort = freePort();
+    static void startBroker() throws Exception {
         dataDir = Files.createTempDirectory("jbroker-admin-cluster");
-        broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
+        broker = BindRetry.startWithBindRetry(() ->
+                Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
+        brokerPort = broker.brokerPort();
         // Wait for Raft election so the controller-id in the first
         // describeCluster() response is deterministic.
         long deadline = System.currentTimeMillis() + 5_000;
@@ -103,14 +103,6 @@ class ClusterControllerIT {
         var resp = rest.getForEntity("http://localhost:" + port + "/api/v1/nodes/99", String.class);
         assertThat(resp.getStatusCode().value()).isEqualTo(404);
         assertThat(resp.getBody()).contains("UNKNOWN_NODE");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void deleteQuietly(Path root) {

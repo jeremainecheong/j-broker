@@ -151,6 +151,13 @@ public final class ProduceHandler {
             return appendAndRespond(req, parsed);
         }
 
+        // The dedup map is in-memory only: after a restart this broker has
+        // a full log but an empty map, and trusting the empty map turns
+        // producer retries into double-appends (found by the chaos-with-
+        // load soak; PRD §3.6 invariant #4). First idempotent produce per
+        // partition rebuilds the map from the log before any dedup check.
+        ensureProducerStateRecovered(req.getTopic(), req.getPartition());
+
         // Atomic dedup+append routed through the shared ProducerStateManager
         // so every broker (leader + followers) keeps the same view of applied
         // (pid, epoch, baseSequence) batches — that's what makes idempotent
@@ -190,6 +197,30 @@ public final class ProduceHandler {
     /** Capture slot so the Appender lambda can hand its full response back to the caller. */
     private static final class AppendHolder {
         ProduceResponse response;
+    }
+
+    /**
+     * Partitions whose producer state has been rebuilt from the log this
+     * process lifetime. computeIfAbsent serializes concurrent first
+     * touches of the same partition; a failed rebuild stays unmarked so
+     * the next produce retries it.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, Boolean> producerStateRecovered =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private void ensureProducerStateRecovered(String topic, int partition) {
+        producerStateRecovered.computeIfAbsent(topic + "-" + partition, tp -> {
+            try {
+                ProducerStateRecovery.rebuild(logManager, topic, partition, producerState);
+                return Boolean.TRUE;
+            } catch (IOException e) {
+                // Leave unmarked; the append itself will surface disk
+                // problems. Do not trust an empty map on a failed rebuild.
+                org.slf4j.LoggerFactory.getLogger(ProduceHandler.class)
+                        .warn("producer-state rebuild failed for {}-{}: {}", topic, partition, e.toString());
+                return null;
+            }
+        });
     }
 
     private ProduceResponse appendAndRespond(ProduceRequest req, RecordBatch.Parsed parsed) {

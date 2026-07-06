@@ -45,6 +45,8 @@ public final class PerfMain {
             case "replication" -> ReplicationPerfTest.run(rest);
             case "compaction" -> CompactionPausePerfTest.run(rest);
             case "check-batch" -> BatchCorrectness.run(rest);
+            case "soak-produce" -> SoakRun.produce(rest);
+            case "soak-verify" -> SoakRun.verify(rest);
             default -> {
                 usage();
                 System.exit(2);
@@ -55,6 +57,7 @@ public final class PerfMain {
     private static void usage() {
         System.err.println("Usage: j-broker-bench <mode> [flags]");
         System.err.println("  mode: producer | consumer | acks-all | replication | compaction");
+        System.err.println("        | soak-produce | soak-verify   (scenario-chaos-with-load.sh)");
         System.err.println("  see class javadoc for per-mode flags");
     }
 }

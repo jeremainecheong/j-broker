@@ -5,13 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.client.BrokerClient;
 import jbroker.proto.broker.AdminGrpc;
 import jbroker.proto.broker.ListTopicsRequest;
@@ -63,16 +62,15 @@ class MtlsClusterIT {
 
     @Test
     void tlsClientReachesTlsBroker(@TempDir Path dataDir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-
         var serverTls = TlsConfig.mtlsServer(
                 tlsDir.resolve("broker1.crt"), tlsDir.resolve("broker1.key"), tlsDir.resolve("ca.crt"));
 
-        var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-        var cfg = new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort, voters, 1).withTls(serverTls);
-
-        try (var broker = Broker.start(cfg)) {
+        try (var node = TestBrokers.start((rp, bp) -> {
+            var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", rp, bp));
+            return new Broker.Config(new NodeId(1), dataDir, rp, bp, voters, 1).withTls(serverTls);
+        })) {
+            var broker = node.broker();
+            int brokerPort = node.brokerPort();
             awaitBrokerReady(broker);
 
             // --- TLS client with valid client cert: handshake + Admin RPC succeed.
@@ -88,15 +86,14 @@ class MtlsClusterIT {
 
     @Test
     void plaintextClientIsRejectedByTlsBroker(@TempDir Path dataDir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-
         var serverTls = TlsConfig.mtlsServer(
                 tlsDir.resolve("broker1.crt"), tlsDir.resolve("broker1.key"), tlsDir.resolve("ca.crt"));
-        var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-        var cfg = new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort, voters, 1).withTls(serverTls);
-
-        try (var broker = Broker.start(cfg)) {
+        try (var node = TestBrokers.start((rp, bp) -> {
+            var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", rp, bp));
+            return new Broker.Config(new NodeId(1), dataDir, rp, bp, voters, 1).withTls(serverTls);
+        })) {
+            var broker = node.broker();
+            int brokerPort = node.brokerPort();
             awaitBrokerReady(broker);
 
             // Plaintext channel against a TLS server — the TLS handshake
@@ -133,14 +130,6 @@ class MtlsClusterIT {
             return p.waitFor() == 0;
         } catch (Exception e) {
             return false;
-        }
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
         }
     }
 }

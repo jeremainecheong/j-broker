@@ -3,11 +3,10 @@ package jbroker.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.ConsumerOffsetsTopic;
 import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.DescribeClusterRequest;
@@ -27,20 +26,21 @@ class AdvertisedListenersIT {
 
     @Test
     void advertisedAddressIsReturnedByFindCoordinator(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
         // Pretend the broker is also published at another host/port.
         // Inter-broker "host" is 127.0.0.1:<brokerPort>; advertised is the
         // fake string below.
-        var voters = List.of(new VoterAddress(
-                new NodeId(1),
-                "127.0.0.1",
-                raftPort,
-                brokerPort,
-                /*advertisedHost*/ "external.example.com",
-                /*advertisedBrokerPort*/ 19092));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var node = TestBrokers.start((rp, bp) -> {
+            var voters = List.of(new VoterAddress(
+                    new NodeId(1),
+                    "127.0.0.1",
+                    rp,
+                    bp,
+                    /*advertisedHost*/ "external.example.com",
+                    /*advertisedBrokerPort*/ 19092));
+            return new Broker.Config(new NodeId(1), dir, rp, bp, voters);
+        })) {
+            var broker = node.broker();
+            int brokerPort = node.brokerPort();
             awaitCoordinatorTopic(broker);
             awaitBrokerRegistration(broker);
 
@@ -77,10 +77,8 @@ class AdvertisedListenersIT {
 
     @Test
     void withoutAdvertisedListenersFallsBackToInternalAddress(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitCoordinatorTopic(broker);
             awaitBrokerRegistration(broker);
 
@@ -118,13 +116,5 @@ class AdvertisedListenersIT {
             Thread.sleep(50);
         }
         throw new AssertionError("broker 1 never registered within 5s");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

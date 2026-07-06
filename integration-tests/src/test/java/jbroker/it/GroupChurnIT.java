@@ -2,8 +2,6 @@ package jbroker.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -16,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import jbroker.app.Broker;
-import jbroker.app.VoterAddress;
+import jbroker.app.testkit.TestBrokerCluster;
 import jbroker.broker.ConsumerOffsetsTopic;
 import jbroker.broker.client.BrokerClient;
 import jbroker.broker.client.consumer.Consumer;
@@ -51,14 +49,6 @@ import org.junit.jupiter.api.io.TempDir;
 @Tag("chaos")
 class GroupChurnIT {
 
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     private static int durationSeconds() {
         String env = System.getenv("JBROKER_CHURN_DURATION_SECONDS");
         if (env == null || env.isBlank()) return 20;
@@ -74,16 +64,15 @@ class GroupChurnIT {
             throws Exception {
         int durationSec = durationSeconds();
 
-        int r1 = freePort(), r2 = freePort(), r3 = freePort();
-        int b1 = freePort(), b2 = freePort(), b3 = freePort();
-        var voters = List.of(
-                new VoterAddress(new NodeId(1), "127.0.0.1", r1, b1),
-                new VoterAddress(new NodeId(2), "127.0.0.1", r2, b2),
-                new VoterAddress(new NodeId(3), "127.0.0.1", r3, b3));
-
-        var br1 = Broker.start(new Broker.Config(new NodeId(1), d1, r1, b1, voters));
-        var br2 = Broker.start(new Broker.Config(new NodeId(2), d2, r2, b2, voters));
-        var br3 = Broker.start(new Broker.Config(new NodeId(3), d3, r3, b3, voters));
+        var dirs = new Path[] {d1, d2, d3};
+        var cluster = TestBrokerCluster.start(
+                3,
+                2,
+                (i, voters, ports) -> new Broker.Config(new NodeId(i + 1), dirs[i], ports[i][0], ports[i][1], voters));
+        var br1 = cluster.broker(0);
+        var br2 = cluster.broker(1);
+        var br3 = cluster.broker(2);
+        int b1 = cluster.brokerPort(0), b2 = cluster.brokerPort(1), b3 = cluster.brokerPort(2);
         var brokers = List.of(br1, br2, br3);
         var pool = Executors.newFixedThreadPool(5);
         try {

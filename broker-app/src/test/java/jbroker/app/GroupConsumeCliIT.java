@@ -3,18 +3,16 @@ package jbroker.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.ConsumerOffsetsTopic;
 import jbroker.broker.client.BrokerClient;
 import jbroker.proto.broker.ListConsumerGroupsRequest;
 import jbroker.proto.broker.MetadataGrpc;
-import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -30,9 +28,8 @@ class GroupConsumeCliIT {
 
     @Test
     void consumeLoopRegistersGroupWithCoordinator(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort))) {
+        try (var broker = TestBrokers.startSingleNode(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitCoordinatorTopic(broker);
             try (var producer = new BrokerClient("127.0.0.1", brokerPort)) {
                 producer.createTopic("orders", 1, 1);
@@ -92,13 +89,5 @@ class GroupConsumeCliIT {
             Thread.sleep(50);
         }
         throw new AssertionError("__consumer_offsets did not auto-create within 10s");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

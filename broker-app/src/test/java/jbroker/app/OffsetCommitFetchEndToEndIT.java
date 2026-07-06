@@ -3,10 +3,9 @@ package jbroker.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.ConsumerOffsetsTopic;
 import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.ConsumerGroupHeartbeatRequest;
@@ -32,23 +31,15 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class OffsetCommitFetchEndToEndIT {
 
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     @Test
     void commitedOffsetSurvivesBrokerRestart(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
 
         // Session 1: join + commit + verify in-memory fetch.
         String memberId;
         int memberEpoch;
-        var broker1 = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+        var node1 = TestBrokers.start((rp, bp) -> new Broker.Config(new NodeId(1), dir, rp, bp));
+        var broker1 = node1.broker();
+        int raftPort = node1.raftPort(), brokerPort = node1.brokerPort();
         var ch1 = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
                 .usePlaintext()
                 .build();
@@ -141,9 +132,8 @@ class OffsetCommitFetchEndToEndIT {
 
     @Test
     void commitWithStaleEpochReturnsFencedMemberEpoch(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+        var broker = TestBrokers.startSingleNode(dir);
+        int brokerPort = broker.brokerPort();
         var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
                 .usePlaintext()
                 .build();
@@ -180,9 +170,8 @@ class OffsetCommitFetchEndToEndIT {
 
     @Test
     void fetchOffsetsForUncommittedTpReturnsOutOfRange(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+        var broker = TestBrokers.startSingleNode(dir);
+        int brokerPort = broker.brokerPort();
         var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
                 .usePlaintext()
                 .build();

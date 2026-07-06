@@ -2,14 +2,10 @@ package jbroker.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
-import jbroker.app.Broker;
-import jbroker.app.VoterAddress;
-import jbroker.raft.core.NodeId;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.raft.core.Role;
 import jbroker.storage.Log;
 import org.junit.jupiter.api.Tag;
@@ -34,11 +30,8 @@ class MillionRecordCompactionIT {
 
     @Test
     void millionRecordsCompactToDistinctKeysWithinBudget(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             long deadline = System.currentTimeMillis() + 10_000;
             while (broker.role() != Role.LEADER && System.currentTimeMillis() < deadline) {
                 Thread.sleep(25);
@@ -80,14 +73,6 @@ class MillionRecordCompactionIT {
             assertThat(totalMs)
                     .as("append + compact should finish under 60s on commodity hardware")
                     .isLessThan(60_000L);
-        }
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
         }
     }
 }

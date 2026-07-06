@@ -2,11 +2,10 @@ package jbroker.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.client.BrokerClient;
 import jbroker.broker.replication.ReplicaFetcher;
 import jbroker.broker.replication.ReplicaPeerClient;
@@ -25,21 +24,13 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class ReplicaFetchEndToEndIT {
 
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     @Test
     void followerPullsAllProducedRecordsFromLeader(@TempDir Path leaderDir, @TempDir Path followerDir)
             throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
         int leaderId = 1;
-        var leader = Broker.start(new Broker.Config(new NodeId(leaderId), leaderDir, raftPort, brokerPort));
+        var node = TestBrokers.start((rp, bp) -> new Broker.Config(new NodeId(leaderId), leaderDir, rp, bp));
+        var leader = node.broker();
+        int brokerPort = node.brokerPort();
 
         try (var client = new BrokerClient("127.0.0.1", brokerPort)) {
             client.createTopic("replicated", 1, 3);

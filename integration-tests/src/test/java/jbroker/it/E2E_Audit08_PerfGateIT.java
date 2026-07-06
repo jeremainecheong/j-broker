@@ -2,18 +2,14 @@ package jbroker.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import jbroker.app.Broker;
-import jbroker.app.VoterAddress;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.client.BrokerClient;
-import jbroker.raft.core.NodeId;
 import jbroker.raft.core.Role;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -57,11 +53,8 @@ class E2E_Audit08_PerfGateIT {
     @Test
     @Tag("perf")
     void endToEndProduceConsumeMeetsCiGatedFloors(@TempDir Path dir) throws Exception {
-        int raftPort = freePort();
-        int brokerPort = freePort();
-        var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitLeadership(broker);
 
             try (var client = new BrokerClient("127.0.0.1", brokerPort)) {
@@ -137,13 +130,5 @@ class E2E_Audit08_PerfGateIT {
             Thread.sleep(25);
         }
         assertThat(broker.role()).isEqualTo(Role.LEADER);
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

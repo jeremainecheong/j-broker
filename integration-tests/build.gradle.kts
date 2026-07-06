@@ -8,6 +8,8 @@ dependencies {
     testImplementation(project(":proto"))
     // P7.12 — cross-slice E2E suite and chaos harness need Broker + client.
     testImplementation(project(":broker-app"))
+    // jbroker.app.testkit — shared bind-retry cluster starters.
+    testImplementation(testFixtures(project(":broker-app")))
     testImplementation(project(":broker-core"))
     testImplementation(project(":broker-storage"))
 }

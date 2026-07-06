@@ -34,16 +34,21 @@ export const options = {
 const BASE = __ENV.ADMIN_URL || "http://localhost:9090";
 
 export default function () {
-  let received = 0;
-  const res = sse.open(`${BASE}/api/v1/events`, { tags: { name: "events" } }, function (client) {
+  // sse.open blocks for the connection's lifetime (k6 teardown closes it
+  // at test end), so any check() placed after it never runs during the
+  // hold — a previous version's post-open checks recorded 0 samples and
+  // the 'rate>0.99' threshold passed vacuously. Record the per-VU
+  // "received an event" check from inside the event handler instead.
+  let checkedFirstEvent = false;
+  sse.open(`${BASE}/api/v1/events`, { tags: { name: "events" } }, function (client) {
     client.on("event", function () {
-      received++;
+      if (!checkedFirstEvent) {
+        checkedFirstEvent = true;
+        check(null, { "received at least one event": () => true });
+      }
     });
     client.on("error", function () {
       check(null, { "sse error-free": () => false });
     });
   });
-  check(res, { "sse 200": (r) => r && r.status === 200 });
-  // Stay connected for a bit to amortise connect cost; k6 teardown closes.
-  check(null, { "events received": () => received >= 0 });
 }

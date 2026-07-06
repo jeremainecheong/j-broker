@@ -3,7 +3,6 @@ package jbroker.admin.e2e;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,6 +11,7 @@ import java.util.List;
 import jbroker.admin.AdminApp;
 import jbroker.admin.dto.ConsumerGroupDetail;
 import jbroker.app.Broker;
+import jbroker.app.testkit.BindRetry;
 import jbroker.broker.client.BrokerClient;
 import jbroker.broker.client.consumer.Consumer;
 import jbroker.broker.client.consumer.ConsumerConfig;
@@ -50,11 +50,11 @@ class E2E_8_4_ConsumerGroupLagIT {
     TestRestTemplate rest;
 
     @BeforeAll
-    static void bringUp() throws IOException, InterruptedException {
-        brokerPort = freePort();
-        int raftPort = freePort();
+    static void bringUp() throws Exception {
         dataDir = Files.createTempDirectory("e2e-8-4-lag");
-        broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
+        broker = BindRetry.startWithBindRetry(() ->
+                Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
+        brokerPort = broker.brokerPort();
         waitForCoordinatorTopic(broker);
     }
 
@@ -129,14 +129,6 @@ class E2E_8_4_ConsumerGroupLagIT {
                 .setTopic(topic)
                 .setPartition(partition)
                 .build();
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void waitForCoordinatorTopic(Broker broker) throws InterruptedException {

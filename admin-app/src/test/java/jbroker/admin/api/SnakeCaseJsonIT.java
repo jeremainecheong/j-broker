@@ -2,12 +2,11 @@ package jbroker.admin.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import jbroker.admin.AdminApp;
 import jbroker.app.Broker;
+import jbroker.app.testkit.BindRetry;
 import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -45,11 +44,11 @@ class SnakeCaseJsonIT {
     TestRestTemplate rest;
 
     @BeforeAll
-    static void startBroker() throws IOException, InterruptedException {
-        brokerPort = freePort();
-        int raftPort = freePort();
+    static void startBroker() throws Exception {
         dataDir = Files.createTempDirectory("jbroker-admin-snake-case");
-        broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
+        broker = BindRetry.startWithBindRetry(() ->
+                Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
+        brokerPort = broker.brokerPort();
         // Wait for the broker to register itself so DescribeCluster has a node.
         long deadline = System.currentTimeMillis() + 5_000;
         while (broker.brokerRegistry().knownBrokerIds().isEmpty() && System.currentTimeMillis() < deadline) {
@@ -129,13 +128,5 @@ class SnakeCaseJsonIT {
                 .doesNotContain("\"produceBytesPerSec\"")
                 .doesNotContain("\"fetchBytesPerSec\"")
                 .doesNotContain("\"windowSeconds\"");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

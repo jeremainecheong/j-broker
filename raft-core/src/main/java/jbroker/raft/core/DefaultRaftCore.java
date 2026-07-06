@@ -19,8 +19,13 @@ public final class DefaultRaftCore implements RaftCore {
     /** Null means fall back to {@link ThreadLocalRandom}; the simulator injects a seeded instance. */
     private final Random random;
 
-    private Role role = Role.FOLLOWER;
-    private Optional<NodeId> leaderId = Optional.empty();
+    // volatile: written only by the driver's event-pump thread, but read
+    // cross-thread via RaftDriver.role() (BrokerFencer ticker, balancer,
+    // forceElection, tests). Without it those reads are a JMM data race.
+    private volatile Role role = Role.FOLLOWER;
+    // volatile for the same reason as role: read cross-thread via
+    // RaftCore.currentLeader() (admin /cluster's controllerId).
+    private volatile Optional<NodeId> leaderId = Optional.empty();
     private long commitIndex;
     private long lastApplied;
     private long electionDeadlineNanos;

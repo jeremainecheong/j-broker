@@ -17,8 +17,11 @@ public final class FilePersistentState implements PersistentState, AutoCloseable
     private static final int NO_VOTE = -1;
 
     private final FileChannel channel;
-    private Term currentTerm;
-    private Optional<NodeId> votedFor;
+    // volatile: mutated only on the driver's event-pump thread, but read
+    // cross-thread through RaftCore.currentTerm()/observability() (admin
+    // REST, forceElection, tests).
+    private volatile Term currentTerm;
+    private volatile Optional<NodeId> votedFor;
 
     private FilePersistentState(FileChannel channel, Term term, Optional<NodeId> vote) {
         this.channel = channel;

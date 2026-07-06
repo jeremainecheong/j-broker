@@ -3,13 +3,11 @@ package jbroker.it;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import jbroker.app.Broker;
-import jbroker.app.VoterAddress;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.ConsumerOffsetsTopic;
 import jbroker.proto.broker.AdminGrpc;
 import jbroker.proto.broker.CommitOffsetsRequest;
@@ -21,7 +19,6 @@ import jbroker.proto.broker.OffsetReset;
 import jbroker.proto.broker.ResetConsumerGroupOffsetsRequest;
 import jbroker.proto.common.ErrorCode;
 import jbroker.proto.common.TopicPartition;
-import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -38,11 +35,8 @@ class E2E_13_2_ResetOffsetsRoundTripIT {
 
     @Test
     void adminResetOverridesPriorCommitAndFetchOffsetsSeesTheNewValue(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var voters = java.util.List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitCoordinatorReady(broker);
 
             var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
@@ -127,11 +121,8 @@ class E2E_13_2_ResetOffsetsRoundTripIT {
         // workflow of "stage the offsets, then start the new consumer" would
         // otherwise require a dummy heartbeat first. This test pins the
         // behavior so a later change doesn't regress the UX by accident.
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var voters = java.util.List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitCoordinatorReady(broker);
 
             var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
@@ -179,13 +170,5 @@ class E2E_13_2_ResetOffsetsRoundTripIT {
             Thread.sleep(50);
         }
         throw new AssertionError("__consumer_offsets did not auto-create within 10s");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

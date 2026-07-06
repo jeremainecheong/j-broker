@@ -3,10 +3,10 @@ package jbroker.admin;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import jbroker.app.Broker;
+import jbroker.app.testkit.BindRetry;
 import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -42,12 +42,11 @@ class AdminAppBootstrapIT {
     TestRestTemplate rest;
 
     @BeforeAll
-    static void startBroker() throws IOException {
-        int brokerPort = freePort();
-        int raftPort = freePort();
+    static void startBroker() throws Exception {
         dataDir = Files.createTempDirectory("jbroker-admin-bootstrap");
-        broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
-        System.setProperty("jbroker.test.brokerPort", Integer.toString(brokerPort));
+        broker = BindRetry.startWithBindRetry(() ->
+                Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
+        System.setProperty("jbroker.test.brokerPort", Integer.toString(broker.brokerPort()));
     }
 
     @AfterAll
@@ -66,14 +65,6 @@ class AdminAppBootstrapIT {
         var resp = rest.getForEntity("http://localhost:" + port + "/actuator/health", String.class);
         assertThat(resp.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(resp.getBody()).contains("\"status\":\"UP\"");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void deleteRecursively(Path root) {

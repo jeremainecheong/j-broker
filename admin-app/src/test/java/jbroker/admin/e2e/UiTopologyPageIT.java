@@ -3,11 +3,11 @@ package jbroker.admin.e2e;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import jbroker.admin.AdminApp;
 import jbroker.app.Broker;
+import jbroker.app.testkit.BindRetry;
 import jbroker.broker.client.BrokerClient;
 import jbroker.raft.core.NodeId;
 import jbroker.raft.core.Role;
@@ -43,11 +43,11 @@ class UiTopologyPageIT {
     TestRestTemplate rest;
 
     @BeforeAll
-    static void startBroker() throws IOException, InterruptedException {
-        brokerPort = freePort();
-        int raftPort = freePort();
+    static void startBroker() throws Exception {
         dataDir = Files.createTempDirectory("e2e-8-7-ui");
-        broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
+        broker = BindRetry.startWithBindRetry(() ->
+                Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
+        brokerPort = broker.brokerPort();
         long deadline = System.currentTimeMillis() + 5_000;
         while (System.currentTimeMillis() < deadline && broker.role() != Role.LEADER) {
             Thread.sleep(25);
@@ -109,14 +109,6 @@ class UiTopologyPageIT {
         var resp = rest.getForEntity("http://localhost:" + port + "/topics/does-not-exist", String.class);
         assertThat(resp.getStatusCode().value()).isEqualTo(404);
         assertThat(resp.getBody()).contains("Topic not found");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void deleteQuietly(Path root) {

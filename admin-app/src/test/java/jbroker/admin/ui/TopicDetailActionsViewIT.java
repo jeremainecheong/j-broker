@@ -3,11 +3,11 @@ package jbroker.admin.ui;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import jbroker.admin.AdminApp;
 import jbroker.app.Broker;
+import jbroker.app.testkit.BindRetry;
 import jbroker.broker.client.BrokerClient;
 import jbroker.raft.core.NodeId;
 import jbroker.raft.core.Role;
@@ -52,11 +52,11 @@ class TopicDetailActionsViewIT {
     TestRestTemplate rest;
 
     @BeforeAll
-    static void startBroker() throws IOException, InterruptedException {
-        brokerPort = freePort();
-        int raftPort = freePort();
+    static void startBroker() throws Exception {
         dataDir = Files.createTempDirectory("admin-ui-topic-actions");
-        broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
+        broker = BindRetry.startWithBindRetry(() ->
+                Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
+        brokerPort = broker.brokerPort();
         long deadline = System.currentTimeMillis() + 5_000;
         while (System.currentTimeMillis() < deadline && broker.role() != Role.LEADER) {
             Thread.sleep(25);
@@ -117,14 +117,6 @@ class TopicDetailActionsViewIT {
         var resp = rest.postForEntity(
                 "http://localhost:" + port + "/api/v1/topics/action-ui-2/partitions/0/compact", null, String.class);
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void deleteQuietly(Path root) {

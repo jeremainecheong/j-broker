@@ -3,7 +3,6 @@ package jbroker.admin.e2e;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -12,7 +11,7 @@ import jbroker.admin.AdminApp;
 import jbroker.admin.api.TopicsController.CreateTopicBody;
 import jbroker.admin.dto.TopicSummary;
 import jbroker.app.Broker;
-import jbroker.app.VoterAddress;
+import jbroker.app.testkit.TestBrokerCluster;
 import jbroker.raft.core.NodeId;
 import jbroker.raft.core.Role;
 import org.junit.jupiter.api.AfterAll;
@@ -50,21 +49,21 @@ class CreateTopicViaRestIT {
     TestRestTemplate rest;
 
     @BeforeAll
-    static void bringUp() throws IOException, InterruptedException {
-        int r1 = freePort(), r2 = freePort(), r3 = freePort();
-        b1 = freePort();
-        b2 = freePort();
-        b3 = freePort();
-        var voters = List.of(
-                new VoterAddress(new NodeId(1), "127.0.0.1", r1, b1),
-                new VoterAddress(new NodeId(2), "127.0.0.1", r2, b2),
-                new VoterAddress(new NodeId(3), "127.0.0.1", r3, b3));
+    static void bringUp() throws Exception {
         d1 = Files.createTempDirectory("e2e-8-2-n1");
         d2 = Files.createTempDirectory("e2e-8-2-n2");
         d3 = Files.createTempDirectory("e2e-8-2-n3");
-        br1 = Broker.start(new Broker.Config(new NodeId(1), d1, r1, b1, voters));
-        br2 = Broker.start(new Broker.Config(new NodeId(2), d2, r2, b2, voters));
-        br3 = Broker.start(new Broker.Config(new NodeId(3), d3, r3, b3, voters));
+        var dirs = new Path[] {d1, d2, d3};
+        var cluster = TestBrokerCluster.start(
+                3,
+                2,
+                (i, voters, ports) -> new Broker.Config(new NodeId(i + 1), dirs[i], ports[i][0], ports[i][1], voters));
+        br1 = cluster.broker(0);
+        br2 = cluster.broker(1);
+        br3 = cluster.broker(2);
+        b1 = cluster.brokerPort(0);
+        b2 = cluster.brokerPort(1);
+        b3 = cluster.brokerPort(2);
 
         long deadline = System.currentTimeMillis() + 15_000;
         while (System.currentTimeMillis() < deadline) {
@@ -133,14 +132,6 @@ class CreateTopicViaRestIT {
         // pool's first-non-NOT_LEADER response.
         assertThat(resp.getStatusCode().is4xxClientError()).isTrue();
         assertThat(resp.getBody()).contains("UNKNOWN_TOPIC");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void deleteQuietly(Path root) {

@@ -30,6 +30,9 @@ dependencies {
     // point the admin-app at. Production deployments run admin-app + broker
     // as separate JVMs, so this stays test-scoped deliberately.
     testImplementation(project(":broker-app"))
+    // jbroker.app.testkit — shared bind-retry broker starters (freePort()
+    // -> bind TOCTOU hardening; a bind race here broke main run 28762393870).
+    testImplementation(testFixtures(project(":broker-app")))
     // Testcontainers backs the Redis pub/sub fanout IT. Scoped
     // to tests so admin-app stays classpath-slim at runtime.
     testImplementation("org.testcontainers:testcontainers:1.20.2")

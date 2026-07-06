@@ -3,7 +3,6 @@ package jbroker.admin.e2e;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import jbroker.admin.AdminApp;
 import jbroker.app.Broker;
+import jbroker.app.testkit.BindRetry;
 import jbroker.broker.client.BrokerClient;
 import jbroker.raft.core.NodeId;
 import jbroker.raft.core.Role;
@@ -48,11 +48,11 @@ class SseReconnectIT {
     int port;
 
     @BeforeAll
-    static void startBroker() throws IOException, InterruptedException {
-        brokerPort = freePort();
-        int raftPort = freePort();
+    static void startBroker() throws Exception {
         dataDir = Files.createTempDirectory("e2e-8-6-sse");
-        broker = Broker.start(new Broker.Config(new NodeId(1), dataDir, raftPort, brokerPort));
+        broker = BindRetry.startWithBindRetry(() ->
+                Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
+        brokerPort = broker.brokerPort();
         long deadline = System.currentTimeMillis() + 5_000;
         while (System.currentTimeMillis() < deadline && broker.role() != Role.LEADER) {
             Thread.sleep(25);
@@ -153,14 +153,6 @@ class SseReconnectIT {
             }
         }
         return latest;
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void deleteQuietly(Path root) {

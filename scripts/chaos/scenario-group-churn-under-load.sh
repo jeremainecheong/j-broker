@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # compound chaos scenario.
 #
-# Runs group churn + produce load concurrently. Today this is just the
-# group-churn wrapper because the Milestone 6 broker-kill chaos script
-# (`kill-leader-mid-produce.sh`) hasn't been ported into the shell-script
-# layer yet — group churn by itself already exercises the critical
-# interactions (rolling rebalance while the producer hammers partitions).
-# When a broker-kill scenario wrapper exists this script will background
-# that alongside the churn run.
+# Runs group churn + produce load concurrently — the consumer-group-
+# rebalance flavour of compound chaos (rolling rebalance while the
+# producer hammers partitions). The broker-kill-under-load flavour is
+# its own scenario: `scenario-chaos-with-load.sh` (the spec), which
+# SIGKILLs a broker every 30s under sustained idempotent acks=all load
+# and asserts zero lost / zero duplicated records.
 #
 set -euo pipefail
 

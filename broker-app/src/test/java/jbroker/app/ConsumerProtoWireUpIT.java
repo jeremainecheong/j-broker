@@ -3,17 +3,15 @@ package jbroker.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.FindCoordinatorRequest;
 import jbroker.proto.broker.ListOffsetsPartition;
 import jbroker.proto.broker.ListOffsetsRequest;
 import jbroker.proto.common.ErrorCode;
 import jbroker.proto.common.TopicPartition;
-import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -29,19 +27,10 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class ConsumerProtoWireUpIT {
 
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     @Test
     void findCoordinatorReturnsCoordinatorNotAvailableBeforeTopicLands(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+        var broker = TestBrokers.startSingleNode(dir);
+        int brokerPort = broker.brokerPort();
         var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
                 .usePlaintext()
                 .build();
@@ -64,9 +53,8 @@ class ConsumerProtoWireUpIT {
 
     @Test
     void listOffsetsReturnsLatestForExistingPartition(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+        var broker = TestBrokers.startSingleNode(dir);
+        int brokerPort = broker.brokerPort();
         try (var client = new jbroker.broker.client.BrokerClient("127.0.0.1", brokerPort)) {
             client.createTopic("orders", 1, 1);
         }

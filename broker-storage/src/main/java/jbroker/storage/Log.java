@@ -164,20 +164,52 @@ public final class Log implements AutoCloseable {
     }
 
     /**
+     * Retry budget for reads racing a compaction segment swap. Reads
+     * resolve their segment lock-free, and {@code compactByKeyLocked}
+     * closes the old segments before publishing the replacement — a reader
+     * in that window sees {@link java.nio.channels.ClosedChannelException}.
+     * The window is file-create + one append (survivors are pre-encoded),
+     * so a short park-and-re-resolve loop rides it out; exhausting the
+     * ~200ms budget means a real IO problem and the last failure is
+     * rethrown.
+     */
+    private static final int STALE_SEGMENT_RETRIES = 100;
+
+    private static final long STALE_SEGMENT_PARK_NANOS = 2_000_000L; // 2ms
+
+    /**
      * Read one or more batches starting at or after {@code offset}, capped at
      * {@code maxBytes}. Reads may span at most one segment boundary per call.
      */
     public List<RecordBatch.Parsed> read(long offset, int maxBytes) throws IOException {
-        var segment = segmentContaining(offset);
-        if (segment == null) return List.of();
-        return segment.readFrom(offset, maxBytes);
+        java.nio.channels.ClosedChannelException stale = null;
+        for (int attempt = 0; attempt < STALE_SEGMENT_RETRIES; attempt++) {
+            var segment = segmentContaining(offset);
+            if (segment == null) return List.of();
+            try {
+                return segment.readFrom(offset, maxBytes);
+            } catch (java.nio.channels.ClosedChannelException e) {
+                stale = e; // compaction is swapping the segment list under us
+                java.util.concurrent.locks.LockSupport.parkNanos(STALE_SEGMENT_PARK_NANOS);
+            }
+        }
+        throw stale;
     }
 
     /** Zero-copy transfer to the given output stream. */
     public long transferTo(long offset, int maxBytes, OutputStream out) throws IOException {
-        var segment = segmentContaining(offset);
-        if (segment == null) return 0;
-        return segment.transferTo(offset, maxBytes, out);
+        java.nio.channels.ClosedChannelException stale = null;
+        for (int attempt = 0; attempt < STALE_SEGMENT_RETRIES; attempt++) {
+            var segment = segmentContaining(offset);
+            if (segment == null) return 0;
+            try {
+                return segment.transferTo(offset, maxBytes, out);
+            } catch (java.nio.channels.ClosedChannelException e) {
+                stale = e;
+                java.util.concurrent.locks.LockSupport.parkNanos(STALE_SEGMENT_PARK_NANOS);
+            }
+        }
+        throw stale;
     }
 
     private LogSegment segmentContaining(long offset) {
@@ -318,15 +350,38 @@ public final class Log implements AutoCloseable {
             }
         }
 
-        // Swap: close + delete existing segments, then build the replacement
-        // segment at the first-surviving absolute offset.
+        // Encode the replacement batch BEFORE touching existing segments.
+        // Readers resolve segments lock-free, so everything between the
+        // first close() and the fresh segment's publication is a window
+        // where they see closed channels; doing the (relatively) expensive
+        // survivor encoding up front keeps that window to file-create plus
+        // one append, which the read paths' bounded stale-segment retry
+        // rides out. Records carry (absOff - firstOff) as their offsetDelta
+        // — sparse gaps within a batch are well-formed per the RecordBatch
+        // spec and survive the decode round-trip.
+        java.util.ArrayList<Record> encoded = null;
+        long firstOff = 0L;
+        if (!survivors.isEmpty()) {
+            firstOff = survivors.firstKey();
+            encoded = new java.util.ArrayList<>(survivors.size());
+            for (var entry : survivors.entrySet()) {
+                long absOff = entry.getKey();
+                var r = entry.getValue();
+                encoded.add(new Record((int) (absOff - firstOff), 0L, r.key(), r.value()));
+            }
+        }
+
+        // Swap: close + delete existing segments, then publish the
+        // replacement segment at the first-surviving absolute offset.
+        // (Deleting first also guarantees the fresh segment's base-offset
+        // file names can't collide with an old segment's.)
         for (var seg : segments) {
             seg.close();
             seg.delete();
         }
         segments.clear();
 
-        if (survivors.isEmpty()) {
+        if (encoded == null) {
             // No records survived. Fresh empty segment at offset 0; nextOffset
             // resets to 0 (loss of historical offsets is acceptable when the
             // partition is empty — there are no consumers to surprise).
@@ -334,20 +389,11 @@ public final class Log implements AutoCloseable {
             return 0;
         }
 
-        long firstOff = survivors.firstKey();
         var fresh = LogSegment.open(dir, firstOff, config.indexIntervalBytes());
-        segments.add(fresh);
-        // Encode as a single batch whose base is the first surviving offset.
-        // Records carry (absOff - firstOff) as their offsetDelta — sparse
-        // gaps within a batch are well-formed per the RecordBatch spec and
-        // survive the decode round-trip.
-        var encoded = new java.util.ArrayList<Record>(survivors.size());
-        for (var entry : survivors.entrySet()) {
-            long absOff = entry.getKey();
-            var r = entry.getValue();
-            encoded.add(new Record((int) (absOff - firstOff), 0L, r.key(), r.value()));
-        }
         fresh.append(firstTimestamp, maxTimestamp, encoded);
+        // Publish only after the survivors are written so a racing reader
+        // never observes a half-built segment.
+        segments.add(fresh);
         return survivors.size();
     }
 

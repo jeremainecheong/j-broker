@@ -38,6 +38,21 @@ public final class ClusterHarness implements AutoCloseable {
     }
 
     public static ClusterHarness start(Path tempDir, int size) throws IOException {
+        // Whole-attempt bind retry: another process can grab a probed port
+        // between freePort()'s close and driver.start()'s bind (the classic
+        // TOCTOU race, see jbroker.app.testkit.BindRetry). Every attempt
+        // re-allocates all ports and node dirs; partially-started drivers
+        // are closed before retrying.
+        try {
+            return jbroker.app.testkit.BindRetry.startWithBindRetry(() -> startOnce(tempDir, size));
+        } catch (IOException | RuntimeException | Error e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("cluster start failed", e);
+        }
+    }
+
+    private static ClusterHarness startOnce(Path tempDir, int size) throws IOException {
         var ports = IntStream.range(0, size).map(i -> freePort()).toArray();
         var ids = IntStream.range(1, size + 1).mapToObj(NodeId::new).toList();
 
@@ -45,8 +60,9 @@ public final class ClusterHarness implements AutoCloseable {
         for (int i = 0; i < size; i++) {
             var self = ids.get(i);
             var port = ports[i];
-            var dataDir = tempDir.resolve("node-" + self.value());
-            Files.createDirectories(dataDir);
+            // Unique per attempt so a bind-race retry never re-opens a
+            // half-initialised log/state file from the failed attempt.
+            var dataDir = Files.createTempDirectory(tempDir, "node-" + self.value() + "-");
 
             var log = FileRaftLog.open(dataDir.resolve("log.bin"));
             var state = FilePersistentState.open(dataDir.resolve("state.bin"));
@@ -73,7 +89,15 @@ public final class ClusterHarness implements AutoCloseable {
             }
 
             var driver = new RaftDriver(self, core, sm, peers, TimeUnit.MILLISECONDS.toNanos(30));
-            driver.start(port);
+            try {
+                driver.start(port);
+            } catch (RuntimeException | IOException e) {
+                // Close everything this attempt already started so a
+                // bind-race retry begins from a clean slate.
+                driver.close();
+                for (var started : nodes) started.driver().close();
+                throw e;
+            }
             nodes.add(new Node(self, port, driver, sm));
         }
         // Wait for all outbound gRPC channels to reach READY state before

@@ -2,8 +2,6 @@ package jbroker.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -13,7 +11,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import jbroker.app.Broker;
-import jbroker.app.VoterAddress;
+import jbroker.app.testkit.TestBrokerCluster;
 import jbroker.broker.client.BrokerClient;
 import jbroker.raft.core.NodeId;
 import jbroker.raft.core.Role;
@@ -34,17 +32,17 @@ class ChaosKillBrokerIT {
 
     @Test
     void pauseEndpointCausesRpcUnavailable(@TempDir Path d1, @TempDir Path d2, @TempDir Path d3) throws Exception {
-        int r1 = freePort(), r2 = freePort(), r3 = freePort();
-        int b1 = freePort(), b2 = freePort(), b3 = freePort();
-        int c1 = freePort(), c2 = freePort(), c3 = freePort();
-        var voters = List.of(
-                new VoterAddress(new NodeId(1), "127.0.0.1", r1, b1),
-                new VoterAddress(new NodeId(2), "127.0.0.1", r2, b2),
-                new VoterAddress(new NodeId(3), "127.0.0.1", r3, b3));
-
-        try (var br1 = Broker.start(withChaos(new Broker.Config(new NodeId(1), d1, r1, b1, voters), c1));
-                var br2 = Broker.start(withChaos(new Broker.Config(new NodeId(2), d2, r2, b2, voters), c2));
-                var br3 = Broker.start(withChaos(new Broker.Config(new NodeId(3), d3, r3, b3, voters), c3))) {
+        var dirs = new Path[] {d1, d2, d3};
+        try (var cluster = TestBrokerCluster.start(
+                3,
+                3,
+                (i, voters, ports) -> withChaos(
+                        new Broker.Config(new NodeId(i + 1), dirs[i], ports[i][0], ports[i][1], voters),
+                        ports[i][2]))) {
+            var br1 = cluster.broker(0);
+            var br2 = cluster.broker(1);
+            var br3 = cluster.broker(2);
+            int c1 = cluster.port(0, 2);
             waitForClusterReady(br1, br2, br3);
 
             var http = HttpClient.newBuilder()
@@ -118,22 +116,22 @@ class ChaosKillBrokerIT {
     @Test
     void partitionAndHealRoundTripPreservesProduceConsume(@TempDir Path d1, @TempDir Path d2, @TempDir Path d3)
             throws Exception {
-        int r1 = freePort(), r2 = freePort(), r3 = freePort();
-        int b1 = freePort(), b2 = freePort(), b3 = freePort();
-        int c1 = freePort(), c2 = freePort(), c3 = freePort();
-        var voters = List.of(
-                new VoterAddress(new NodeId(1), "127.0.0.1", r1, b1),
-                new VoterAddress(new NodeId(2), "127.0.0.1", r2, b2),
-                new VoterAddress(new NodeId(3), "127.0.0.1", r3, b3));
-
-        try (var br1 = Broker.start(withChaos(new Broker.Config(new NodeId(1), d1, r1, b1, voters), c1));
-                var br2 = Broker.start(withChaos(new Broker.Config(new NodeId(2), d2, r2, b2, voters), c2));
-                var br3 = Broker.start(withChaos(new Broker.Config(new NodeId(3), d3, r3, b3, voters), c3))) {
+        var dirs = new Path[] {d1, d2, d3};
+        try (var cluster = TestBrokerCluster.start(
+                3,
+                3,
+                (i, voters, ports) -> withChaos(
+                        new Broker.Config(new NodeId(i + 1), dirs[i], ports[i][0], ports[i][1], voters),
+                        ports[i][2]))) {
+            var br1 = cluster.broker(0);
+            var br2 = cluster.broker(1);
+            var br3 = cluster.broker(2);
+            int c1 = cluster.port(0, 2);
             waitForClusterReady(br1, br2, br3);
 
             // Create a replicated topic so we can produce+consume across
             // the partition+heal cycle.
-            int[] ports = {b1, b2, b3};
+            int[] ports = {cluster.brokerPort(0), cluster.brokerPort(1), cluster.brokerPort(2)};
             int leaderPort = leaderPort(List.of(br1, br2, br3), ports);
             try (var client = new BrokerClient("127.0.0.1", leaderPort)) {
                 client.createTopic("chaos-topic", 1, 3);
@@ -248,13 +246,5 @@ class ChaosKillBrokerIT {
             Thread.sleep(50);
         }
         throw new IllegalStateException("cluster did not converge in 15s");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

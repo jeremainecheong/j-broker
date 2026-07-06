@@ -3,13 +3,11 @@ package jbroker.it;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import jbroker.app.Broker;
-import jbroker.app.VoterAddress;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.ConsumerOffsetsTopic;
 import jbroker.proto.broker.AdminGrpc;
 import jbroker.proto.broker.CommitOffsetsRequest;
@@ -22,7 +20,6 @@ import jbroker.proto.broker.MetadataGrpc;
 import jbroker.proto.broker.OffsetCommit;
 import jbroker.proto.common.ErrorCode;
 import jbroker.proto.common.TopicPartition;
-import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -38,11 +35,8 @@ class E2E_13_3_DeleteGroupRoundTripIT {
 
     @Test
     void deleteGroupDropsGroupFromListingAndClearsCommittedOffsets(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var voters = java.util.List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitCoordinatorReady(broker);
 
             var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
@@ -132,11 +126,8 @@ class E2E_13_3_DeleteGroupRoundTripIT {
 
     @Test
     void deleteOnUnknownGroupReturnsUnknownGroup(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var voters = java.util.List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitCoordinatorReady(broker);
 
             var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
@@ -162,11 +153,8 @@ class E2E_13_3_DeleteGroupRoundTripIT {
         // epoch 0 after first heartbeat) — not inherit any state from the
         // old group. Prevents a regression where removeGroup left behind
         // stale member ids that would collide with a re-join.
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var voters = java.util.List.of(new VoterAddress(new NodeId(1), "127.0.0.1", raftPort, brokerPort));
-
-        try (var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort, voters))) {
+        try (var broker = TestBrokers.startSingleVoter(dir)) {
+            int brokerPort = broker.brokerPort();
             awaitCoordinatorReady(broker);
 
             var channel = NettyChannelBuilder.forAddress("127.0.0.1", brokerPort)
@@ -217,13 +205,5 @@ class E2E_13_3_DeleteGroupRoundTripIT {
             Thread.sleep(50);
         }
         throw new AssertionError("__consumer_offsets did not auto-create within 10s");
-    }
-
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

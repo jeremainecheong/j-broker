@@ -2,9 +2,8 @@ package jbroker.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
+import jbroker.app.testkit.TestBrokers;
 import jbroker.broker.ConsumerOffsetsTopic;
 import jbroker.raft.core.NodeId;
 import org.junit.jupiter.api.Test;
@@ -18,22 +17,14 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class ConsumerOffsetsAutoCreateIT {
 
-    private static int freePort() {
-        try (var sock = new ServerSocket(0)) {
-            return sock.getLocalPort();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     @Test
     void autoCreatesConsumerOffsetsTopicWithConfiguredPartitions(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
         // Explicit opt-up to the canonical 50 — the convenience Config
         // overload defaults to 1 to keep existing IT fixtures fast.
-        var cfg = new Broker.Config(new NodeId(1), dir, raftPort, brokerPort).withConsumerOffsetsPartitions(50);
-        var broker = Broker.start(cfg);
+        var node = TestBrokers.start(
+                (rp, bp) -> new Broker.Config(new NodeId(1), dir, rp, bp).withConsumerOffsetsPartitions(50));
+        var broker = node.broker();
+        int brokerPort = node.brokerPort();
         try {
             // Tick interval is 1s; allow up to 10s for the create to
             // commit + apply (in single-broker mode the loopback Raft
@@ -54,9 +45,8 @@ class ConsumerOffsetsAutoCreateIT {
 
     @Test
     void singleBrokerConvenienceConfigDefaultsToOnePartition(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+        var broker = TestBrokers.startSingleNode(dir);
+        int brokerPort = broker.brokerPort();
         try {
             long deadline = System.currentTimeMillis() + 5_000;
             while (System.currentTimeMillis() < deadline
@@ -74,9 +64,8 @@ class ConsumerOffsetsAutoCreateIT {
 
     @Test
     void adminListTopicsHidesInternalConsumerOffsets(@TempDir Path dir) throws Exception {
-        int brokerPort = freePort();
-        int raftPort = freePort();
-        var broker = Broker.start(new Broker.Config(new NodeId(1), dir, raftPort, brokerPort));
+        var broker = TestBrokers.startSingleNode(dir);
+        int brokerPort = broker.brokerPort();
         try (var client = new jbroker.broker.client.BrokerClient("127.0.0.1", brokerPort)) {
             client.createTopic("orders", 1, 1);
 

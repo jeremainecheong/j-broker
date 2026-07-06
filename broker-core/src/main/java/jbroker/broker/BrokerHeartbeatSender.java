@@ -153,6 +153,15 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             } catch (Exception e) {
                 log.debug(
                         "heartbeat to broker {} at {}:{} failed: {}", p.brokerId(), p.host(), p.port(), e.getMessage());
+                // This tick is the retry policy; don't let the channel's
+                // exponential reconnect backoff stack on top of it. Without
+                // this, a peer that comes up after a few failed connects
+                // (sequential cluster start, broker restart) receives no
+                // heartbeats for seconds — long enough for a broker to live
+                // and die without ever landing in any peer's BrokerLiveness,
+                // which made it unfenceable (MultiBrokerFailoverIT flake).
+                var ch = channels.get(p.brokerId());
+                if (ch != null) ch.resetConnectBackoff();
             }
         }
     }

@@ -41,11 +41,11 @@ Specifically:
 - **Observability from the inside.** Six custom JFR events (`RaftTermChange`, `PartitionLeaderChange`, `FsyncDuration`, `ReplicationLag`, `ProduceLatency`, `FetchLatency`) gated by `event.shouldCommit()` so they cost nothing when not recording. Plus Micrometer → Prometheus → auto-provisioned Grafana dashboards. Why: every metric on a hot path is a 1–2 % throughput tax — observability has to be designed in, not bolted on.
 - **A deterministic chaos simulator.** The pure step-function design lets `simulator/` drive `RaftCore` directly with seeded random scenarios — node crashes, message reorders, asymmetric partitions, message drops — across 10 000 seeds per CI run, with `--seed N` reproducing any failure exactly. Why: real-cluster ITs alone catch deployment bugs but miss algorithmic bugs that need exhaustive scenario coverage. The simulator caught the wrong version of the §5.4.2 commit rule and the wrong version of the conflict-index fast-backoff rule on specific seeds.
 - **A no-flake testing culture.** Every CI failure gets a root-cause fix, not a rerun. "Transient" is not a diagnosis. Patterns hardened against in this tree: port-bind TOCTOU, single-trial perf assertions on shared CI disks, gRPC-channel-not-ready-yet on first-election RPC, virtual-thread pinning under load. Why: every "transient" failure I've ever shipped without root-causing has come back at the worst time.
-- **Production hardening as a discipline, not a feature.** Advertised listeners (so brokers in a Docker bridge announce the right host to external clients), mTLS on every gRPC hop, a Helm chart with sensible defaults, CI perf gates with generous-but-meaningful floors, an audit pass after each major release that turned into 10 numbered fix items. Deep dive: [LEARNINGS.md](LEARNINGS.md) §17 (gitignored personal retrospective).
+- **Production hardening as a discipline, not a feature.** Advertised listeners (so brokers in a Docker bridge announce the right host to external clients), mTLS on every gRPC hop, a Helm chart with sensible defaults, CI perf gates with generous-but-meaningful floors, an audit pass after each major release that turned into 10 numbered fix items — and a post-v1.4 correctness campaign where the chaos-with-load soak caught real dedup and replication bugs that every targeted test had missed.
 
 The success metric I told myself was not "ship a lot of features" but "be able to explain every line of behaviour the cluster shows." That's the throughline for every architectural decision in the project.
 
-For the full multi-iteration retrospective with what was hard, what surprised me, and what I'd do differently — see [`LEARNINGS.md`](LEARNINGS.md) at the repo root (gitignored personal doc). For the algorithmic and language-feature deep dives — see [`raft-core/README.md`](raft-core/README.md) (Raft paper-shaped reference) and [`broker-core/README.md`](broker-core/README.md) (Java 21 JEP-shaped reference).
+The full multi-iteration retrospective (what was hard, what surprised me, what I'd do differently) lives in a personal doc kept outside version control. The public deep dives are the module READMEs — [`raft-core/README.md`](raft-core/README.md) (Raft paper-shaped reference) and [`broker-core/README.md`](broker-core/README.md) (Java 21 JEP-shaped reference).
 
 ---
 
@@ -226,12 +226,14 @@ Requires Java 21 (Temurin). Gradle wrapper pinned to 8.7, SHA-256 verified on do
 
 ## Performance
 
-Single-broker snapshot on Apple-silicon laptop. End-to-end gRPC, single-record-per-RPC, `acks=1`. See [bench/README.md](bench/README.md) for multi-payload-size tables + `acks=all` variants.
+Single-broker snapshot on Apple-silicon laptop (re-run 2026-07-07). End-to-end gRPC, single-record-per-RPC, `acks=1`. See [bench/README.md](bench/README.md) for multi-payload-size tables + `acks=all` variants.
 
 | Workload | rps | MiB/s | p99 |
 |---|---|---|---|
-| Produce 1KiB | 5,597 | 5.47 | 0.56 ms |
-| Consume 1KiB | 34,922 | 34.10 | 124.72 ms |
+| Produce 1KiB | 5,390 | 5.26 | 0.57 ms |
+| Consume 1KiB | 34,651 | 33.84 | 121.8 ms |
+
+Consume latency is per-**fetch-RPC**, not per record: each fetch returns up to 1 MiB (hundreds of records), so the p99 is the cost of the largest disk-read + transfer round trips while per-record throughput stays at ~35k/s. Produce latency is per single-record RPC — hence the three-orders-of-magnitude difference.
 
 Regression gate runs on every PR: `.github/workflows/ci.yml` perf-gate jobs assert min-rps + log-append floor (50 MB/s, best-of-3 trials).
 
@@ -260,6 +262,7 @@ Per-module breakdown in each module's README.
 - [x] **Milestone 14** — Admin UI reliability: x-cloak modal-flash fix, self-hosted Alpine/htmx/Chart.js, `/metrics/timeseries` hydration ring, coordinator-aware `j-broker consume` CLI.
 - [x] **Milestone 15** — Production hardening: advertised listeners, mTLS on gRPC, Helm chart for K8s.
 - [x] **Milestone 16** — Admin UI depth + post-merge audit: live chaos topology, view controllers delegate to REST-merge, force-compact + edit-config topic actions, reset-offsets + delete-group actions, unified footer + favicon + relative-time rendering, LAG sentinel em-dash, modal centring (`.modal-overlay` class), Chart.js chart-frame sizing, Compact-column config derivation, Alpine init-race guard, idle `window_seconds: null`.
+- [x] **Milestone 17** — Correctness campaign: never-heard-from partition leaders are fenceable (#110), producer dedup state rebuilt from the log after restart (#114), compaction segment swaps no longer break concurrent reads (#116), bind-retry testkit across every broker-booting test (#111/#113/#117), and the spec's capstone `scenario-chaos-with-load.sh` 10-minute SIGKILL soak (#112) — which found the dedup bug and the still-open acked-record-loss chain ([#115](https://github.com/jeremainecheong/j-broker/issues/115): Docker-DNS-wedged peer channels, no min-ISR floor, NOP logger in the broker image).
 
 ---
 

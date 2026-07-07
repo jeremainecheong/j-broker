@@ -2,7 +2,7 @@
 
 **A log-structured distributed message broker with hand-rolled Raft, written in Java 21.**
 
-j-broker is a Kafka-shaped message broker I built from scratch as a learning exercise. 3-node combined-mode cluster, its own Raft implementation for metadata consensus, Kafka-style partitioned replicated logs with high-watermark semantics, consumer groups with offset commits, idempotent producers, log compaction, and a RabbitMQ-management-style web admin UI. No Kafka libraries, no Apache Curator, no Jakarta EE — just Java 21 virtual threads, gRPC, and a small amount of Spring Boot for the admin side.
+j-broker is a Kafka-shaped message broker built from scratch as a learning exercise: a 3-node combined-mode cluster with its own Raft implementation for metadata consensus, Kafka-style partitioned replicated logs with high-watermark semantics, consumer groups with offset commits, idempotent producers, log compaction, and a RabbitMQ-management-style web admin UI. No Kafka libraries, no Apache Curator, no Jakarta EE — just Java 21 virtual threads, gRPC, and a small amount of Spring Boot on the admin side.
 
 ![Overview dashboard](docs/screenshots/overview.png)
 
@@ -14,38 +14,13 @@ j-broker is a Kafka-shaped message broker I built from scratch as a learning exe
 
 ---
 
-## What I wanted to learn
+## Why this exists
 
-I built this with three equally serious goals: **understand distributed systems by writing one rather than reading about one**, **master modern Java by exercising every feature it has been adding since I last did this seriously**, and **build real fluency in concurrency** — choosing the right primitive (virtual thread, single-threaded event pump, lock-free map, striped lock, future, atomic) for each contention pattern instead of just defaulting to `synchronized` everywhere. Kafka was the obvious shape because it has the broadest surface area in a single bounded artifact, and a broker is *also* a uniquely good vehicle for the concurrency goal — handlers fan out to thousands of inbound RPCs while shared state, a Raft event loop, and several ticker threads all converge on the same in-memory data structures.
+The goal was to understand distributed systems by writing one rather than reading about one, and to build real fluency in modern Java and concurrency along the way. Kafka was the obvious shape because it packs the broadest surface area into a single bounded artifact: consensus, a replicated log, a fetch protocol, consumer groups, idempotent producers, compaction, an admin plane, observability, ops.
 
-The constraint I gave myself was *no cheating*: no `kafka-clients`, no Apache Curator, no Kafka server libraries, no Jakarta EE; the broker, the client, and the Raft are all written from scratch in Java 21.
+The self-imposed constraint: *no cheating*. No `kafka-clients`, no Kafka server libraries, no Apache Curator, no Jakarta EE. The broker, the client, and the Raft are written from scratch. The only allowances are gRPC + Protobuf for the wire (writing a framing protocol is a different project), Spring Boot for the admin app only (the broker JVM is Spring-free), and Micrometer/Prometheus for metrics export.
 
-Specifically:
-
-- **Raft consensus from the paper, not a library.** Pure step-function (`RaftCore.step(event) → effects`), pre-vote, conflict-index fast backoff, the §5.4.2 commit rule, fsync ordering, snapshots. Why: the figure-8 scenario in §5.4.2 of the paper is the kind of thing you only really understand after you've shipped the wrong version once. Deep dive: [`raft-core/README.md`](raft-core/README.md) — paper-shaped reference with pseudocode + j-broker code references for every rule.
-- **Replicated-log semantics done right.** ISR membership, high-watermark monotonicity, leader-epoch fencing on the data plane, idempotent producer dedup that survives leader failover. Why: HWM going backward is silently catastrophic; leader-epoch fencing is the only thing that prevents torn writes on failover. Deep dive: [`broker-core/README.md`](broker-core/README.md) §replication and §HWM advancement.
-- **Consumer group protocol modelled on KIP-848.** FindCoordinator → ConsumerGroupHeartbeat → CommitOffsets → FetchOffsets, with `__consumer_offsets` as a regular compacted topic that just happens to back the coordinator role. Why: the conceptual unlock is "the coordinator is just a partition leader." Deep dive: [`broker-core/README.md`](broker-core/README.md) §consumer groups.
-- **Mastering modern Java.** Every feature the language has added since records, used in earnest on real hot paths — not a toy demo. Pattern-matching switch on sealed `RaftEvent` / `RaftEffect` / `MetadataRecord` hierarchies for compile-time-exhaustive dispatch; records for every value type that crosses an API boundary (~24 of them); `try-with-resources` lifecycle discipline so closing a `ClusterHarness` reliably shuts down three brokers; JFR custom events with `event.shouldCommit()` cost discipline; `FileChannel.transferTo` zero-copy fetch; `MappedByteBuffer` for sparse indexes; ArchUnit-enforced module boundaries. The goal: be fluent in Java 21 the same way I'd be fluent in any older Java, not just "I read the JEP." Knowing which idioms compose well at this scale and which don't. Deep dive: [`broker-core/README.md`](broker-core/README.md) §Deep dive: Java 21 in j-broker — a JEP-by-JEP walkthrough (JEP 444 / 441 / 409 / 395 / 328 + the relevant `java.nio` APIs) with code references for each.
-- **Concurrency: picking the right primitive for each contention pattern.** The broker holds dozens of long-lived virtual threads converging on shared in-memory state. Each subsystem demands a different concurrency choice, and learning *why* was a goal in itself:
-  - **Virtual threads** for one-VT-per-RPC fan-out (cheap park, no thread-pool sizing). Default for every gRPC handler.
-  - **Single-threaded event pump** (the `RaftDriver` pattern) where state has too many invariants to lock individually — all Raft state mutations happen on one VT, so the core can't race itself. Inbound gRPC handlers submit a request event and `await` a future for the response.
-  - **`ReentrantLock` instead of `synchronized`** on hot paths that do blocking I/O — `synchronized` + `FileChannel.read` pins the carrier OS thread; `ReentrantLock` doesn't. The diagnostic is the built-in `jdk.VirtualThreadPinned` JFR event; the CI gate (`VirtualThreadPinningIT` and `VtPinningBenchScaleIT`) asserts zero pinning across 2 000 concurrent operations.
-  - **`ConcurrentHashMap` with epoch fencing** for `GroupCoordinator` membership — lock-free reads, concentrated writes, version-stamped invariants instead of a global lock.
-  - **Per-partition striped locks** for `TopicManager` so a hot partition doesn't block every other partition's metadata mutations.
-  - **`CompletableFuture` for cross-thread coordination** — every `acks=all` produce holds a future keyed by `(partition, offset)`, completed by whichever VT advances HWM past that offset. Combined with VTs this gives synchronous-looking blocking code at zero carrier cost.
-  - **`AtomicLong` and friends** for monotonic counters (broker epoch, producer-id allocator) where lock contention would dominate.
-  - **`volatile` only where the memory-model semantics actually fit** — almost never; most of the project reaches for one of the above instead.
-  
-  The mastery goal here isn't "knows what `synchronized` does" — it's *picking* the right primitive without thinking, then defending the choice when an audit asks why this isn't a `CHM` or that isn't a `ReentrantReadWriteLock`. Where this is most visible: [`docs/diagrams/broker-threading.png`](docs/diagrams/broker-threading.png) — every long-lived VT in the broker JVM mapped to its concurrency primitive — and [`broker-core/README.md`](broker-core/README.md) §threading model.
-- **gRPC + Protobuf as the wire.** Every RPC, every record type, single source of truth in [`proto/`](proto/README.md). Plus the lessons: channel-READY is not the same as TCP accept; batched produce gives ~150× throughput over per-record RPCs; zero-copy decode via `ByteString` slicing.
-- **Observability from the inside.** Six custom JFR events (`RaftTermChange`, `PartitionLeaderChange`, `FsyncDuration`, `ReplicationLag`, `ProduceLatency`, `FetchLatency`) gated by `event.shouldCommit()` so they cost nothing when not recording. Plus Micrometer → Prometheus → auto-provisioned Grafana dashboards. Why: every metric on a hot path is a 1–2 % throughput tax — observability has to be designed in, not bolted on.
-- **A deterministic chaos simulator.** The pure step-function design lets `simulator/` drive `RaftCore` directly with seeded random scenarios — node crashes, message reorders, asymmetric partitions, message drops — across 10 000 seeds per CI run, with `--seed N` reproducing any failure exactly. Why: real-cluster ITs alone catch deployment bugs but miss algorithmic bugs that need exhaustive scenario coverage. The simulator caught the wrong version of the §5.4.2 commit rule and the wrong version of the conflict-index fast-backoff rule on specific seeds.
-- **A no-flake testing culture.** Every CI failure gets a root-cause fix, not a rerun. "Transient" is not a diagnosis. Patterns hardened against in this tree: port-bind TOCTOU, single-trial perf assertions on shared CI disks, gRPC-channel-not-ready-yet on first-election RPC, virtual-thread pinning under load. Why: every "transient" failure I've ever shipped without root-causing has come back at the worst time.
-- **Production hardening as a discipline, not a feature.** Advertised listeners (so brokers in a Docker bridge announce the right host to external clients), mTLS on every gRPC hop, a Helm chart with sensible defaults, CI perf gates with generous-but-meaningful floors, an audit pass after each major release that turned into 10 numbered fix items — and a post-v1.4 correctness campaign where the chaos-with-load soak caught real dedup and replication bugs that every targeted test had missed.
-
-The success metric I told myself was not "ship a lot of features" but "be able to explain every line of behaviour the cluster shows." That's the throughline for every architectural decision in the project.
-
-The full multi-iteration retrospective (what was hard, what surprised me, what I'd do differently) lives in a personal doc kept outside version control. The public deep dives are the module READMEs — [`raft-core/README.md`](raft-core/README.md) (Raft paper-shaped reference) and [`broker-core/README.md`](broker-core/README.md) (Java 21 JEP-shaped reference).
+The success metric was never feature count — it was *being able to explain every line of behaviour the cluster shows*. That standard drives the design choices documented below and the testing culture in which every "flaky" CI failure gets root-caused rather than rerun.
 
 ---
 
@@ -54,14 +29,33 @@ The full multi-iteration retrospective (what was hard, what surprised me, what I
 - **Durable partitioned log** — per-partition segment files with offset + timestamp indexes, fsync-at-batch-boundary, crash-safe recovery.
 - **Raft-replicated metadata** — topic CRUD, partition assignments, producer IDs, consumer-group offsets all survive any minority failure.
 - **Replication** — follower ReplicaFetch pulls from leader; ISR tracks in-sync replicas; high-watermark gates consumer visibility; leader-epoch fencing prevents torn writes on failover.
-- **Idempotent producer** — `(producer_id, epoch, base_sequence)` triple deduplicates retries server-side.
+- **Idempotent producer** — `(producer_id, epoch, base_sequence)` triple deduplicates retries server-side; dedup state is rebuilt from the log on restart, so it survives failover.
 - **Consumer groups** — join/heartbeat/leave, cooperative-sticky-ish assignment, offset commit + fetch, coordinator-partition sharding over `__consumer_offsets`.
 - **Log compaction** — Kafka-style latest-value-per-key; preserves original absolute offsets so pre-compaction consumer offsets still resolve ([broker-storage/README.md](broker-storage/README.md)).
 - **Admin REST + Thymeleaf UI** — RabbitMQ-management flavour: list topics, describe partitions with live HWM/LEO, edit topic config, force-compact, reset / delete consumer groups, live-topology chaos controls, SSE events rail ([admin-app/README.md](admin-app/README.md)).
 - **Chaos HTTP** — kill / pause / partition / force-election / inject-latency endpoints on each broker, driven from the UI or cURL ([broker-app/README.md](broker-app/README.md)).
 - **Prometheus + Grafana** — `/actuator/prometheus` + two auto-provisioned dashboards.
-- **JFR + async-profiler** — six custom events on hot paths.
+- **JFR + async-profiler** — six custom flight-recorder events on hot paths.
 - **Redis quota enforcement + pub/sub admin event fan-out** — cluster-wide byte-rate limits; multi-admin-pod deployments see the same SSE stream.
+
+---
+
+## Tech stack
+
+| Layer | Technology | Role |
+|---|---|---|
+| Language | Java 21 (Temurin) | Virtual threads for all concurrency; records + sealed interfaces + pattern-matching switch for every event/effect/record hierarchy. The broker JVM runs framework-free. |
+| Wire protocol | gRPC + Protocol Buffers | Every RPC and record type; single source of truth in [`proto/`](proto/README.md). mTLS optional on every hop. |
+| Consensus | Hand-written Raft ([`raft-core/`](raft-core/README.md)) | Pure step function, zero dependencies — ArchUnit forbids I/O, threading, Spring, and gRPC imports in the module. |
+| Storage | Custom segment files over `java.nio` | `FileChannel` + explicit `force()` for the log (fsync control), `MappedByteBuffer` for sparse indexes (page-cache reads), `transferTo` for zero-copy fetch. |
+| Admin backend | Spring Boot | REST under `/api/v1/*`, server-sent events, Thymeleaf rendering. The only Spring JVM in the system. |
+| Admin frontend | Thymeleaf + htmx + Alpine.js + Chart.js | Server-rendered pages with partial swaps; no SPA, no bundler, no npm; vendor scripts self-hosted (< 50 KB total client JS). |
+| Metrics | Micrometer → Prometheus → Grafana | Broker metrics scraped over gRPC every 5 s and republished as `jbroker_*` gauges; two auto-provisioned dashboards. |
+| Profiling | JFR custom events, async-profiler | Six hot-path events gated by `event.shouldCommit()` so they cost ~nothing when not recording. |
+| Quotas / fan-out | Redis (hand-rolled RESP client) | Cluster-wide byte-rate token buckets, fail-open; pub/sub fan-out so multiple admin pods share one SSE stream. |
+| Testing | JUnit 5, jqwik, ArchUnit, Testcontainers, HdrHistogram | Property tests on index math, enforced module boundaries, real-Redis ITs, bench percentiles. |
+| Build / CI | Gradle 8.7 (wrapper SHA-verified), GitHub Actions | Unit + integration + perf-gate + VT-pinning-gate + 10k-seed simulator jobs on every PR. |
+| Packaging | Docker multi-stage builds, docker compose, Helm | One-command 3-broker cluster; optional monitoring profile; K8s chart with StatefulSet brokers. |
 
 ---
 
@@ -112,43 +106,6 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 ```
 
 Prometheus → <http://localhost:9091>, Grafana → <http://localhost:3000>. Dashboards auto-provisioned.
-
----
-
-## Admin UI tour
-
-RabbitMQ-management-plugin-inspired dashboard on port 15672. Thymeleaf + htmx + Alpine — no SPA bundler. Full page / component reference: [admin-app/README.md](admin-app/README.md).
-
-### Cluster overview
-
-![Cluster overview](docs/screenshots/overview.png)
-
-Summary cards, throughput sparklines, force-directed topology, nodes table. Every live broker shows a concrete role (the view merges self-reports across brokers so peers never stay `UNKNOWN`). Epoch-millis timestamps render as relative time.
-
-### Topics
-
-![Topics list](docs/screenshots/topics.png)
-
-Topic list with partition counts, replication factor, effective compact flag (OR of the proto field and `cleanup.policy=compact`), creation time.
-
-![Topic detail](docs/screenshots/topic-detail.png)
-
-Per-partition state with ISR pills (green = in-sync), high-watermark + log-end-offset drawn as an offset meter, "Force compact" per partition, "Edit config" modal, delete. HWM/LEO come from a merge across every broker so non-leader sentinels never leak into the UI.
-
-### Consumer groups
-
-![Consumer groups](docs/screenshots/groups.png)
-![Consumer group detail](docs/screenshots/group-detail.png)
-
-Member card shows subscribed topics + owned partitions. Lag table with progress bars, colour-coded by lag size. Reset-offsets + delete-group modals wired to the admin REST.
-
-### Raft / Metrics / Chaos
-
-![Raft state](docs/screenshots/raft.png)
-![Metrics page](docs/screenshots/metrics.png)
-![Chaos controls](docs/screenshots/chaos.png)
-
-Raft: per-broker term / commit-index / last-applied / voted-for. Metrics: throughput + p99 latency line charts (5-min window, hydrated from the server-side history ring on load). Chaos: live topology SVG + per-broker kill / pause / force-election / inject-latency buttons, plus the SSE-backed events rail.
 
 ---
 
@@ -203,6 +160,109 @@ flowchart TB
 
 ---
 
+## How it's built
+
+Each subsystem below links to a module README with the full design detail.
+
+### Raft, from the paper
+
+The consensus core is a pure step function — `RaftCore.step(event) → effects` — with no I/O, no threads, and no clock. The transport layer feeds it events from a single-threaded pump and executes the returned effects (send RPC, fsync state, apply to state machine). It implements pre-vote, conflict-index fast backoff, the §5.4.2 commit rule, fsync-ordered persistent state, and `InstallSnapshot`.
+
+The purity is load-bearing twice over. It makes every Raft rule unit-testable as `input event → expected effects`, and it lets the deterministic simulator in [`simulator/`](simulator/README.md) drive the *production* consensus code through 10,000 seeded failure scenarios per CI run — node crashes, message reorders, asymmetric partitions, drops — with `--seed N` reproducing any failure exactly. The simulator caught two real algorithmic bugs on specific seeds that no cluster test would have found: a wrong version of the §5.4.2 commit rule (which can overwrite committed entries across term boundaries) and a wrong version of conflict-index fast backoff (which can truncate committed entries on split-vote paths).
+
+Deep dive: [`raft-core/README.md`](raft-core/README.md) — a paper-shaped reference with pseudocode and a j-broker code reference for every rule, plus a catalogue of the pitfalls each rule exists to prevent.
+
+### The storage engine
+
+Each partition is a directory of segment files (`<base-offset>.log` with `.index` / `.timeindex` sidecars). Appends are sequential writes with fsync at batch boundary; reads resolve through a sparse memory-mapped offset index, then stream segment-to-socket via zero-copy `FileChannel.transferTo`. Retention deletes whole segments past the time cutoff; crash recovery truncates torn frames at the tail.
+
+Compaction keeps the latest value per key, Kafka-style, with one subtlety that separates "works" from "silently breaks every consumer": surviving records keep their **original absolute offsets**. A consumer that committed offset 2 before compaction fetches offset 2 afterwards and gets the next surviving record, not an error — the segment lookup falls forward across the gaps. Deep dive: [`broker-storage/README.md`](broker-storage/README.md).
+
+### Replication and the high watermark
+
+Followers pull from partition leaders (`ReplicaFetch`); the leader tracks each follower's log-end offset and last-fetch time, shrinks/expands the ISR accordingly, and advances the high watermark as `max(prior_hwm, min(LEO across ISR))`. The `max` clamp keeps the HWM monotonic — without it, an ISR shrink can briefly move `min(LEO)` backwards and acked records *visibly disappear*, the worst kind of bug because nothing logs it.
+
+Leader-epoch fencing protects the log across failovers: a deposed leader's appends are rejected with `FENCED_EPOCH`, and a recovering follower calls `OffsetsForLeaderEpoch` and truncates to the returned boundary before fetching again — the only safe way to reconcile divergent logs. `acks=all` produces hold a `CompletableFuture` keyed by `(partition, offset)` that completes only when the HWM passes the produced offset, i.e. when every ISR member has the record. Deep dive: [`broker-core/README.md`](broker-core/README.md) §replication.
+
+### Consumer groups
+
+The protocol is modelled on Kafka's KIP-848 flow: `FindCoordinator` → `ConsumerGroupHeartbeat` (subscribe + receive assignment) → `CommitOffsets` → `FetchOffsets`. The key design idea — the same one Kafka uses — is that the coordinator is *just a partition leader*: `__consumer_offsets` is a regular compacted topic, commits are ordinary appends to it, and coordinator failover is ordinary partition failover followed by replaying the partition into the offset cache. Group state gets the same durability story as any other data, for free. Deep dive: [`broker-core/README.md`](broker-core/README.md) §consumer groups.
+
+### Concurrency: one primitive per contention pattern
+
+The broker holds dozens of long-lived virtual threads converging on shared in-memory state, and each subsystem uses the primitive that fits its contention pattern rather than a blanket `synchronized`:
+
+- **Virtual threads** for one-VT-per-RPC fan-out (cheap park, no pool sizing) — the default for every gRPC handler.
+- **A single-threaded event pump** (the `RaftDriver` pattern) where state has too many interlocking invariants to lock individually — all Raft mutations happen on one VT, so the core can't race itself; handlers submit an event and await a future for the response.
+- **`ReentrantLock` instead of `synchronized`** on hot paths that do blocking I/O. `synchronized` around `FileChannel` calls pins the carrier OS thread and strangles throughput under load; `ReentrantLock` releases the carrier. CI asserts zero `jdk.VirtualThreadPinned` JFR events across 2,000 concurrent produces + 2,000 fetches (`VtPinningBenchScaleIT`).
+- **`ConcurrentHashMap` with epoch fencing** for `GroupCoordinator` membership — lock-free reads, version-stamped invariants instead of a global lock.
+- **Per-partition striped locks** in `TopicManager`, so a hot partition never blocks another partition's metadata mutations.
+- **`CompletableFuture`** for cross-thread coordination (the `acks=all` HWM wait above) — synchronous-looking blocking code at zero carrier cost when combined with VTs.
+- **`AtomicLong`** for monotonic counters (broker epoch, producer-id allocator); **`volatile`** almost nowhere, because one of the above nearly always fits better.
+
+The full thread map — every long-lived VT in the broker JVM annotated with its primitive — is in [`docs/diagrams/broker-threading.png`](docs/diagrams/broker-threading.png) and [`broker-core/README.md`](broker-core/README.md) §threading model.
+
+### Java 21, used in earnest
+
+Every post-records language feature is exercised on real hot paths, not in a demo: pattern-matching switch over sealed `RaftEvent` / `RaftEffect` / `MetadataRecord` hierarchies for compile-time-exhaustive dispatch (adding a record type fails the build at every unhandled site); records for the ~24 value types crossing API boundaries; try-with-resources lifecycle discipline down to `ClusterHarness` closing three brokers deterministically; custom JFR events with `shouldCommit()` cost gating; `transferTo` zero-copy fetch; `MappedByteBuffer` sparse indexes; ArchUnit-enforced module boundaries. A JEP-by-JEP walkthrough (444 / 441 / 409 / 395 / 328 plus the relevant `java.nio` APIs) with code references lives in [`broker-core/README.md`](broker-core/README.md) §Java 21.
+
+### Observability from the inside
+
+Six custom JFR events (`RaftTermChange`, `PartitionLeaderChange`, `FsyncDuration`, `ReplicationLag`, `ProduceLatency`, `FetchLatency`) instrument the hot paths, gated by `event.shouldCommit()` so they cost nothing when no recording is active — because every unconditional metric on a hot path is a 1–2 % throughput tax. Micrometer gauges flow through a Prometheus scrape into two auto-provisioned Grafana dashboards. Observability was designed in from the start rather than bolted on, and the instrumentation itself is perf-tested.
+
+### Verification culture
+
+Three layers, each catching a class of bug the others miss:
+
+1. **~550 unit tests** for logic, including property tests (jqwik) on the sparse-index math.
+2. **~30 integration tests against real 3-node loopback clusters** for wiring: coordinator failover, ISR shrink/expand under `acks=all`, preferred-leader rebalance, compaction round-trips, 10k-client smoke.
+3. **Deterministic simulation + chaos-under-load** for the bugs that need adversarial scheduling: 10,000 Raft simulator seeds per CI run, and a 10-minute SIGKILL soak (`scripts/chaos/scenario-chaos-with-load.sh`) that kills random brokers under sustained produce/consume load and then audits every acked record.
+
+The operating rule is that **"transient" is not a diagnosis** — every CI failure gets a root-cause fix, never a rerun. That rule has paid for itself repeatedly: failures initially dismissed-looking turned out to be a real fencing liveness bug (a partition leader that never sent a heartbeat could never be fenced), a real dedup-across-failover bug, and a real compaction/concurrent-read race. Patterns permanently hardened against in this tree: port-bind TOCTOU, single-trial perf assertions on shared CI disks, gRPC channel-not-ready on first-election RPCs, VT pinning under load.
+
+### Production hardening
+
+Advertised listeners (brokers in a Docker bridge announce the right host to external clients), optional mTLS on every gRPC hop with a cert-bootstrap script, a Helm chart whose defaults run a plaintext 3-broker cluster, CI perf gates with best-of-3 floors, and a deliberate post-release audit discipline: sit down with the running system as a user, write down everything that's wrong, fix all of it. One such audit produced ten fixes; a later one found the view-controller/REST merge divergence that unit tests structurally could not see.
+
+---
+
+## Admin UI tour
+
+RabbitMQ-management-plugin-inspired dashboard on port 15672. Thymeleaf + htmx + Alpine — no SPA bundler. Full page / component reference: [admin-app/README.md](admin-app/README.md).
+
+### Cluster overview
+
+![Cluster overview](docs/screenshots/overview.png)
+
+Summary cards, throughput sparklines, force-directed topology, nodes table. Every live broker shows a concrete role (the view merges self-reports across brokers so peers never stay `UNKNOWN`). Epoch-millis timestamps render as relative time.
+
+### Topics
+
+![Topics list](docs/screenshots/topics.png)
+
+Topic list with partition counts, replication factor, effective compact flag (OR of the proto field and `cleanup.policy=compact`), creation time.
+
+![Topic detail](docs/screenshots/topic-detail.png)
+
+Per-partition state with ISR pills (green = in-sync), high-watermark + log-end-offset drawn as an offset meter, "Force compact" per partition, "Edit config" modal, delete. HWM/LEO come from a merge across every broker so non-leader sentinels never leak into the UI.
+
+### Consumer groups
+
+![Consumer groups](docs/screenshots/groups.png)
+![Consumer group detail](docs/screenshots/group-detail.png)
+
+Member card shows subscribed topics + owned partitions. Lag table with progress bars, colour-coded by lag size. Reset-offsets + delete-group modals wired to the admin REST.
+
+### Raft / Metrics / Chaos
+
+![Raft state](docs/screenshots/raft.png)
+![Metrics page](docs/screenshots/metrics.png)
+![Chaos controls](docs/screenshots/chaos.png)
+
+Raft: per-broker term / commit-index / last-applied / voted-for. Metrics: throughput + p99 latency line charts (5-min window, hydrated from the server-side history ring on load). Chaos: live topology SVG + per-broker kill / pause / force-election / inject-latency buttons, plus the SSE-backed events rail.
+
+---
+
 ## Modules
 
 Each module has its own README with the design details:
@@ -253,16 +313,11 @@ Per-module breakdown in each module's README.
 
 ---
 
-## Roadmap
+## Status
 
-- [x] **Milestone 0–10** — core broker, Raft, replication, consumer groups, admin UI, observability, Java 21 deep integration.
-- [x] **Milestone 11** — Docker + RabbitMQ-style UI polish, snake_case JSON, chaos force-election.
-- [x] **Milestone 12** — Perf bench module, sparse-offset compaction, preferred-leader balancer wiring, Redis quota enforcer, admin consumer-group mutations.
-- [x] **Milestone 13** — v1.1 correctness-gap closers: force-compact admin RPC, group admin round-trip ITs, 10k-client CI, README bench table, Redis pub/sub SSE fan-out.
-- [x] **Milestone 14** — Admin UI reliability: x-cloak modal-flash fix, self-hosted Alpine/htmx/Chart.js, `/metrics/timeseries` hydration ring, coordinator-aware `j-broker consume` CLI.
-- [x] **Milestone 15** — Production hardening: advertised listeners, mTLS on gRPC, Helm chart for K8s.
-- [x] **Milestone 16** — Admin UI depth + post-merge audit: live chaos topology, view controllers delegate to REST-merge, force-compact + edit-config topic actions, reset-offsets + delete-group actions, unified footer + favicon + relative-time rendering, LAG sentinel em-dash, modal centring (`.modal-overlay` class), Chart.js chart-frame sizing, Compact-column config derivation, Alpine init-race guard, idle `window_seconds: null`.
-- [x] **Milestone 17** — Correctness campaign: never-heard-from partition leaders are fenceable (#110), producer dedup state rebuilt from the log after restart (#114), compaction segment swaps no longer break concurrent reads (#116), bind-retry testkit across every broker-booting test (#111/#113/#117), and the spec's capstone `scenario-chaos-with-load.sh` 10-minute SIGKILL soak (#112) — which found the dedup bug and the still-open acked-record-loss chain ([#115](https://github.com/jeremainecheong/j-broker/issues/115): Docker-DNS-wedged peer channels, no min-ISR floor, NOP logger in the broker image).
+The broker is feature-complete against its spec ([j-broker-prd.md](j-broker-prd.md)): everything listed under *What it does* is implemented, integration-tested on real 3-node clusters, and exercised by the chaos scenarios in `scripts/chaos/`. The capstone verification is a 10-minute SIGKILL soak under sustained load that audits every acked record afterwards.
+
+**One known open defect**: [#115](https://github.com/jeremainecheong/j-broker/issues/115) — under a compound Docker failure mode, an `acks=all` record can be acked and then lost. The chain: a SIGKILL'd broker's peers keep gRPC channels wedged on stale Docker DNS, the ISR shrinks to the leader alone (no min-ISR floor exists to refuse writes), and the leader then dies before anyone replicates. The soak that found it, the evidence, and the fix plan are on the issue. Until it lands, `acks=all` is majority-durable only while the ISR actually holds a majority.
 
 ---
 

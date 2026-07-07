@@ -26,11 +26,11 @@ The segment filename is the base offset, zero-padded to 20 digits. Rolling to a 
 | `LogSegment` | Single segment file + its offset/time indexes. Immutable after roll. |
 | `OffsetIndex` | Sparse mmap'd offset → byte-position index for fast `read(offset)` resolution. |
 | `TimeIndex` | Parallel timestamp index supporting `offsetForTimestamp`. |
-| `LeaderEpochCheckpoint` | fsync'd mapping `leader_epoch → end_offset` for the `OffsetsForLeaderEpoch` RPC (Milestone 6 fencing). |
+| `LeaderEpochCheckpoint` | fsync'd mapping `leader_epoch → end_offset` for the `OffsetsForLeaderEpoch` RPC that drives leader-epoch fencing. |
 
 ## Compaction + sparse offsets
 
-Log compaction keeps the latest value per key (Kafka-style). The subtle part is **sparse-offset preservation** (): a consumer holding a pre-compaction offset must still resolve to the right post-compaction record, even if every intermediate record between its offset and the survivor was tombstoned.
+Log compaction keeps the latest value per key (Kafka-style). The subtle part is **sparse-offset preservation**: a consumer holding a pre-compaction offset must still resolve to the right post-compaction record, even if every intermediate record between its offset and the survivor was tombstoned.
 
 ```mermaid
 flowchart LR
@@ -54,7 +54,7 @@ flowchart LR
 
 A consumer that last committed offset 2 and resumes after compaction calls `Fetch(topic, partition, offset=2, max_bytes)`. `Log.segmentContaining(2)` falls forward to the segment whose base is above 2 and returns records `[3, 4]` — consumer sees `{k2=v4, k1=v5}` with correct absolute offsets.
 
-Force-compact () lets operators trigger compaction synchronously instead of waiting on the 5-minute cleaner cadence. Hit via `POST /api/v1/topics/{name}/partitions/{p}/compact` or the per-partition "Force compact" button on the admin UI.
+Force-compact lets operators trigger compaction synchronously instead of waiting on the 5-minute cleaner cadence. Hit via `POST /api/v1/topics/{name}/partitions/{p}/compact` or the per-partition "Force compact" button on the admin UI.
 
 ## Retention
 

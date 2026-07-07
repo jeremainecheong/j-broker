@@ -61,7 +61,7 @@ j-broker server   --data-dir DIR --broker-port P [--raft-port P] [--id N]
 j-broker topics   create|list|describe --broker HOST:PORT [...]
 j-broker produce  --broker HOST:PORT --topic T --partition N   (stdin = one msg per line)
 j-broker console-consumer --broker HOST:PORT --topic T --partition N [--from-beginning]
-j-broker consume  --broker HOST:PORT --group G --topic T [--topic T2 ...]   (, coordinator-aware)
+j-broker consume  --broker HOST:PORT --group G --topic T [--topic T2 ...]   (coordinator-aware)
 j-broker admin    cluster-info | topics ... | groups ... | raft  [--admin URL]
 ```
 
@@ -82,11 +82,11 @@ When the broker is started with `--chaos-port P`, it exposes a cooperative chaos
 
 The admin UI's Chaos page proxies these via `POST /api/v1/chaos/*`.
 
-## TLS / mTLS ()
+## TLS / mTLS
 
 Pass `--tls-cert --tls-key --tls-trust` and the gRPC server binds on the configured port with mTLS enforced. Admin-app dials with matching client certs when `jbroker.admin.tls.enabled=true`. Plain mode stays supported for dev/test — no TLS by default.
 
-## Advertised listeners ()
+## Advertised listeners
 
 `--advertised-host` + `--advertised-port` override what the broker announces in `DescribeCluster`. Useful when brokers run inside a docker bridge network but clients connect via published host ports: tell broker2 to advertise `localhost:9093` instead of `broker2:9092`.
 

@@ -617,13 +617,13 @@ No CRC — recovery uses the length prefix sanity-checked against a 64 MiB max-f
 
 | Pitfall | What goes wrong | j-broker history |
 |---|---|---|
-| Decrement `nextIndex` by 1 on AppendEntries reject | O(N) round-trips to catch up far-behind followers | Shipped naive version first; conflict-index optimisation added in |
+| Decrement `nextIndex` by 1 on AppendEntries reject | O(N) round-trips to catch up far-behind followers | Shipped naive version first; replaced with conflict-index fast backoff |
 | "Naive commit" rule (majority replication = committed) | Committed entries can be overwritten across term boundaries | Shipped naive version; simulator caught it on a specific seed; fix is the §5.4.2 own-term rule + NO_OP on election |
-| Skipping pre-vote | Stale follower returning from partition disrupts a healthy leader | Shipped without pre-vote initially; added in Milestone 2 |
+| Skipping pre-vote | Stale follower returning from partition disrupts a healthy leader | Shipped without pre-vote initially; added once the disruption showed up in cluster tests |
 | Pre-vote granter resets election deadline on grant | Lost pre-vote responses keep the granter from running its own election → liveness loss | Caught on CI; fix is *no state mutation* on pre-vote grant. Documented in `DefaultRaftCore.onPreVoteReq` |
-| `synchronized` blocks on hot paths (in driver / state machine) | Pins virtual thread carriers, kills throughput | Shipped with `synchronized` on Log/LogSegment; switched to `ReentrantLock` in |
-| TCP accept ≠ gRPC channel ready | First election RPCs arrive before HTTP/2 handshake completes; first vote lost | Caught in Milestone 1 stabilisation; fix is `channel.getState(true) == READY` |
-| Follower-originated proposals | Silently dropped — only leader can propose | Wasted two days on the Raft-log-based broker liveness scheme before switching to point-to-point heartbeats |
+| `synchronized` blocks on hot paths (in driver / state machine) | Pins virtual thread carriers, kills throughput | Shipped with `synchronized` on Log/LogSegment; switched to `ReentrantLock` once JFR showed the pinning |
+| TCP accept ≠ gRPC channel ready | First election RPCs arrive before HTTP/2 handshake completes; first vote lost | Caught while stabilising first cluster bring-up; fix is `channel.getState(true) == READY` |
+| Follower-originated proposals | Silently dropped — only leader can propose | Wasted two days on a Raft-log-based broker liveness scheme before switching to point-to-point heartbeats |
 | Single-vote elections (no `currentTerm` fsync) | Crash between vote-grant and reply leaves the node free to vote again in the same term | Caught early — `FilePersistentState` was fsync-from-day-one |
 
 ---

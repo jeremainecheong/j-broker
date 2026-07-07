@@ -17,7 +17,7 @@ Inside one broker JVM:
   - *Per-partition / opt-in* (ReplicaFetcher × N, ChaosHttpServer, InstallSnapshot sender).
 - **Shared state** — every state manager is thread-safe by construction (`ConcurrentHashMap`, per-partition striped locks, or `ReentrantLock` on hot paths).
 
-The `synchronized` → `ReentrantLock` swap on `Log` + `LogSegment` () was the project's biggest perf unlock at scale. Blocking I/O inside `synchronized` pins the carrier OS thread; under 200+ concurrent VTs that strangles the whole reactor. CI gates the regression: `VirtualThreadPinningIT` (200 concurrent produces, JFR `VirtualThreadPinned` count == 0) and `VtPinningBenchScaleIT` (2000 produces + 2000 fetches at bench scale).
+The `synchronized` → `ReentrantLock` swap on `Log` + `LogSegment` was the project's biggest perf unlock at scale. Blocking I/O inside `synchronized` pins the carrier OS thread; under 200+ concurrent VTs that strangles the whole reactor. CI gates the regression: `VirtualThreadPinningIT` (200 concurrent produces, JFR `VirtualThreadPinned` count == 0) and `VtPinningBenchScaleIT` (2000 produces + 2000 fetches at bench scale).
 
 ## Handlers
 
@@ -91,7 +91,7 @@ sequenceDiagram
     Coord-->>C: offset=42
 ```
 
-Admin-initiated mutations ():
+Admin-initiated mutations:
 - `Admin.DeleteConsumerGroup` drops `GroupCoordinator` state AND `OffsetCache.dropGroup`. Subsequent `FetchOffsets` returns `OFFSET_OUT_OF_RANGE`.
 - `Admin.ResetConsumerGroupOffsets` writes new commit records and updates the cache. Can pre-seed offsets for a group that hasn't joined yet.
 
@@ -156,7 +156,7 @@ Cluster.BrokerHeartbeat(broker_id, current_metadata_offset) → OK
 
 Receivers update `BrokerLiveness` with the wall-clock of the last heartbeat per broker. The `BrokerFencer` (controller-only, 250ms tick) declares any broker unheard-from for `> 3s` as dead and proposes ISR-shrink `PartitionChangeRecord`s.
 
-Why point-to-point instead of Raft-log-based liveness: the attempt to push `BrokerHeartbeatRecord`s through the Raft log revealed that follower-originated proposals are silently dropped — only the leader can propose. Direct RPC matches real KRaft's approach and was the spec's perf-tuning fallback.
+Why point-to-point instead of Raft-log-based liveness: an early attempt to push `BrokerHeartbeatRecord`s through the Raft log revealed that follower-originated proposals are silently dropped — only the leader can propose. Direct RPC matches real KRaft's approach and was the spec's perf-tuning fallback.
 
 ## Preferred-leader balancer
 
@@ -246,7 +246,7 @@ Key semantics:
 | Stress / IT clients | `newVirtualThreadPerTaskExecutor()` for 10k-client tests | `integration-tests/E2E_*` |
 | Bench harness | `Thread.ofVirtual().start(...)` for concurrent producer threads | `bench/ProducerPerfTest.java` |
 
-The pinning fix in (`broker-storage/LogSegment.java`):
+The pinning fix (`broker-storage/LogSegment.java`):
 
 ```java
 // BEFORE — synchronized + blocking I/O = pinned carrier
@@ -289,7 +289,7 @@ double area(Shape s) {
 
 - `RaftCore.step(RaftEvent)` switches on the event subtype and dispatches to the right handler.
 - `RaftDriver` switches on `RaftEffect` to dispatch outbound RPCs / persist calls / timer resets.
-- `MetadataStateMachine.apply(MetadataRecord)` (refactor) — was a chain of `if (record instanceof CreateTopic ct) { ... }` casts, now a single exhaustive switch over the sealed `MetadataRecord` type. Adding a new `MetadataRecord` subtype fails the build at every dispatch site that doesn't handle it.
+- `MetadataStateMachine.apply(MetadataRecord)` — was a chain of `if (record instanceof CreateTopic ct) { ... }` casts, now a single exhaustive switch over the sealed `MetadataRecord` type. Adding a new `MetadataRecord` subtype fails the build at every dispatch site that doesn't handle it.
 
 The compile-time exhaustiveness check is the most useful refactor of the project for catching "I added a new case and forgot to wire it through."
 
@@ -508,7 +508,7 @@ jcmd <PID> JFR.start duration=30s filename=broker.jfr settings=profile
 open -a JMC broker.jfr
 ```
 
-JMC's "Threads" view + the `jdk.VirtualThreadPinned` event filter is what diagnosed the pinning issue. async-profiler's allocation flame graph caught the per-record-allocation bloat that drove the zero-copy decode work in PR #98.
+JMC's "Threads" view + the `jdk.VirtualThreadPinned` event filter is what diagnosed the carrier-pinning issue. async-profiler's allocation flame graph caught the per-record-allocation bloat that drove the zero-copy decode work in PR #98.
 
 ## ArchUnit for architectural invariants
 

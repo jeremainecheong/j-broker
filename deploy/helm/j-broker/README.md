@@ -1,6 +1,6 @@
 # j-broker Helm chart
 
-a minimal Helm 3 chart for deploying j-broker on Kubernetes. Ships
+A minimal Helm 3 chart for deploying j-broker on Kubernetes. Ships
 a 3-replica broker StatefulSet, a single-replica admin UI Deployment, an
 optional bundled Redis for quota + SSE fan-out, and opt-in mTLS wiring
 that consumes the certs produced by `scripts/tls/bootstrap-ca.sh`.
@@ -82,7 +82,7 @@ Highlights:
 | `broker.replicaCount` | `3` | Raft-majority-friendly odd number. |
 | `broker.persistence.size` | `10Gi` | Per-broker PVC size. |
 | `broker.advertisedHostTemplate` | `""` | `sprintf`-style template used to build `--advertised-listeners` for external clients. Empty → skip the flag. |
-| `admin.replicaCount` | `1` | Bump + enable Redis for multi-pod SSE fan-out (). |
+| `admin.replicaCount` | `1` | Bump + enable Redis for multi-pod SSE fan-out. |
 | `admin.ingress.enabled` | `false` | Stand up an Ingress for the admin UI. |
 | `tls.enabled` | `false` | Turn on mTLS on every gRPC hop. |
 | `tls.secretName` | `jbroker-tls` | Kubernetes Secret carrying `ca.crt` + `tls.crt` + `tls.key` PEM files. |

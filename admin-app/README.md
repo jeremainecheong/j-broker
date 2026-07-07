@@ -14,18 +14,18 @@ All paths under `/api/v1/`. JSON is snake_case (Jackson in `application.yml`).
 | `POST` | `/topics` | Create topic |
 | `DELETE` | `/topics/{name}` | Delete topic |
 | `PATCH` | `/topics/{name}/config` | Update topic config (e.g. `cleanup.policy`) |
-| `POST` | `/topics/{name}/partitions/{p}/compact` | Force-compact () |
+| `POST` | `/topics/{name}/partitions/{p}/compact` | Force-compact a partition |
 | `GET` | `/consumer-groups` | List groups |
 | `GET` | `/consumer-groups/{id}` | Describe group (members, partition lag) |
-| `DELETE` | `/consumer-groups/{id}` | Delete group () |
-| `POST` | `/consumer-groups/{id}/reset-offsets` | Reset offsets () |
+| `DELETE` | `/consumer-groups/{id}` | Delete group |
+| `POST` | `/consumer-groups/{id}/reset-offsets` | Reset offsets |
 | `GET` | `/cluster` | Cluster overview — fans out + merges self-reported roles |
 | `GET` | `/nodes`, `/nodes/{id}` | Broker listing / single broker |
 | `GET` | `/raft` | Raft state (fans to all brokers) |
 | `GET` | `/raft/nodes/{id}` | Single broker's Raft state |
 | `GET` | `/metrics/throughput` | Rolling throughput window — `window_seconds: null` when idle |
 | `GET` | `/metrics/latency` | p50/p99/p999 latencies |
-| `GET` | `/metrics/timeseries?window=5m` | Server-side history ring for sparklines () |
+| `GET` | `/metrics/timeseries?window=5m` | Server-side history ring for sparklines |
 | `GET` | `/events` | Server-Sent Events stream (`Last-Event-ID` supported) |
 | `GET` | `/health/badge` | 5s-polled green/yellow/red pill for the top nav |
 | `GET` | `/chaos/state` | Per-broker chaos snapshot — drives the live-topology SVG |
@@ -91,7 +91,7 @@ Each broker emits `EventMessage` records on state changes:
 
 `AdminEventBus` opens a `Metadata.SubscribeEvents` stream to every configured broker, ingests the events, and fans them out to every live `/api/v1/events` SSE subscriber. A 2048-slot ring buffer backs `Last-Event-ID` replay.
 
-**Multi-pod fan-out ()** — opt-in via `jbroker.redis.url`:
+**Multi-pod fan-out** — opt-in via `jbroker.redis.url`:
 
 ```mermaid
 flowchart LR

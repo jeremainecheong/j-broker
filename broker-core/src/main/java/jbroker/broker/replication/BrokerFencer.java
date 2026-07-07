@@ -90,6 +90,11 @@ public final class BrokerFencer {
         }
         for (var assignment : topicManager.allPartitionAssignments()) {
             int leader = assignment.state().leader();
+            // Already at the no-leader sentinel (fenced with an empty ISR):
+            // nothing to demote. Without this guard the never-seen grace
+            // clock treated "-1" as an unheard-from broker and re-fenced
+            // the partition every tick, inflating leader_epoch.
+            if (leader <= NO_LEADER) continue;
             if (leader == selfBrokerId) continue;
             var sig = liveness.lastSignal(leader);
             long lastSignalNanos;

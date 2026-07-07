@@ -468,12 +468,21 @@ public final class Broker implements AutoCloseable {
         // P13.1 — wire LogManager::compactLogNowIfPresent so the
         // ForceCompactPartition admin RPC can trigger a synchronous compaction
         // on the responding broker's local log without touching Raft.
+        //
+        // The leader lookup must be role-aware: RaftCore.currentLeader()
+        // is populated only on followers (a leader never receives its own
+        // AppendEntries), and AdminHandler's not-leader fast path gates
+        // proposals on this lookup — the naive currentLeader() would make
+        // the actual leader reject its own mutations.
+        final int selfIdForAdmin = config.selfId().value();
         var admin = new AdminHandler(
                 topicManager,
                 proposer,
-                config.selfId().value(),
+                selfIdForAdmin,
                 brokerRegistry::knownBrokerIds,
-                () -> raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value),
+                () -> raftDriver.role() == jbroker.raft.core.Role.LEADER
+                        ? java.util.Optional.of(selfIdForAdmin)
+                        : raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value),
                 brokerRegistry,
                 logManager::compactLogNowIfPresent);
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);

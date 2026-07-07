@@ -152,6 +152,10 @@ public final class AdminHandler {
             ct.addPartitionChanges(pc);
         }
         var record = MetadataRecord.newBuilder().setCreateTopic(ct.build()).build();
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) {
+            return CreateTopicResponse.newBuilder().setError(notLeader.get()).build();
+        }
         try {
             proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
         } catch (Exception e) {
@@ -170,6 +174,10 @@ public final class AdminHandler {
                 .setDeleteTopic(
                         DeleteTopicRecord.newBuilder().setTopic(req.getTopic()).build())
                 .build();
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) {
+            return DeleteTopicResponse.newBuilder().setError(notLeader.get()).build();
+        }
         try {
             proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
         } catch (Exception e) {
@@ -191,6 +199,12 @@ public final class AdminHandler {
                         .putAllConfig(req.getConfigMap())
                         .build())
                 .build();
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) {
+            return UpdateTopicConfigResponse.newBuilder()
+                    .setError(notLeader.get())
+                    .build();
+        }
         try {
             proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
         } catch (Exception e) {
@@ -284,6 +298,35 @@ public final class AdminHandler {
      * self is not the Raft leader, the admin-app should retry against the
      * hinted broker (if known).
      */
+
+    /**
+     * A Raft follower's propose is silently dropped (fire-and-forget in
+     * RaftDriver), so {@code proposeAndWait} would burn its full timeout
+     * before surfacing NOT_LEADER — a ~5s cliff on every admin mutation
+     * routed to a non-leader (found by the k6 admin-api smoke). The
+     * handler already knows the current leader; fail fast with the same
+     * hint envelope. Empty leader (election window) also fails fast —
+     * callers/pools retry.
+     */
+    private Optional<jbroker.proto.broker.Error> requireLeadership() {
+        var leader = leaderLookup.currentLeaderId();
+        if (leader.isPresent() && leader.get() == selfBrokerId) return Optional.empty();
+        var b = jbroker.proto.broker.Error.newBuilder()
+                .setCode(ErrorCodes.NOT_LEADER)
+                .setMessage(
+                        leader.isPresent()
+                                ? "not the controller; leader is broker " + leader.get()
+                                : "no Raft leader elected yet");
+        leader.ifPresent(leaderId -> {
+            b.putHint("suggested_leader_id", Integer.toString(leaderId));
+            addressBook.addressFor(leaderId).ifPresent(hp -> {
+                b.putHint("suggested_leader_host", hp.host());
+                b.putHint("suggested_leader_port", Integer.toString(hp.port()));
+            });
+        });
+        return Optional.of(b.build());
+    }
+
     private jbroker.proto.broker.Error notLeaderError(Exception cause) {
         var b = jbroker.proto.broker.Error.newBuilder()
                 .setCode(ErrorCodes.NOT_LEADER)

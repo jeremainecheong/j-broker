@@ -25,7 +25,7 @@ class AdminHandlerDeleteConfigTest {
                 },
                 1,
                 () -> Set.of(1),
-                Optional::empty,
+                () -> Optional.of(1),
                 new BrokerRegistry());
 
         var resp = handler.deleteTopic(
@@ -44,7 +44,7 @@ class AdminHandlerDeleteConfigTest {
             seenPayload.set(payload);
             tm.onTopicDeleted("orders");
         };
-        var handler = new AdminHandler(tm, proposer, 1, () -> Set.of(1), Optional::empty, new BrokerRegistry());
+        var handler = new AdminHandler(tm, proposer, 1, () -> Set.of(1), () -> Optional.of(1), new BrokerRegistry());
 
         var resp = handler.deleteTopic(
                 DeleteTopicRequest.newBuilder().setTopic("orders").build());
@@ -84,7 +84,8 @@ class AdminHandlerDeleteConfigTest {
     @Test
     void updateTopicConfigUnknownTopicReturnsUnknownTopic() {
         var tm = new TopicManager();
-        var handler = new AdminHandler(tm, (p, ms) -> {}, 1, () -> Set.of(1), Optional::empty, new BrokerRegistry());
+        var handler =
+                new AdminHandler(tm, (p, ms) -> {}, 1, () -> Set.of(1), () -> Optional.of(1), new BrokerRegistry());
 
         var resp = handler.updateTopicConfig(UpdateTopicConfigRequest.newBuilder()
                 .setTopic("nope")
@@ -103,7 +104,7 @@ class AdminHandlerDeleteConfigTest {
             seen.set(payload);
             tm.onTopicConfigUpdated("orders", Map.of("compression.type", "zstd"));
         };
-        var handler = new AdminHandler(tm, proposer, 1, () -> Set.of(1), Optional::empty, new BrokerRegistry());
+        var handler = new AdminHandler(tm, proposer, 1, () -> Set.of(1), () -> Optional.of(1), new BrokerRegistry());
 
         var resp = handler.updateTopicConfig(UpdateTopicConfigRequest.newBuilder()
                 .setTopic("orders")
@@ -125,7 +126,7 @@ class AdminHandlerDeleteConfigTest {
         var tm = new TopicManager();
         var seen = new AtomicReference<byte[]>();
         AdminHandler.MetadataProposer proposer = (payload, timeoutMillis) -> seen.set(payload);
-        var handler = new AdminHandler(tm, proposer, 1, () -> Set.of(1), Optional::empty, new BrokerRegistry());
+        var handler = new AdminHandler(tm, proposer, 1, () -> Set.of(1), () -> Optional.of(1), new BrokerRegistry());
 
         handler.createTopic(CreateTopicRequest.newBuilder()
                 .setTopic("orders")

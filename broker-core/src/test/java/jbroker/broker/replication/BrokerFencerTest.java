@@ -263,4 +263,30 @@ class BrokerFencerTest {
         fencer.tick(16_300_000_000L); // 3.2s after re-seed → fence
         assertThat(proposer.proposals).hasSize(1);
     }
+
+    @Test
+    void sentinelNoLeaderPartitionIsNeverReFenced() {
+        // Regression guard for a bug in the never-seen grace clock: after a
+        // fence legitimately set leader=-1 (no surviving ISR), the fencer
+        // treated "-1" as a never-heard-from broker, seeded a grace clock
+        // for it, and re-fenced the partition every tick — inflating
+        // leader_epoch by ~1/tick (observed epochs 2..36 in one IT run).
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 1, 0L);
+        tm.onPartitionChange("t", 0, /*leader*/ -1, List.of(), List.of(2), /*leaderEpoch*/ 1, 0);
+
+        var liveness = new BrokerLiveness();
+        liveness.recordSignal(1, 0L, 10_000_000_000L);
+
+        var proposer = new CapturingProposer();
+        var fencer = new BrokerFencer(1, tm, liveness, proposer, () -> Role.LEADER, staleThresholdNanos());
+
+        fencer.tick(10_000_000_000L);
+        fencer.tick(15_000_000_000L); // well past the grace threshold
+        fencer.tick(20_000_000_000L);
+
+        assertThat(proposer.proposals)
+                .as("a partition already at the no-leader sentinel must not be re-fenced")
+                .isEmpty();
+    }
 }

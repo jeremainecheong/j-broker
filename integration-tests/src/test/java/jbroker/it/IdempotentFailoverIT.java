@@ -94,6 +94,14 @@ class IdempotentFailoverIT {
             // deterministic under CI jitter.
             awaitPartitionReplicated(brokers, "orders", 0, /*expectedLeo*/ 10L);
 
+            // The ISR can legitimately shrink back to just the leader under
+            // heavy host load (the lag tick evicts starved followers) —
+            // killing then leaves no survivor and the partition correctly
+            // goes to the no-leader sentinel, which isn't the scenario
+            // under test. Re-await full ISR right before the kill so the
+            // check-to-kill window is milliseconds, not the produce phase.
+            awaitIsrSize(brokers, "orders", 0, /*size*/ 3);
+
             // Abrupt kill on the partition leader — survivors must fence
             // + elect a new partition leader from the in-sync followers.
             partitionLeader.closeAbruptly();

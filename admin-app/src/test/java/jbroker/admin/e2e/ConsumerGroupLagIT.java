@@ -51,7 +51,7 @@ class ConsumerGroupLagIT {
 
     @BeforeAll
     static void bringUp() throws Exception {
-        dataDir = Files.createTempDirectory("e2e-8-4-lag");
+        dataDir = Files.createTempDirectory("consumer-group-lag");
         broker = BindRetry.startWithBindRetry(() ->
                 Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
         brokerPort = broker.brokerPort();

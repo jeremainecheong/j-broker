@@ -32,7 +32,7 @@ class VirtualThreadPinningIT {
     @Test
     void producePathEmitsZeroVirtualThreadPinnedEvents(@TempDir Path d1, @TempDir Path d2, @TempDir Path d3)
             throws Exception {
-        Path jfrPath = Files.createTempFile("jbroker-e2e-10-2-", ".jfr");
+        Path jfrPath = Files.createTempFile("jbroker-vt-pinning-", ".jfr");
         var recording = new Recording();
         // jdk.VirtualThreadPinned is emitted when a virtual thread parks
         // while holding a monitor — the exact condition the ReentrantLock

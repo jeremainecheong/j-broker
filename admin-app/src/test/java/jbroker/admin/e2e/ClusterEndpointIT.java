@@ -46,9 +46,9 @@ class ClusterEndpointIT {
 
     @BeforeAll
     static void bringUp() throws Exception {
-        d1 = Files.createTempDirectory("e2e-8-1-n1");
-        d2 = Files.createTempDirectory("e2e-8-1-n2");
-        d3 = Files.createTempDirectory("e2e-8-1-n3");
+        d1 = Files.createTempDirectory("cluster-endpoint-n1");
+        d2 = Files.createTempDirectory("cluster-endpoint-n2");
+        d3 = Files.createTempDirectory("cluster-endpoint-n3");
         var dirs = new Path[] {d1, d2, d3};
         var cluster = TestBrokerCluster.start(
                 3,

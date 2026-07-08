@@ -49,7 +49,7 @@ class SseReconnectIT {
 
     @BeforeAll
     static void startBroker() throws Exception {
-        dataDir = Files.createTempDirectory("e2e-8-6-sse");
+        dataDir = Files.createTempDirectory("sse-reconnect");
         broker = BindRetry.startWithBindRetry(() ->
                 Broker.start(new Broker.Config(new NodeId(1), dataDir, BindRetry.freePort(), BindRetry.freePort())));
         brokerPort = broker.brokerPort();

@@ -43,7 +43,7 @@ class JfrEventEmissionIT {
 
     @Test
     void allSixJfrEventsEmittedUnderProduceLoad(@TempDir Path d1, @TempDir Path d2, @TempDir Path d3) throws Exception {
-        Path jfrPath = Files.createTempFile("jbroker-e2e-9-2-", ".jfr");
+        Path jfrPath = Files.createTempFile("jbroker-jfr-emission-", ".jfr");
         var recording = new Recording();
         recording.enable("jbroker.RaftTermChange");
         recording.enable("jbroker.PartitionLeaderChange");

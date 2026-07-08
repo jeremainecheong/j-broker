@@ -49,9 +49,9 @@ class DeleteTopicViaRestIT {
 
     @BeforeAll
     static void bringUp() throws Exception {
-        d1 = Files.createTempDirectory("e2e-8-3-n1");
-        d2 = Files.createTempDirectory("e2e-8-3-n2");
-        d3 = Files.createTempDirectory("e2e-8-3-n3");
+        d1 = Files.createTempDirectory("delete-topic-n1");
+        d2 = Files.createTempDirectory("delete-topic-n2");
+        d3 = Files.createTempDirectory("delete-topic-n3");
         var dirs = new Path[] {d1, d2, d3};
         var cluster = TestBrokerCluster.start(
                 3,

@@ -56,9 +56,9 @@ class PrometheusEndpointIT {
 
     @BeforeAll
     static void bringUp() throws Exception {
-        d1 = Files.createTempDirectory("e2e-9-1-n1");
-        d2 = Files.createTempDirectory("e2e-9-1-n2");
-        d3 = Files.createTempDirectory("e2e-9-1-n3");
+        d1 = Files.createTempDirectory("prometheus-n1");
+        d2 = Files.createTempDirectory("prometheus-n2");
+        d3 = Files.createTempDirectory("prometheus-n3");
         var dirs = new Path[] {d1, d2, d3};
         var cluster = TestBrokerCluster.start(
                 3,

@@ -315,7 +315,7 @@ Per-module breakdown in each module's README.
 
 ## Status
 
-The broker is feature-complete against its spec ([j-broker-prd.md](j-broker-prd.md)): everything listed under *What it does* is implemented, integration-tested on real 3-node clusters, and exercised by the chaos scenarios in `scripts/chaos/`. The capstone verification is a 10-minute SIGKILL soak under sustained load that audits every acked record afterwards.
+The broker is feature-complete: everything listed under *What it does* is implemented, integration-tested on real 3-node clusters, and exercised by the chaos scenarios in `scripts/chaos/`. The capstone verification is a 10-minute SIGKILL soak under sustained load that audits every acked record afterwards.
 
 **One known open defect**: [#115](https://github.com/jeremainecheong/j-broker/issues/115) — under a compound Docker failure mode, an `acks=all` record can be acked and then lost. The chain: a SIGKILL'd broker's peers keep gRPC channels wedged on stale Docker DNS, the ISR shrinks to the leader alone (no min-ISR floor exists to refuse writes), and the leader then dies before anyone replicates. The soak that found it, the evidence, and the fix plan are on the issue. Until it lands, `acks=all` is majority-durable only while the ISR actually holds a majority.
 

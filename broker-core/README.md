@@ -264,7 +264,7 @@ try {
 }
 ```
 
-CI gate: `VirtualThreadPinningIT` records `jdk.VirtualThreadPinned` JFR events during 200 concurrent produces and asserts count == 0. Audit-10's `VtPinningBenchScaleIT` raises that to 2000 produces + 2000 fetches at bench scale (chunked into 200-concurrent rounds for default-ulimit CI). Both run on every PR.
+CI gate: `VirtualThreadPinningIT` records `jdk.VirtualThreadPinned` JFR events during 200 concurrent produces and asserts count == 0. `VtPinningBenchScaleIT` raises that to 2000 produces + 2000 fetches at bench scale (chunked into 200-concurrent rounds for default-ulimit CI). Both run on every PR.
 
 ## Pattern matching for switch (JEP 441)
 

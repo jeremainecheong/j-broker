@@ -33,9 +33,9 @@ import jbroker.proto.common.TopicPartition;
  *       → drop any member with no heartbeat in &gt; sessionTimeoutMs, bump generation
  * </pre>
  *
- * <p>Cooperative incremental rebalance is staged in returns the
+ * <p>Cooperative incremental rebalance is staged: the first cut returns the
  * full new assignment immediately on every membership change, which is the
- * "stop-the-world" fallback the spec calls out. adds the kept-set
+ * "stop-the-world" fallback the spec calls out. A later cut adds the kept-set
  * intermediate step.
  *
  * <p>{@link #join} returns a {@code memberEpoch} that the client must echo
@@ -104,7 +104,7 @@ public final class GroupCoordinator {
         // already advertised). This may be a strict subset of the eventual
         // target during cooperative incremental rebalance — see pendingTarget.
         List<TopicPartition> currentAssignment;
-        // non-null while a cooperative rebalance is mid-flight.
+        // Non-null while a cooperative rebalance is mid-flight.
         // currentAssignment carries the "kept" set during stage 1; once the
         // member confirms it has revoked the lost partitions (its next
         // heartbeat carries owned_partitions == currentAssignment), the
@@ -280,7 +280,7 @@ public final class GroupCoordinator {
                         HEARTBEAT_INTERVAL_MS);
             }
             member.lastHeartbeatNs = nowNs;
-            // if the client reports it owns exactly the (stage-1)
+            // If the client reports it owns exactly the (stage-1)
             // kept set we advertised, and a pendingTarget is queued,
             // advance to stage 2 now.
             boolean advanced = advanceCooperativeIfReady(member, ownedPartitions);
@@ -421,11 +421,11 @@ public final class GroupCoordinator {
         }
     }
 
-    /** summary of one group for the admin {@code /consumer-groups} list view. */
+    /** Summary of one group for the admin {@code /consumer-groups} list view. */
     public record GroupSummary(String groupId, String state, int memberCount, int generation) {}
 
     /**
-     * per-member details the admin {@code /consumer-groups/{id}}
+     * Per-member details the admin {@code /consumer-groups/{id}}
      * endpoint surfaces. Snapshot is captured under the per-group lock so
      * caller sees self-consistent state even if a rebalance is running.
      */
@@ -441,7 +441,7 @@ public final class GroupCoordinator {
         }
     }
 
-    /** full per-group detail: generation + members (lag is layered on by MetadataServiceHandler). */
+    /** Full per-group detail: generation + members (lag is layered on by MetadataServiceHandler). */
     public record GroupDetail(String groupId, String state, int generation, List<MemberSnapshot> members) {
         public GroupDetail {
             members = List.copyOf(members);
@@ -449,7 +449,7 @@ public final class GroupCoordinator {
     }
 
     /**
-     * snapshot every group this coordinator knows about. Iterates
+     * Snapshot every group this coordinator knows about. Iterates
      * under {@link #groupsLock} so the group set doesn't shift under us;
      * each group's member count is captured under its own lock.
      */
@@ -473,7 +473,7 @@ public final class GroupCoordinator {
     }
 
     /**
-     * admin-initiated removal. Deletes the group's in-memory state
+     * Admin-initiated removal. Deletes the group's in-memory state
      * (members, generation, snapshot-listener subscription). Returns true
      * if the group existed, false otherwise.
      *
@@ -492,7 +492,7 @@ public final class GroupCoordinator {
     }
 
     /**
-     * snapshot one group. Returns empty if the coordinator doesn't
+     * Snapshot one group. Returns empty if the coordinator doesn't
      * know the group (admin-app fans out across brokers; wrong-coordinator
      * returns empty, right-coordinator returns the populated detail).
      */
@@ -554,7 +554,7 @@ public final class GroupCoordinator {
     }
 
     /**
-     * cooperative incremental rebalance step. Given a freshly-computed
+     * Cooperative incremental rebalance step. Given a freshly-computed
      * {@code target} for the member:
      * <ul>
      *   <li>If the member loses no partitions (target ⊇ current OR member is
@@ -635,7 +635,7 @@ public final class GroupCoordinator {
     }
 
     /**
-     * capture the group's current state in a form that can be encoded
+     * Capture the group's current state in a form that can be encoded
      * via {@link jbroker.broker.ConsumerOffsetsTopic#valueForGroupMetadata}
      * and persisted to {@code __consumer_offsets}.
      */
@@ -666,7 +666,7 @@ public final class GroupCoordinator {
     }
 
     /**
-     * rebuild a group's state from a persisted snapshot. Called by
+     * Rebuild a group's state from a persisted snapshot. Called by
      * the recovery walk after coordinator activation. Existing in-memory
      * state for the group is overwritten — the on-disk record is the
      * source of truth.

@@ -8,14 +8,14 @@ service Producer {
   rpc Produce(ProduceRequest) returns (ProduceResponse);
   // Assigns a unique (producer_id, producer_epoch) pair to a client. The
   // controller persists the next-id counter through Raft so it survives a
-  // restart. Added in Milestone 6.7 (idempotent producer).
+  // restart. Added for idempotent-producer support.
   rpc InitProducerId(InitProducerIdRequest) returns (InitProducerIdResponse);
 }
 
 service Consumer {
   rpc Fetch(FetchRequest) returns (FetchResponse);
-  // Milestone 7 — consumer groups. The first cut of these RPCs () wires the
-  // surface; subsequent slices (..) implement the bodies. Until
+  // Consumer groups. The surface for these RPCs is defined here; the
+  // request handlers are implemented incrementally. Until
   // implemented, handlers return COORDINATOR_NOT_AVAILABLE / OFFSET_OUT_OF_RANGE.
   rpc ListOffsets(ListOffsetsRequest) returns (ListOffsetsResponse);
   rpc FindCoordinator(FindCoordinatorRequest) returns (FindCoordinatorResponse);
@@ -29,7 +29,7 @@ service Consumer {
 // from the partition leader. Distinct from Consumer.Fetch (client-facing).
 service ReplicaConsumer {
   rpc ReplicaFetch(ReplicaFetchRequest) returns (ReplicaFetchResponse);
-  // Follower reconciliation (): after a FENCED_EPOCH on ReplicaFetch,
+  // Follower reconciliation: after a FENCED_EPOCH on ReplicaFetch,
   // the follower asks the leader for the end offset of its last-seen
   // leader_epoch so it can truncate any divergent suffix before resuming.
   rpc OffsetsForLeaderEpoch(OffsetsForLeaderEpochRequest) returns (OffsetsForLeaderEpochResponse);
@@ -39,25 +39,25 @@ service Admin {
   rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
   rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
   rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
-  // Milestone 8 — topic CRUD.
+  // Topic CRUD.
   rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse);
   rpc UpdateTopicConfig(UpdateTopicConfigRequest) returns (UpdateTopicConfigResponse);
-  // consumer-group mutations. Both route to the coordinator
+  // Consumer-group mutations. Both route to the coordinator
   // broker; NOT_COORDINATOR hints the admin-app at which broker to retry.
   rpc DeleteConsumerGroup(DeleteConsumerGroupRequest) returns (DeleteConsumerGroupResponse);
   rpc ResetConsumerGroupOffsets(ResetConsumerGroupOffsetsRequest) returns (ResetConsumerGroupOffsetsResponse);
-  // force synchronous compaction on the responding broker's local
+  // Force synchronous compaction on the responding broker's local
   // copy of (topic, partition). No-ops (records_kept = -1) when the broker
   // doesn't host a replica. Admin-app fans out to every broker so all
   // replicas converge to the compacted view.
   rpc ForceCompactPartition(ForceCompactPartitionRequest) returns (ForceCompactPartitionResponse);
 }
 
-// Milestone 8 — read-only admin observability surface. All RPCs answer from
+// Read-only admin observability surface. All RPCs answer from
 // whichever broker receives the request (metadata is replicated); the
 // admin-app fans out when it needs cluster-wide aggregation. Handlers
-// land in later P8 slices; wires the surface and leaves every RPC
-// returning ErrorCode.UNIMPLEMENTED until its owning slice replaces it.
+// are filled in incrementally; until then every RPC returns
+// ErrorCode.UNIMPLEMENTED.
 service Metadata {
   rpc DescribeCluster(DescribeClusterRequest) returns (DescribeClusterResponse);
   rpc DescribeTopicPartitions(DescribeTopicPartitionsRequest)
@@ -66,9 +66,9 @@ service Metadata {
   rpc DescribeConsumerGroup(DescribeConsumerGroupRequest)
       returns (DescribeConsumerGroupResponse);
   rpc DescribeRaft(DescribeRaftRequest) returns (DescribeRaftResponse);
-  // rolling throughput + latency snapshot for the admin metrics UI.
+  // Rolling throughput + latency snapshot for the admin metrics UI.
   rpc DescribeMetrics(DescribeMetricsRequest) returns (DescribeMetricsResponse);
-  // server streams broker-side events (leader changes, broker
+  // Server streams broker-side events (leader changes, broker
   // registrations, group rebalances, ...). Client bootstraps with
   // {@code after_id=0} to start at the stream head; reconnects pass the
   // last id they observed so the server replays anything newer that's
@@ -76,16 +76,15 @@ service Metadata {
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream EventMessage);
 }
 
-// Broker-to-broker cluster management RPCs. adds BrokerHeartbeat
-// so each broker advertises its liveness directly to every peer; the
-// active controller () uses the aggregated view to fence
-// unresponsive brokers from partition leadership.
+// Broker-to-broker cluster management RPCs. BrokerHeartbeat lets each
+// broker advertise its liveness directly to every peer; the active
+// controller uses the aggregated view to fence unresponsive brokers
+// from partition leadership.
 //
-// Heartbeats deliberately bypass the Raft log: the design spec's
-// BrokerHeartbeatRecord approach was blocked by the "follower propose
-// silently dropped" constraint observed in . Point-to-point RPCs
-// match real KRaft's broker-heartbeat protocol and are the spec's
-// explicit perf-tuning fallback.
+// Heartbeats deliberately bypass the Raft log: an earlier
+// BrokerHeartbeatRecord approach was blocked by a "follower propose
+// silently dropped" constraint. Point-to-point RPCs match real KRaft's
+// broker-heartbeat protocol and are the explicit perf-tuning fallback.
 service Cluster {
   rpc BrokerHeartbeat(BrokerHeartbeatRequest) returns (BrokerHeartbeatResponse);
 }
@@ -106,13 +105,13 @@ message ProduceRequest {
   int32 partition = 2;
   // Raw Kafka v2 record-batch bytes, prepared by the client.
   bytes batch = 3;
-  // Milestone 6.7 idempotent-producer fields. Clients that haven't called
+  // Idempotent-producer fields. Clients that haven't called
   // InitProducerId leave these at their defaults (producer_id = -1,
   // producer_epoch = 0, base_sequence = -1) and the leader skips dedup.
   int64 producer_id = 4;
   int32 producer_epoch = 5;
   int32 base_sequence = 6;
-  // Milestone 6.6 durability gate. Kafka semantics:
+  // Durability gate (acks). Kafka semantics:
   //   0 / 1 (or proto3 default = 0): leader appends locally and returns
   //     without waiting for followers. Subject to loss on leader failure.
   //   -1: wait for the HWM to advance past the produced last-offset,
@@ -134,7 +133,7 @@ message FetchRequest {
   int32 partition = 2;
   int64 offset = 3;
   int32 max_bytes = 4;
-  // incremental fetch sessions. Clients bootstrap with session_id=0;
+  // Incremental fetch sessions. Clients bootstrap with session_id=0;
   // the broker allocates a fresh session id and echoes it in the response.
   // On subsequent calls the client sends the returned session_id (with an
   // ever-incrementing session_epoch) so the broker can cache per-(topic,
@@ -163,7 +162,7 @@ message ReplicaFetchRequest {
   int32 follower_broker_id = 3;
   // Epoch the follower believes to be current. The leader rejects with
   // FENCED_EPOCH if it doesn't match so the follower can reconcile via
-  // OffsetsForLeaderEpoch () before retrying.
+  // OffsetsForLeaderEpoch before retrying.
   int32 leader_epoch = 4;
   int64 fetch_offset = 5;
   int32 max_bytes = 6;
@@ -178,7 +177,7 @@ message ReplicaFetchResponse {
   Error error = 4;
 }
 
-// ===== OffsetsForLeaderEpoch (follower -> leader, ) =====
+// ===== OffsetsForLeaderEpoch (follower -> leader) =====
 
 message OffsetsForLeaderEpochRequest {
   string topic = 1;
@@ -197,9 +196,9 @@ message OffsetsForLeaderEpochResponse {
 // ===== InitProducerId =====
 
 message InitProducerIdRequest {
-  // Reserved for future transactional-id use; empty in Milestone 6.7 (plain
-  // idempotent producer only). Field left in place so the wire shape
-  // matches thesketch from day one.
+  // Reserved for future transactional-id use; empty for plain
+  // idempotent-producer use today. Field left in place so the wire shape
+  // matches the intended transactional design from day one.
   string transactional_id = 1;
 }
 
@@ -218,8 +217,8 @@ message CreateTopicRequest {
   string topic = 1;
   int32 partitions = 2;
   int32 replication_factor = 3;
-  // Milestone 8 — opaque topic config map. Broker round-trips; enforcement
-  // arrives in Milestone 9 (retention, compaction). Empty map is fine.
+  // Opaque topic config map. Broker round-trips; enforcement
+  // (retention, compaction) is not yet implemented. Empty map is fine.
   map<string, string> config = 4;
 }
 
@@ -245,7 +244,7 @@ message UpdateTopicConfigResponse {
   map<string, string> config = 2; // merged effective config after apply
 }
 
-// consumer-group mutations.
+// Consumer-group mutations.
 message DeleteConsumerGroupRequest {
   string group_id = 1;
 }
@@ -283,7 +282,7 @@ message ResetConsumerGroupOffsetsResponse {
   int32 suggested_coordinator_port = 5;
 }
 
-// force-compact admin RPC. Sugar over LogManager.compactLogNow so
+// Force-compact admin RPC. Sugar over LogManager.compactLogNow so
 // integration tests and the admin-app can prove post-compaction correctness
 // without waiting out the cleaner cadence.
 message ForceCompactPartitionRequest {
@@ -319,7 +318,7 @@ message TopicDescription {
   int32 partitions = 2;
   int32 replication_factor = 3;
   int64 created_millis = 4;
-  // Milestone 8 — surfaced on ListTopics + DescribeTopic so the admin UI can
+  // Surfaced on ListTopics + DescribeTopic so the admin UI can
   // render internal vs user topics differently.
   bool internal = 5;
   bool compact = 6;
@@ -329,8 +328,8 @@ message TopicDescription {
 message Error {
   int32 code = 1;
   string message = 2;
-  // Milestone 8 — optional flat key/value hints. Admin REST layer surfaces
-  // these into the {@code hint} object of theerror envelope.
+  // Optional flat key/value hints. Admin REST layer surfaces
+  // these into the {@code hint} object of the admin error envelope.
   // Common keys:
   //   suggested_leader_id   (int32, decimal)
   //   suggested_leader_host (string)
@@ -338,12 +337,12 @@ message Error {
   map<string, string> hint = 3;
 }
 
-// ===== Consumer-group RPCs (Milestone 7) =====
+// ===== Consumer-group RPCs =====
 //
-// Wire shape mirrors the spec with two minor adaptations:
+// Wire shape mirrors the standard consumer-group protocol with two minor adaptations:
 // 1. Co-located here in broker.proto rather than a fork consumer.proto, so
 //    BrokerClient can stay single-channel.
-// 2. TopicPartition lives in common.proto (added in ); reused across
+// 2. TopicPartition lives in common.proto; reused across
 //    the offset commit/fetch and assignment messages.
 
 message ListOffsetsRequest {
@@ -371,7 +370,7 @@ message ListOffsetsResult {
 }
 
 message FindCoordinatorRequest {
-  // Always group_id in Milestone 7. Reserved for transactional-id lookups later.
+  // Always group_id today. Reserved for transactional-id lookups later.
   string key = 1;
 }
 
@@ -470,14 +469,14 @@ message OffsetFetchResult {
   jbroker.common.ErrorCode error = 5;
 }
 
-// ===== Metadata service (Milestone 8) =====
+// ===== Metadata service =====
 //
 // Read-only surface consumed by admin-app. Each RPC is answerable from
 // any broker's local metadata replica (aggregation happens client-side
-// when cluster-wide views are needed). wires the surface and every
-// handler returns ErrorCode.UNIMPLEMENTED; later slices fill bodies:
-// DescribeCluster; DescribeTopicPartitions;
-// ListConsumerGroups + DescribeConsumerGroup; DescribeRaft.
+// when cluster-wide views are needed). The surface is defined up front
+// and every handler returns ErrorCode.UNIMPLEMENTED until its body is
+// filled in: DescribeCluster; DescribeTopicPartitions; ListConsumerGroups
+// + DescribeConsumerGroup; DescribeRaft.
 
 message DescribeClusterRequest {}
 
@@ -538,8 +537,8 @@ message ListConsumerGroupsResponse {
 
 message ConsumerGroupSummary {
   string group_id = 1;
-  // e.g. "Stable" | "PreparingRebalance" | "Empty" (Milestone 8 emits only
-  // "Stable" | "Empty"; cooperative states are masked until needed).
+  // e.g. "Stable" | "PreparingRebalance" | "Empty" (only "Stable" | "Empty"
+  // are emitted today; cooperative states are masked until needed).
   string state = 2;
   int32 member_count = 3;
   string assignor = 4;
@@ -610,7 +609,7 @@ message EventMessage {
   // "isr_shrink" / "isr_expand", "raft_term_change", "broker_registered",
   // "broker_fenced", "consumer_group_rebalance".
   string type = 2;
-  // JSON payload per the spec Kept as a string so the SSE endpoint can
+  // JSON payload for the event stream. Kept as a string so the SSE endpoint can
   // pass it through unchanged; admin-app does not parse it.
   string data_json = 3;
 }
@@ -639,7 +638,7 @@ message DescribeMetricsResponse {
   int64 raft_commit_index = 18;
   int64 raft_last_applied = 19;
   int64 raft_last_log_index = 20;
-  // per-partition metrics. Leader-hosted partitions only; the
+  // Per-partition metrics. Leader-hosted partitions only; the
   // leader is the only broker with complete ISR + HWM info. Follower
   // brokers omit partitions they don't lead.
   repeated PartitionMetrics partition_metrics = 21;

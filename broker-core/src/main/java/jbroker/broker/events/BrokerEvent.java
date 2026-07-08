@@ -3,14 +3,14 @@ package jbroker.broker.events;
 import java.util.List;
 
 /**
- * Sealed hierarchy of broker-side events surfaced over the Milestone 8 SSE
+ * Sealed hierarchy of broker-side events surfaced over the admin SSE
  * stream. Each event carries an {@code id} allocated at publish time; the
  * id is strictly monotonic within a single broker process so the admin-app
  * can honour {@code Last-Event-ID} replays across reconnects.
  *
- * <p>Milestone 8 scope: leader-change + Raft-term + broker-registration/fence +
- * group-rebalance. Remaining the spec event types (ISR shrink/expand,
- * raft_commit, throughput_sample, chaos_action) arrive in Milestone 9.
+ * <p>Current scope: leader-change + Raft-term + broker-registration/fence +
+ * group-rebalance. Additional event types (ISR shrink/expand,
+ * raft_commit, throughput_sample, chaos_action) are not yet implemented.
  */
 public sealed interface BrokerEvent {
 
@@ -67,7 +67,7 @@ public sealed interface BrokerEvent {
     }
 
     /**
-     * dev-only chaos action observed by the SSE stream. {@code action}
+     * Dev-only chaos action observed by the SSE stream. {@code action}
      * is one of {@code kill|pause|resume|partition|heal|inject-latency|
      * force-election}; {@code peerId} is meaningful for partition/heal and
      * null otherwise; {@code millis} is meaningful for inject-latency.

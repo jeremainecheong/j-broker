@@ -7,7 +7,7 @@ import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 
 /**
- * inbound chaos gate. Rejects RPCs with {@link Status#UNAVAILABLE}
+ * Inbound chaos gate. Rejects RPCs with {@link Status#UNAVAILABLE}
  * when the broker is paused or the calling peer (decoded from
  * {@code jbroker-from-broker-id} metadata) is blocked. Applies the
  * configured latency-injection delay before delegating when neither

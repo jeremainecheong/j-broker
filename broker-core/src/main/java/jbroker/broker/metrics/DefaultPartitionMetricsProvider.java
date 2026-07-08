@@ -12,7 +12,7 @@ import jbroker.broker.replication.FollowerStateTracker;
 import jbroker.storage.LogManager;
 
 /**
- * default provider: enumerates leader-hosted partitions from
+ * Default provider: enumerates leader-hosted partitions from
  * {@link TopicManager}, reads leader LEO from {@link LogManager},
  * computes HWM via {@link FollowerStateTracker#computeHwm}, and
  * derives per-follower lag from tracker state.

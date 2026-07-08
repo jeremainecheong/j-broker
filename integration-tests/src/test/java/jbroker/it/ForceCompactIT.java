@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * prove post-compaction correctness end-to-end via the gRPC fetch
+ * Prove post-compaction correctness end-to-end via the gRPC fetch
  * path, not just the Log-layer contract that {@code LogCompactionTest}
  * already covers.
  *
@@ -23,9 +23,9 @@ import org.junit.jupiter.api.io.TempDir;
  * keys (round-robin), force-compact via the new admin RPC, then fetch via
  * {@link BrokerClient#fetchRecords} and assert the survivors arrive at
  * their original absolute offsets {95, 96, 97, 98, 99}. Sparse-offset
- * preservation is the subtle property — earliercompaction reset
- * offsetDeltas to contiguous values, which would have broken consumers
- * holding stale pre-compaction offsets.
+ * preservation is the subtle property — an earlier compaction
+ * implementation reset offsetDeltas to contiguous values, which would
+ * have broken consumers holding stale pre-compaction offsets.
  */
 class ForceCompactIT {
 
@@ -42,8 +42,8 @@ class ForceCompactIT {
                 client.createTopicWithConfig("prices", 1, 1, Map.of("cleanup.policy", "compact"));
 
                 // Seed 100 keyed records directly at the Log layer — the
-                // producer gRPC path doesn't expose keys today, and the
-                // slice cares about compaction + fetch correctness, not
+                // producer gRPC path doesn't expose keys today, and this
+                // test cares about compaction + fetch correctness, not
                 // how records arrive. Each append is a single-record batch
                 // so absolute offsets are 0..99 and the last write per key
                 // lands at 95/96/97/98/99.

@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * proves the {@code ConsumerGroupHeartbeat} RPC translates the
+ * Proves the {@code ConsumerGroupHeartbeat} RPC translates the
  * single-RPC KIP-848 protocol (join / steady / leave) onto the
  * {@link GroupCoordinator} state machine, and that the
  * {@code NOT_COORDINATOR} routing guard fires when this broker doesn't

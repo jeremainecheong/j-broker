@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * proves that {@code __consumer_offsets} is auto-created by the
+ * Proves that {@code __consumer_offsets} is auto-created by the
  * controller within a few seconds of broker startup, with the expected
  * partition count and internal/compact flags, and that it does NOT show up
  * in {@code Admin.ListTopics}.

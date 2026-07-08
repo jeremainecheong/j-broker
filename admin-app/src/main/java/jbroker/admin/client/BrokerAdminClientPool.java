@@ -75,7 +75,7 @@ public class BrokerAdminClientPool {
      * that succeeded. Order of the returned list matches the order of
      * {@link #clients()}. Throws if every broker is unreachable.
      *
-     * <p>Used by the topic-detail merge flow (): only the partition
+     * <p>Used by the topic-detail merge flow: only the partition
      * leader populates real {@code highWatermark} / {@code logEndOffset} in
      * {@code DescribeTopicPartitions}, so we fan out to every replica and
      * pick the leader's answer per partition.
@@ -119,7 +119,7 @@ public class BrokerAdminClientPool {
     /**
      * Convenience wrapper: describe the cluster via whichever broker answers
      * first. Metadata replicas are identical across every voter so first-
-     * success is good enough for Milestone 8 reads.
+     * success is good enough for these reads.
      */
     public DescribeClusterResponse describeCluster() {
         return firstSuccessful(BrokerAdminClient::describeCluster);
@@ -145,7 +145,7 @@ public class BrokerAdminClientPool {
      *
      * <p>Admin-app's topic CRUD uses this: any non-leader broker knows who the
      * Raft leader is (via `BrokerRegistry`), so two passes at worst land on
-     * the right broker. Milestone 8 scope; fancier hint-following is Milestone 9.
+     * the right broker. Fancier hint-following is unnecessary — the pool just iterates.
      */
     public <T> T firstNonNotLeader(
             Function<BrokerAdminClient, T> op, Function<T, Integer> errorCode, int notLeaderCode) {

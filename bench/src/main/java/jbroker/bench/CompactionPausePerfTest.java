@@ -12,7 +12,7 @@ import jbroker.broker.client.BrokerClient;
 import jbroker.storage.Record;
 
 /**
- * compaction pause-duration bench. The compaction
+ * Compaction pause-duration bench. The compaction
  * implementation is stop-the-world (Log-level ReentrantLock held for the
  * full rewrite); the v1.4 bench suite only measured produce/consume
  * latency under steady state and never surfaced how long a compaction

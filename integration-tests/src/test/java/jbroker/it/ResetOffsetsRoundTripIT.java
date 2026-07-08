@@ -23,13 +23,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * prove that {@code POST /consumer-groups/{id}/reset-offsets} takes
+ * Prove that {@code POST /consumer-groups/{id}/reset-offsets} takes
  * effect on the OffsetCache, i.e. a subsequent {@code FetchOffsets} returns
  * the reset value rather than the prior commit.
  *
- * <p>shipped the admin RPC and confirmed it returns {@code OK} +
- * writes a record, but nothing drove a live member through the full
- * commit → admin-reset → refetch loop. That's the gap this IT closes.
+ * <p>The admin RPC returns {@code OK} and writes a record, but nothing
+ * drove a live member through the full commit → admin-reset → refetch
+ * loop. That's the gap this IT closes.
  */
 class ResetOffsetsRoundTripIT {
 
@@ -84,7 +84,7 @@ class ResetOffsetsRoundTripIT {
                 assertThat(preReset.getResults(0).getError()).isEqualTo(ErrorCode.OK);
                 assertThat(preReset.getResults(0).getOffset()).isEqualTo(10L);
 
-                // Admin-level reset — the whole point of this slice.
+                // Admin-level reset — the whole point of this test.
                 var reset = admin.resetConsumerGroupOffsets(ResetConsumerGroupOffsetsRequest.newBuilder()
                         .setGroupId("g1")
                         .addResets(OffsetReset.newBuilder()

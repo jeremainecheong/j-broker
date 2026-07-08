@@ -19,12 +19,12 @@ public final class BrokerRegistry implements MetadataStateMachine.BrokerRegistra
 
     public record HostPort(String host, int port) {}
 
-    /** Inter-broker dial target + optional externally-reachable advertised target (). */
+    /** Inter-broker dial target + optional externally-reachable advertised target. */
     private record Entry(HostPort internal, HostPort advertised) {}
 
     private final ConcurrentHashMap<Integer, Entry> entries = new ConcurrentHashMap<>();
 
-    /** Pre-signature kept for call sites that only know an inter-broker address. */
+    /** Older signature kept for call sites that only know an inter-broker address. */
     public void onBrokerRegistration(int brokerId, String host, int port) {
         onBrokerRegistration(brokerId, host, port, "", 0);
     }
@@ -48,10 +48,10 @@ public final class BrokerRegistry implements MetadataStateMachine.BrokerRegistra
     }
 
     /**
-     * advertised address used in client-facing replies
+     * Advertised address used in client-facing replies
      * (FindCoordinator, DescribeCluster). Falls back to the internal
      * address when the broker did not advertise a separate listener —
-     * matches earlierbehavior for single-network deployments.
+     * matches original behavior for single-network deployments.
      */
     public Optional<HostPort> advertisedAddressFor(int brokerId) {
         var e = entries.get(brokerId);

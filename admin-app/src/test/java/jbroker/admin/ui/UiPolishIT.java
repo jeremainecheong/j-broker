@@ -24,7 +24,7 @@ import org.springframework.test.context.DynamicPropertySource;
  *
  * <ol>
  *   <li>Footer copy is unified via the shell.html fragment — no template
- *       should re-introduce the stale "— Milestone 8" label.</li>
+ *       should hardcode its own page-local footer text again.</li>
  *   <li>{@code /favicon.ico} is served (a real byte response, not a 404),
  *       so the browser console stays clean.</li>
  *   <li>Epoch-millis columns are wrapped in {@code <time data-epoch>} so
@@ -84,18 +84,16 @@ class UiPolishIT {
     void topicsPageDoesNotShipTheStalePhase8Footer() {
         String html = rest.getForObject("http://localhost:" + port + "/topics", String.class);
         assertThat(html)
-                .as("topics.html must pull footer copy from shell.html fragment — no stale '— Milestone 8'")
-                .doesNotContain("— Milestone 8")
-                .contains("j-broker admin");
+                .as("topics.html footer must come from the shared shell.html fragment, not a page-local string")
+                .contains("<footer>j-broker admin</footer>");
     }
 
     @Test
     void overviewPageDoesNotShipTheStalePhase8Footer() {
         String html = rest.getForObject("http://localhost:" + port + "/", String.class);
         assertThat(html)
-                .as("index.html must pull footer copy from shell.html fragment — no stale '— Milestone 8'")
-                .doesNotContain("— Milestone 8")
-                .contains("j-broker admin");
+                .as("index.html footer must come from the shared shell.html fragment, not a page-local string")
+                .contains("<footer>j-broker admin</footer>");
     }
 
     @Test
@@ -141,13 +139,12 @@ class UiPolishIT {
 
     @Test
     void raftPageInheritsTheSharedFooterAndHasNoPhase8String() {
-        // Spot-check one of the other templates that previously carried the stale "— Milestone 8"
+        // Spot-check one of the other templates that previously carried a hardcoded, stale
         // footer — ensures the shell-fragment include landed cluster-wide, not just on the two
         // pages the user actively looks at.
         String html = rest.getForObject("http://localhost:" + port + "/raft", String.class);
         assertThat(html)
-                .as("raft.html must pull footer copy from the shared fragment too")
-                .doesNotContain("— Milestone 8")
-                .contains("j-broker admin");
+                .as("raft.html footer must come from the shared shell.html fragment too")
+                .contains("<footer>j-broker admin</footer>");
     }
 }

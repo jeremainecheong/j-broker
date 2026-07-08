@@ -13,7 +13,7 @@ import jbroker.storage.LogManager;
  * {@code maxBytes} of raw batch bytes starting at {@code offset}. Uses
  * {@code FileChannel.transferTo} under the hood for zero-copy IO.
  *
- * <p>adds incremental fetch sessions: requests arriving with
+ * <p>Incremental fetch sessions: requests arriving with
  * {@code session_id=0} get a fresh id allocated and returned in the
  * response; requests echoing a previously-allocated id update their cached
  * per-(topic, partition) state and increment the

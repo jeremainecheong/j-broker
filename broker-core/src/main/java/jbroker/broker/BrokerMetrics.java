@@ -6,11 +6,11 @@ import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Minimal broker-local counter holder. Each broker owns one instance; tests
- * and, eventually, the observability endpoint in Milestone 9, read counters
+ * and the observability endpoint read counters
  * from this bag. Metrics are append-only and thread-safe via
  * {@link LongAdder}.
  *
- * <p>adds latency + throughput sampling so the admin {@code /metrics}
+ * <p>Latency + throughput sampling lets the admin {@code /metrics}
  * endpoints have something to show. A 1024-slot reservoir bounds memory; a
  * live counter (bytes/count) tracks all-time totals alongside a rolling
  * window for charts.
@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.LongAdder;
 public final class BrokerMetrics {
 
     /**
-     * incremented once per {@code Fetch} RPC that arrives carrying a
+     * Incremented once per {@code Fetch} RPC that arrives carrying a
      * non-zero {@code session_id} (i.e. a client echoing back a previously
      * allocated session). The first call per-session — where
      * {@code session_id == 0} — is <em>not</em> counted.
@@ -33,7 +33,7 @@ public final class BrokerMetrics {
         return incrementalFetchHits.sum();
     }
 
-    // ---- produce / fetch latency + throughput ----
+    // ---- Produce / fetch latency + throughput ----
 
     private final Reservoir produceLatency = new Reservoir(1024);
     private final Reservoir fetchLatency = new Reservoir(1024);
@@ -104,7 +104,7 @@ public final class BrokerMetrics {
      * fixed-size ring. Old entries are overwritten. Snapshot copies + sorts.
      * Not exact — for p99/p999 under low sample counts, the reservoir's
      * content bounds the precision — but adequate for admin-UI charts. A
-     * proper HdrHistogram can replace this in Milestone 9.
+     * proper HdrHistogram can replace this later.
      */
     private static final class Reservoir {
         private final long[] samples;

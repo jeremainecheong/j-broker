@@ -8,7 +8,7 @@ plugins {
 dependencies {
     implementation(project(":broker-core"))
     implementation(project(":proto"))
-    // jbroker.tls.TlsConfig / TlsContexts live in raft-transport;
+    // Jbroker.tls.TlsConfig / TlsContexts live in raft-transport;
     // admin-app now builds gRPC channels with mTLS support, so pull it in
     // directly (broker-core's dep is implementation-scoped).
     implementation(project(":raft-transport"))

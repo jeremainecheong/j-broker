@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * mTLS cluster integration test. Generates a dev CA + broker server
+ * MTLS cluster integration test. Generates a dev CA + broker server
  * cert + admin client cert via {@code scripts/tls/bootstrap-ca.sh}, stands up
  * a single-broker cluster with TLS enabled + client-auth=REQUIRE, and asserts
  * two invariants:

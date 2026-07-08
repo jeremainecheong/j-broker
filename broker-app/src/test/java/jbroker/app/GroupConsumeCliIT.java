@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * end-to-end: the {@code j-broker consume} subcommand is a real
+ * End-to-end: the {@code j-broker consume} subcommand is a real
  * consumer-group client (not the raw {@code console-consumer} single-
  * partition Fetch). This IT spins up the loop via the extracted
  * {@link BrokerApp#consumeGroupLoop} helper and asserts that the

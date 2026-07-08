@@ -11,7 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * lightweight coverage of the admin CLI happy path. Points the CLI
+ * Lightweight coverage of the admin CLI happy path. Points the CLI
  * at a fake HTTP server over loopback so we don't have to boot Spring;
  * this exercises URL construction + argument parsing + request dispatch.
  */

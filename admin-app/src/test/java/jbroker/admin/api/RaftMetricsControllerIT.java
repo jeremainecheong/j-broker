@@ -22,7 +22,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * covers {@code /api/v1/raft} + {@code /api/v1/metrics/*}.
+ * Covers {@code /api/v1/raft} + {@code /api/v1/metrics/*}.
  */
 @SpringBootTest(
         classes = AdminApp.class,

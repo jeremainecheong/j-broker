@@ -212,8 +212,9 @@ public final class ClusterHarness implements AutoCloseable {
 
     /**
      * CI runners on shared infrastructure routinely take 2–3× longer for
-     * fsync + gRPC handshake than a laptop. The Milestone 1 acceptance gate claim "leader
-     * within 1 s under normal timing" is a laptop-specific number;
+     * fsync + gRPC handshake than a laptop. The original leader-election
+     * acceptance claim of "leader within 1 s under normal timing" is a
+     * laptop-specific number;
      * regression tests multiply by this factor when the {@code JBROKER_CI}
      * env var is set so they validate "fast election happens" without
      * flaking on shared runners. Kafka / etcd regression suites apply the

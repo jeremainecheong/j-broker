@@ -22,9 +22,9 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * VT-pinning CI gate at bench scale.
  *
- * <p>{@link VirtualThreadPinningIT} satisfied the acceptance gate by
- * driving 200 concurrent produces and asserting zero
- * {@code jdk.VirtualThreadPinned} events. The audit flagged two gaps:
+ * <p>{@link VirtualThreadPinningIT} satisfied the ReentrantLock-migration
+ * acceptance gate by driving 200 concurrent produces and asserting zero
+ * {@code jdk.VirtualThreadPinned} events. A closer look flagged two gaps:
  *
  * <ol>
  *   <li>200 ops is well below the scale a real client workload reaches,
@@ -51,7 +51,7 @@ class VtPinningBenchScaleIT {
     @Test
     void produceAndFetchHotPathsEmitZeroVirtualThreadPinnedEventsAtScale(
             @TempDir Path d1, @TempDir Path d2, @TempDir Path d3) throws Exception {
-        Path jfrPath = Files.createTempFile("jbroker-hardening pass-", ".jfr");
+        Path jfrPath = Files.createTempFile("jbroker-vt-pinning-", ".jfr");
         var recording = new Recording();
         recording.enable("jdk.VirtualThreadPinned").withThreshold(Duration.ZERO);
         recording.setDestination(jfrPath);
@@ -80,11 +80,12 @@ class VtPinningBenchScaleIT {
                 }
             }
 
-            // Milestone 1 — produce storm. Chunked into 200-wide × 10-round
+            // Stage 1 — produce storm. Chunked into 200-wide × 10-round
             // waves so we don't exhaust the kernel's ephemeral port pool
-            // (TenThousandClientsIT runs the full 10k-concurrent shape only under an
-            // explicitly bumped ulimit); 200 concurrent sockets is the
-            // same envelope TenThousandClientsCiGradeIT uses for CI default `ulimit -n 1024`.
+            // (TenThousandClientsIT runs the full 10k-concurrent shape only
+            // under an explicitly bumped ulimit); 200 concurrent sockets is
+            // the same envelope TenThousandClientsCiGradeIT uses for CI
+            // default `ulimit -n 1024`.
             try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
                 for (int round = 0; round < ROUNDS; round++) {
                     var tasks = new java.util.ArrayList<Callable<Long>>(CLIENTS_PER_ROUND);
@@ -100,7 +101,7 @@ class VtPinningBenchScaleIT {
                 }
             }
 
-            // Milestone 2 — fetch storm. Same round shape. Exercises
+            // Stage 2 — fetch storm. Same round shape. Exercises
             // FetchHandler + LogSegment.transferTo on virtual threads;
             // the session-cache allocation path runs for every fresh
             // connection.

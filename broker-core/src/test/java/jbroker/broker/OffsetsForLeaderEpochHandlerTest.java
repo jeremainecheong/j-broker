@@ -77,7 +77,7 @@ class OffsetsForLeaderEpochHandlerTest {
     @Test
     void returnsUndefinedEpochOffsetWhenCheckpointIsEmpty(@TempDir Path dir) throws Exception {
         // Follower asks about an epoch but the leader's checkpoint has no
-        // entries at all (earlierlog, or freshly restored snapshot where
+        // entries at all (log predating epoch tracking, or freshly restored snapshot where
         // the LeaderEpochListener has not yet assigned). Kafka returns
         // UNDEFINED_EPOCH_OFFSET = -1, instructing the follower to truncate
         // its entire log.

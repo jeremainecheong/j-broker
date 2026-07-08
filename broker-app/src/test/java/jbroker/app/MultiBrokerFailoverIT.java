@@ -13,11 +13,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * acceptance gate gate (interpretation): kill the broker hosting a
+ * Leader-failover acceptance gate: kill the broker hosting a
  * partition leader; within 5s the cluster picks a new leader from the
  * ISR and subsequent produces land successfully. "Kill" is simulated
  * via {@link Broker#closeAbruptly()} — real-JVM {@code kill -9} is
- * 's chaos-script scope.
+ * covered separately by the chaos script.
  */
 class MultiBrokerFailoverIT {
 

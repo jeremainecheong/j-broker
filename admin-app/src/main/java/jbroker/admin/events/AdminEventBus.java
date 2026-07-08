@@ -17,7 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * admin-app-side fan-in for broker event streams. Opens a
+ * Admin-app-side fan-in for broker event streams. Opens a
  * {@code SubscribeEvents} RPC against every configured broker; each
  * received event is:
  * <ul>
@@ -29,7 +29,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>When a broker stream errors or closes, the bus retries the connection
  * with a brief back-off. Redis pub/sub remains the optional production
- * path; Milestone 8 ships with in-process fan-in only.
+ * path; without Redis the bus is in-process fan-in only.
  */
 @Component
 public class AdminEventBus {
@@ -56,7 +56,7 @@ public class AdminEventBus {
     private volatile boolean running = true;
 
     /**
-     * optional side-channel publisher, invoked for every event the
+     * Optional side-channel publisher, invoked for every event the
      * bus ingests (both from broker subscriptions and from
      * {@link #injectExternal}-cycled Redis echoes are intentionally NOT
      * re-published; see {@code injectExternal}). When null the bus runs
@@ -65,7 +65,7 @@ public class AdminEventBus {
     private volatile java.util.function.Consumer<LocalEvent> externalPublisher;
 
     /**
-     * dedupe set keyed on {@code (brokerEndpoint, brokerEventId)}.
+     * Dedupe set keyed on {@code (brokerEndpoint, brokerEventId)}.
      * Shared by direct broker ingestion and external Redis injection so a
      * pod never double-broadcasts the same broker event regardless of
      * whether it arrived via its own gRPC stream or via another pod's
@@ -161,7 +161,7 @@ public class AdminEventBus {
     }
 
     private void ingest(String brokerEndpoint, EventMessage msg) {
-        // dedupe before allocating a LocalEvent so we don't bump
+        // Dedupe before allocating a LocalEvent so we don't bump
         // nextId for events the bus has already broadcast (either from a
         // redundant broker stream or from a Redis echo).
         String dedupeKey = brokerEndpoint + "#" + msg.getId();
@@ -184,7 +184,7 @@ public class AdminEventBus {
     }
 
     /**
-     * inject an event delivered via the external pub/sub channel
+     * Inject an event delivered via the external pub/sub channel
      * (typically Redis pub/sub from a peer admin pod). De-duplicates on
      * {@code (brokerEndpoint, brokerEventId)} so the same broker event
      * arriving via a peer's Redis publish AND this pod's direct gRPC
@@ -201,7 +201,7 @@ public class AdminEventBus {
     }
 
     /**
-     * install a fan-out hook. Invoked for every new event the
+     * Install a fan-out hook. Invoked for every new event the
      * bus emits locally. Passing null disables the hook (tests use this
      * to tear down the Redis wiring in {@code PreDestroy}).
      */

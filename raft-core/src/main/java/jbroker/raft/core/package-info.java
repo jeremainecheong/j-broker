@@ -9,8 +9,8 @@
  * dependency on those belongs in {@code raft-transport} or higher layers.
  * Adding such a dependency here will fail the ArchUnit test.
  *
- * <p>Milestone 3 will reuse this determinism to drive a deterministic simulator
- * for randomised / jepsen-style testing; preserving the zero-side-effect
+ * <p>A future deterministic simulator for randomised / jepsen-style testing
+ * will reuse this determinism; preserving the zero-side-effect
  * property of {@link jbroker.raft.core.RaftCore#step} is load-bearing.
  */
 package jbroker.raft.core;

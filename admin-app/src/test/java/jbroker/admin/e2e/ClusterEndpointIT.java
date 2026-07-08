@@ -23,8 +23,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * {@code GET /api/v1/cluster} against a 3-broker
- * cluster returns the correct node list, controller id, and term.
+ * {@code GET /api/v1/cluster} against a 3-broker cluster returns the
+ * correct node list, controller id, and term.
  */
 @SpringBootTest(
         classes = AdminApp.class,

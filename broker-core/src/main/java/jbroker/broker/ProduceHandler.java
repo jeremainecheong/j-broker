@@ -13,7 +13,7 @@ import jbroker.storage.RecordBatch;
  * re-encodes them with the assigned {@code baseOffset} from the target
  * partition's {@link jbroker.storage.Log}, and appends.
  *
- * <p>Milestone 6.7 adds idempotent-producer dedup. A request is considered
+ * <p>Supports idempotent-producer dedup. A request is considered
  * idempotent iff {@code producer_id > 0} (proto3 default {@code 0} and the
  * explicit legacy sentinel {@code -1} both bypass dedup — see
  * {@link ProducerIdRegistry}, whose first allocation is {@code 1}).
@@ -47,7 +47,7 @@ public final class ProduceHandler {
         this(logManager, topicManager, selfBrokerId, followerTracker, metrics, jbroker.broker.quota.QuotaEnforcer.NOOP);
     }
 
-    /** constructor with a {@link jbroker.broker.quota.QuotaEnforcer}. */
+    /** Constructor with a {@link jbroker.broker.quota.QuotaEnforcer}. */
     public ProduceHandler(
             LogManager logManager,
             TopicManager topicManager,
@@ -99,7 +99,7 @@ public final class ProduceHandler {
     }
 
     public ProduceResponse handle(ProduceRequest req) {
-        // admission check. Uses "anonymous" until Milestone 10 adds
+        // Admission check. Uses "anonymous" until a later pass adds
         // authenticated principal extraction from gRPC metadata. Byte budget
         // is the serialized batch size so the budget matches the wire cost.
         var decision = quotaEnforcer.check(
@@ -123,7 +123,7 @@ public final class ProduceHandler {
         // straddle a concurrent PartitionChangeRecord apply. Check-then-
         // append still has a race: a leadership change committed between
         // this snapshot and log.append can let a deposed leader write one
-        // batch locally. 's leader-epoch in Log.append closes the gap.
+        // batch locally. The leader-epoch check in Log.append closes the gap.
         var state = topicManager.partitionState(req.getTopic(), req.getPartition());
         if (state.isEmpty()) {
             return err(ErrorCodes.NOT_LEADER, "no leader for partition " + req.getTopic() + "-" + req.getPartition());
@@ -154,7 +154,8 @@ public final class ProduceHandler {
         // The dedup map is in-memory only: after a restart this broker has
         // a full log but an empty map, and trusting the empty map turns
         // producer retries into double-appends (found by the chaos-with-
-        // load soak; the spec invariant #4). First idempotent produce per
+        // load soak; violates the no-duplicate-delivery guarantee for
+        // idempotent producers). First idempotent produce per
         // partition rebuilds the map from the log before any dedup check.
         ensureProducerStateRecovered(req.getTopic(), req.getPartition());
 

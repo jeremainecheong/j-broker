@@ -33,7 +33,7 @@ jobs:
           path: '**/build/reports/tests/'
 
   perf-gate:
-    # runs @Tag("perf") tests with generous regression floors
+    # Runs @Tag("perf") tests with generous regression floors
     # so a merge that halves throughput or triples tail latency breaks
     # the build. Thresholds are set ~3-5x above observed dev-machine
     # numbers so we catch catastrophic regressions (VT pinning, missing

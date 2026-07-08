@@ -1,4 +1,4 @@
-/* admin UI shell. Same look in light + dark mode via CSS custom
+/* Admin UI shell. Same look in light + dark mode via CSS custom
  * properties and a prefers-color-scheme override. Every visual token goes
  * through a --var so new pages and dark-mode future tweaks live in one
  * place.
@@ -13,7 +13,7 @@
   --bg-subtle: #fafbfc;
   --fg: #1b2431;
   --fg-muted: #65748b;
-  /* Back-compat alias — earliertemplates inline `style="color: var(--muted)"`.
+  /* Back-compat alias — older templates inline `style="color: var(--muted)"`.
      Keep both in sync until the pages migrate to --fg-muted explicitly. */
   --muted: var(--fg-muted);
   --fg-inverse: #ffffff;
@@ -84,7 +84,7 @@
   box-sizing: border-box;
 }
 
-/* required companion to Alpine.js's `x-cloak` attribute. Without
+/* Required companion to Alpine.js's `x-cloak` attribute. Without
  * this rule, every modal renders visible for the ~50–300ms between first
  * paint and Alpine.js initialisation (or indefinitely if Alpine fails to
  * load — slow CDN, CSP block, JS error). Modals gate on x-show=false by
@@ -399,7 +399,7 @@ tr:hover td {
   stroke-dasharray: 4 3;
 }
 
-/* Partition cards (topic detail — ) ------------------------------- */
+/* Partition cards (topic detail) ---------------------------------------- */
 
 .partitions-grid {
   display: grid;
@@ -515,7 +515,7 @@ tr:hover td {
   flex: 1;
 }
 
-/* Overview dashboard () ------------------------------------------ */
+/* Overview dashboard ---------------------------------------------------- */
 
 .alert-strip {
   display: flex;
@@ -634,7 +634,7 @@ tr:hover td {
   stroke: none;
 }
 
-/* Offset-fill colour variants (lag progress bars share the meter) */
+/* Offset-fill colour variants (lag progress bars share the meter) ------ */
 .offset-fill.ok {
   background: var(--ok);
 }
@@ -645,7 +645,7 @@ tr:hover td {
   background: var(--bad);
 }
 
-/* Consumer-group member cards () ---------------------------------- */
+/* Consumer-group member cards ------------------------------------------- */
 
 .member-grid {
   display: grid;
@@ -727,7 +727,7 @@ footer {
   font-size: 0.82rem;
 }
 
-/* Chaos page () --------------------------------------------------- */
+/* Chaos page -------------------------------------------------------------- */
 
 .chaos-layout {
   display: grid;

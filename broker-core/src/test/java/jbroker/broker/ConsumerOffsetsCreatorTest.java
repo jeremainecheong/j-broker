@@ -8,7 +8,7 @@ import jbroker.proto.raft.MetadataRecord;
 import org.junit.jupiter.api.Test;
 
 /**
- * verifies {@link ConsumerOffsetsCreator} only proposes when the
+ * Verifies {@link ConsumerOffsetsCreator} only proposes when the
  * caller is the leader, only proposes once, clamps RF correctly, and emits
  * exactly {@link ConsumerOffsetsTopic#PARTITION_COUNT} partitions.
  */

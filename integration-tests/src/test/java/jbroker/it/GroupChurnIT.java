@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * consumer-group churn under sustained produce load.
+ * Consumer-group churn under sustained produce load.
  *
  * <p>Spawns a 3-broker cluster, 3 consumers in a single group churning
  * join/leave on a rotating schedule, and a steady producer. Asserts:

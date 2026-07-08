@@ -1,4 +1,4 @@
-// overview dashboard client. Two responsibilities:
+// Overview dashboard client. Two responsibilities:
 //   1. Poll /api/v1/metrics/throughput every 2s, keep a rolling ring of
 //      30 samples per metric (≈ 1 min of history), redraw inline SVG
 //      sparklines.
@@ -89,7 +89,7 @@
     if (series[kind].length > HISTORY) series[kind].shift();
   }
 
-  // hydrate from the server-side ring on first load so the
+  // Hydrate from the server-side ring on first load so the
   // sparkline shows persisted history across page navigations and pod
   // restarts instead of a blank canvas that only fills while the tab
   // is open.

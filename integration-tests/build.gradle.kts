@@ -6,7 +6,7 @@ dependencies {
     testImplementation(project(":raft-core"))
     testImplementation(project(":raft-transport"))
     testImplementation(project(":proto"))
-    // cross-slice E2E suite and chaos harness need Broker + client.
+    // Cross-module end-to-end suite and chaos harness need Broker + client.
     testImplementation(project(":broker-app"))
     // jbroker.app.testkit — shared bind-retry cluster starters.
     testImplementation(testFixtures(project(":broker-app")))
@@ -28,7 +28,7 @@ tasks.register<Test>("stressTest") {
     classpath = sourceSets["test"].runtimeClasspath
 }
 
-// chaos suite — excluded from the default test task so the normal CI
+// Chaos suite — excluded from the default test task so the normal CI
 // build stays fast. Invoke locally via `./gradlew :integration-tests:chaosTest`
 // (or via scripts/chaos/group-churn.sh which sets a longer duration env var).
 tasks.register<Test>("chaosTest") {

@@ -10,7 +10,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 
 /**
- * unit coverage for the validation branch of {@link RestExceptionHandler}.
+ * Unit coverage for the validation branch of {@link RestExceptionHandler}.
  * Builds a synthetic {@code MethodArgumentNotValidException} with two field
  * errors and asserts the handler maps them into the RestError envelope.
  */

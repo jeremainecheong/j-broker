@@ -1,4 +1,4 @@
-# monitoring stack. Bring up with:
+# Monitoring stack. Bring up with:
 #   docker compose -f docker-compose.monitoring.yml --profile monitoring up
 #
 # Prometheus scrapes the admin-app's /actuator/prometheus endpoint

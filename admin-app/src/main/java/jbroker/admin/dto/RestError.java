@@ -3,7 +3,7 @@ package jbroker.admin.dto;
 import java.util.Map;
 
 /**
- * Error envelope defined in the spec The {@code error_code} field is the
+ * Error envelope for the admin REST API. The {@code error_code} field is the
  * canonical string name from {@code ErrorCodeNames} (e.g.
  * {@code "NOT_LEADER"}); {@code hint} is an open-ended map of suggestions
  * (current leader id/host/port, suggested retry delay, etc.).

@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * acceptance gate gate. Three in-process brokers; one replicated topic;
+ * Replication acceptance gate. Three in-process brokers; one replicated topic;
  * 200 records produced on the leader; assert all 3 replicas' logs are
  * byte-identical once replication catches up.
  */

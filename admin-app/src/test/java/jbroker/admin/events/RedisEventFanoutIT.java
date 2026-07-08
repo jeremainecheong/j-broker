@@ -14,7 +14,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * end-to-end: two {@link RedisEventFanout} instances (standing in
+ * End-to-end: two {@link RedisEventFanout} instances (standing in
  * for two admin pods) pointed at the same Redis container should propagate
  * events from pod A's local bus into pod B's local bus, without pod A
  * seeing a duplicate of its own publish on the way back in.

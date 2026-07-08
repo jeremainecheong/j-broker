@@ -16,10 +16,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Wire-up IT — the Milestone 8 {@code Metadata} gRPC surface is reachable on
- * the broker. As of every RPC has a real implementation; this IT
+ * Wire-up IT — the {@code Metadata} gRPC surface is reachable on
+ * the broker. Every RPC has a real implementation; this IT
  * just confirms the surface is registered and returns well-formed
- * responses (deeper coverage lives in slice-specific tests).
+ * responses (deeper coverage lives in RPC-specific tests).
  */
 class MetadataServiceWireUpIT {
 
@@ -32,7 +32,7 @@ class MetadataServiceWireUpIT {
                 .build();
         try {
             var stub = MetadataGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-            // describeTopicPartitions is implemented as of ; requesting
+            // describeTopicPartitions is implemented; requesting
             // an unknown topic still exercises the RPC surface and is
             // expected to return UNKNOWN rather than UNIMPLEMENTED.
             assertThat(stub.describeTopicPartitions(DescribeTopicPartitionsRequest.newBuilder()
@@ -40,7 +40,7 @@ class MetadataServiceWireUpIT {
                                     .build())
                             .getError())
                     .isEqualTo(ErrorCode.UNKNOWN);
-            // listConsumerGroups is implemented as of ; a freshly-booted
+            // listConsumerGroups is implemented; a freshly-booted
             // broker with no members yet returns OK with an empty list.
             assertThat(stub.listConsumerGroups(
                                     ListConsumerGroupsRequest.newBuilder().build())
@@ -53,7 +53,7 @@ class MetadataServiceWireUpIT {
                                     .build())
                             .getError())
                     .isEqualTo(ErrorCode.NOT_COORDINATOR);
-            // describeRaft is implemented as of .
+            // describeRaft is implemented.
             assertThat(stub.describeRaft(DescribeRaftRequest.newBuilder().build())
                             .getError())
                     .isEqualTo(ErrorCode.OK);

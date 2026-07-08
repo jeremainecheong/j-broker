@@ -28,17 +28,17 @@ import jbroker.storage.Record;
 import jbroker.storage.RecordBatch;
 
 /**
- * Routes the Milestone 7 consumer-group RPCs ({@code FindCoordinator},
+ * Routes the consumer-group RPCs ({@code FindCoordinator},
  * {@code ConsumerGroupHeartbeat}, {@code CommitOffsets},
  * {@code FetchOffsets}, {@code ListOffsets}).
  *
- * <p>wires the surface only — coordinator-routed RPCs return
+ * <p>The first cut wired the surface only — coordinator-routed RPCs return
  * {@link ErrorCode#COORDINATOR_NOT_AVAILABLE} until the
- * {@code GroupCoordinator} lands in / . {@code FetchOffsets}
- * returns {@link ErrorCode#OFFSET_OUT_OF_RANGE} until plugs in the
+ * {@code GroupCoordinator} lands with the coordinator wiring. {@code FetchOffsets}
+ * returns {@link ErrorCode#OFFSET_OUT_OF_RANGE} until the offset store plugs in the
  * persisted offset cache.
  *
- * <p>{@code ListOffsets} IS implemented in it just delegates to
+ * <p>{@code ListOffsets} IS implemented in It just delegates to
  * {@link LogManager} and returns the partition's {@code nextOffset()} for
  * the latest sentinel ({@code timestamp == -1}), {@code logStartOffset()}
  * (currently always 0) for the earliest sentinel ({@code timestamp == -2}),
@@ -58,7 +58,7 @@ public final class ConsumerHandler {
     private final java.util.function.LongSupplier wallClockMillis;
 
     /**
-     * Milestone 7.1 / 7.3 form — no group coordinator. Coordinator-routed RPCs
+     * Coordinator-less form. Coordinator-routed RPCs
      * fall back to the placeholder error codes. Used by tests that don't
      * exercise the heartbeat path; production wiring uses the full form.
      */
@@ -74,7 +74,7 @@ public final class ConsumerHandler {
                 System::currentTimeMillis);
     }
 
-    /** form — kept for tests that don't exercise offset persistence. */
+    /** Kept for tests that don't exercise offset persistence. */
     public ConsumerHandler(
             TopicManager topicManager,
             LogManager logManager,
@@ -145,7 +145,7 @@ public final class ConsumerHandler {
                     .build();
         }
         int leaderId = partitionState.get().leader();
-        // clients get the advertised address so they can dial
+        // Clients get the advertised address so they can dial
         // coordinators from outside the broker-internal network. Falls
         // back to internal when advertised wasn't configured.
         var address = brokerRegistry.advertisedAddressFor(leaderId);
@@ -235,7 +235,7 @@ public final class ConsumerHandler {
         // Steady-state heartbeat. Flatten the request's owned_partitions
         // (one TopicPartitions per topic) into a flat list of TopicPartition
         // pairs so the coordinator can compare it against currentAssignment
-        // for cooperative incremental rebalance ack detection ().
+        // for cooperative incremental rebalance ack detection.
         var owned = new java.util.ArrayList<jbroker.proto.common.TopicPartition>();
         for (var tp : req.getOwnedPartitionsList()) {
             for (int p : tp.getPartitionsList()) {
@@ -303,7 +303,8 @@ public final class ConsumerHandler {
     }
 
     /**
-     * Persist a batch of (tp, offset) commits for {@code group_id}.      * implementation:
+     * Persist a batch of (tp, offset) commits for {@code group_id}. The store
+     * implementation:
      * <ol>
      *   <li>Routing guard — same three-way as the heartbeat path.</li>
      *   <li>Membership validation — caller must own a current member_id +
@@ -461,7 +462,7 @@ public final class ConsumerHandler {
     }
 
     /**
-     * admin-initiated consumer-group removal. Returns one of:
+     * Admin-initiated consumer-group removal. Returns one of:
      * <ul>
      *   <li>{@code OK} — group existed and was removed from in-memory state.
      *       Offset commits in {@code __consumer_offsets} are left intact
@@ -483,7 +484,7 @@ public final class ConsumerHandler {
     }
 
     /**
-     * admin-initiated offset reset. Skips the member-validation
+     * Admin-initiated offset reset. Skips the member-validation
      * step of {@link #commitOffsets} because admin operators aren't group
      * members. Returns one per-tp {@link ErrorCode} alongside the top-level
      * routing code.
@@ -554,13 +555,13 @@ public final class ConsumerHandler {
                 long offset;
                 long timestamp = part.getTimestamp();
                 if (timestamp == -2) {
-                    // Earliest. Log compaction is a Milestone 9+ concern, so the
+                    // Earliest. Log compaction arrives later on this path, so the
                     // log start offset is always 0 today.
                     offset = 0L;
                 } else {
                     // -1 (latest) and any positive ts both fall back to LEO
                     // for now. Refining by-ts lookups requires a public
-                    // search API on TimeIndex — left for a follow-up slice
+                    // search API on TimeIndex — left for a follow-up
                     // when a real client needs it.
                     offset = logManager.logFor(tp.getTopic(), tp.getPartition()).nextOffset();
                 }

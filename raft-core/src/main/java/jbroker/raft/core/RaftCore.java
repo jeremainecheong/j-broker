@@ -34,12 +34,12 @@ public interface RaftCore {
      * freshly-started nodes that haven't heard from a leader yet.
      *
      * <p>Exposed for observability only. In particular, an admin REST layer
-     * uses this to report {@code controllerId} for the spec {@code /cluster}
-     * without round-tripping through the Raft protocol.
+     * uses this to report {@code controllerId} for the {@code /cluster}
+     * endpoint without round-tripping through the Raft protocol.
      */
     Optional<NodeId> currentLeader();
 
-    /** point-in-time Raft-node state exposed by {@code /api/v1/raft}. */
+    /** Point-in-time Raft-node state exposed by {@code /api/v1/raft}. */
     record Observability(
             long currentTerm, long commitIndex, long lastApplied, long lastLogIndex, long lastLogTerm, int votedFor) {}
 

@@ -5,7 +5,7 @@ package jbroker.broker.events;
  * Jackson dependency so every module that imports broker-core stays
  * classpath-small; the admin-app uses Jackson on its own REST surface.
  *
- * <p>Output matches theschema per event type. String values are
+ * <p>Output matches the documented event schema per event type. String values are
  * emitted with {@link #escape} which handles quotes, backslashes, and
  * control chars — sufficient for broker-produced payloads (topic names,
  * group ids, host strings).

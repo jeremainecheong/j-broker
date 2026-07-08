@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * End-to-end Milestone 5 scenarios: create a topic, produce N messages, consume
+ * End-to-end scenarios: create a topic, produce N messages, consume
  * them back in the same order, then restart the broker and verify the
  * records survive. This exercises Raft-replicated metadata + in-memory
  * {@code TopicManager} + the {@link jbroker.storage.LogManager} data plane
@@ -27,7 +27,7 @@ class BrokerEndToEndIT {
         try (var client = new BrokerClient("127.0.0.1", brokerPort)) {
             client.createTopic("orders", 1, 1);
 
-            // Produce 100 messages (spec acceptance gate specifies 100k; 100 is enough to
+            // Produce 100 messages (the acceptance bar specifies 100k; 100 is enough to
             // exercise the end-to-end path and stays well under the 20-min
             // CI cap).
             int total = 100;

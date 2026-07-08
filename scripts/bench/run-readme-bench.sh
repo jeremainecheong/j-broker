@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# refresh docs/bench/results.{csv,md} against a running broker.
+# Refresh docs/bench/results.{csv,md} against a running broker.
 #
 # Usage:
 #   scripts/bench/run-readme-bench.sh [BROKER_HOST:PORT]

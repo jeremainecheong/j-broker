@@ -10,7 +10,7 @@ import jbroker.proto.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 
 /**
- * proves the GroupCoordinator snapshot/restore round-trip:
+ * Proves the GroupCoordinator snapshot/restore round-trip:
  * <ul>
  *   <li>{@link GroupCoordinator#snapshotGroup} captures the current state
  *       of a group in a deterministic, persist-able form.</li>

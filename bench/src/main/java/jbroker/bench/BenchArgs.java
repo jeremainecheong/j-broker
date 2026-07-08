@@ -27,7 +27,7 @@ final class BenchArgs {
     }
 
     /**
-     * resolve optional mTLS flags into a {@link jbroker.tls.TlsConfig}.
+     * Resolve optional mTLS flags into a {@link jbroker.tls.TlsConfig}.
      * Accepts {@code --tls-trust CA.crt}, {@code --tls-cert CLIENT.crt},
      * {@code --tls-key CLIENT.key}. Returns {@link jbroker.tls.TlsConfig#DISABLED}
      * if no flags are present — the bench stays plaintext by default.

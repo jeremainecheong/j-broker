@@ -30,7 +30,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * connect an SSE client, receive events, disconnect,
+ * Connect an SSE client, receive events, disconnect,
  * produce more events, reconnect with {@code Last-Event-ID}, assert no
  * events were dropped across the gap.
  */
@@ -72,7 +72,7 @@ class SseReconnectIT {
 
     @Test
     void reconnectWithLastEventIdReplaysMissedEvents() throws Exception {
-        // Milestone 1: first connection — create a topic + record the event id.
+        // Step 1: first connection — create a topic + record the event id.
         var firstIds = consume(1, null);
         try (var admin = new BrokerClient("localhost", brokerPort)) {
             admin.createTopic("before-disconnect", 1, 1);
@@ -82,7 +82,7 @@ class SseReconnectIT {
                 .as("first connection should yield at least one event id")
                 .isGreaterThan(0);
 
-        // Milestone 2: first connection dropped, trigger more events while no
+        // Step 2: first connection dropped, trigger more events while no
         // one is listening.
         try (var admin = new BrokerClient("localhost", brokerPort)) {
             admin.createTopic("during-disconnect", 1, 1);
@@ -90,7 +90,7 @@ class SseReconnectIT {
         // Allow the broker's event stream to land in the admin-app's ring.
         Thread.sleep(500);
 
-        // Milestone 3: reconnect with Last-Event-ID = lastSeen, expect the
+        // Step 3: reconnect with Last-Event-ID = lastSeen, expect the
         // "during-disconnect" event to be replayed.
         var secondIds = consume(1, Long.toString(lastSeen));
         long replayed = waitForId(secondIds, 3_000);

@@ -6,7 +6,7 @@ import jbroker.broker.client.BrokerClient;
 import org.HdrHistogram.Histogram;
 
 /**
- * multi-broker acks=all producer bench. Spins up an
+ * Multi-broker acks=all producer bench. Spins up an
  * in-process 3-broker cluster with RF=3, times produce calls that block
  * until every ISR member has replicated. The single-broker {@code
  * producer --acks all} mode only tests the handler's happy path; this

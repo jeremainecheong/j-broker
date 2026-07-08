@@ -17,8 +17,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * {@code /api/v1/metrics/*} — throughput + latency charts for the UI.
  *
- * <p>scope: simple cluster-wide sum / max merging. Milestone 9 will replace
- * this with a proper time-series surface (Prometheus + Grafana).
+ * <p>Simple cluster-wide sum / max merging; the proper time-series surface
+ * is the Prometheus + Grafana path.
  */
 @RestController
 @RequestMapping("/api/v1/metrics")
@@ -77,7 +77,7 @@ public class MetricsController {
     }
 
     /**
-     * persistent time-series over the admin-app-side
+     * Persistent time-series over the admin-app-side
      * {@link ThroughputHistory} ring. Browsers hydrate their sparklines
      * from this endpoint on page load so navigation no longer resets
      * history. {@code window} accepts simple "5m", "30s", "1h" style

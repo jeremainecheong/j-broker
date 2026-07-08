@@ -137,7 +137,7 @@ public final class ConsumerConfig {
             return this;
         }
 
-        /** supply a TLS config; defaults to {@link TlsConfig#DISABLED} (plaintext). */
+        /** Supply a TLS config; defaults to {@link TlsConfig#DISABLED} (plaintext). */
         public Builder tls(TlsConfig t) {
             this.tls = t;
             return this;

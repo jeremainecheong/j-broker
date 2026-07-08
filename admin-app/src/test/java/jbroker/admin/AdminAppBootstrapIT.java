@@ -19,15 +19,15 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * admin-app boots with {@code /actuator/health} returning 200 while
+ * Admin-app boots with {@code /actuator/health} returning 200 while
  * pointed at a live in-process broker. Confirms the Spring Boot skeleton is
- * viable so every later slice has a running harness to layer controllers
+ * viable so later work has a running harness to layer controllers
  * into.
  */
 @SpringBootTest(
         classes = AdminApp.class,
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        // Milestone 8 slices + add Redis-optional plumbing; for the bootstrap
+        // Redis-optional plumbing is layered in later; for the bootstrap
         // IT we explicitly run without Redis.
         properties = "jbroker.redis.url=")
 class AdminAppBootstrapIT {

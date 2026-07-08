@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import org.junit.jupiter.api.Test;
 
 /**
- * round-trip tests for the {@code __consumer_offsets} key/value codec.
+ * Round-trip tests for the {@code __consumer_offsets} key/value codec.
  *
  * <p>Two record types live in the topic:
  * <ul>
@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
  *   <li>Type 2 — group metadata. Key = {@code group}; value = serialized
  *       {@link ConsumerOffsetsTopic.GroupMetadataValue}. Group metadata is
  *       written by {@link GroupCoordinator} on every membership change so a
- *       fresh coordinator can rebuild state on failover ().</li>
+ *       fresh coordinator can rebuild state on failover.</li>
  * </ul>
  */
 class ConsumerOffsetsTopicCodecTest {

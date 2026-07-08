@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
- * the pause gate must no-op the tick so peers stop seeing fresh
+ * The pause gate must no-op the tick so peers stop seeing fresh
  * heartbeats and eventually flip this broker to dead. We test the gate
  * without spinning up actual gRPC stubs by checking the observable side
  * effect: no channel activity while paused, resumed activity after unpause.
@@ -64,7 +64,7 @@ final class BrokerHeartbeatSenderPauseTest {
 
     @Test
     void backCompatConstructorDefaultsToUnpaused() {
-        // 4-arg constructor behaves identically to pre-. Just
+        // 4-arg constructor behaves identically to the earlier unpaused-only constructor. Just
         // verifies it constructs without NPE; the real behaviour is exercised
         // by every existing BrokerHeartbeatSender user in the ITs.
         var sender = new BrokerHeartbeatSender(1, List.of(), () -> 0L, 1_000L);

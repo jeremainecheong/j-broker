@@ -12,7 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * unit coverage for {@link Log#compactByKey()}. Verifies the three
+ * Unit coverage for {@link Log#compactByKey()}. Verifies the three
  * semantic rules: latest-value-wins per key, tombstone drops the key, and
  * null-keyed records pass through untouched.
  */
@@ -92,7 +92,7 @@ final class LogCompactionTest {
         // 2 null-keyed + 1 k1 = 3. Survivors live at their original
         // absolute offsets: null@0, k1@2 (latest), null@3. logEndOffset
         // is then max(offset) + 1 = 4 — sparse-offset preservation
-        // replaces the pre-v1.1 renumber-from-0 behavior.
+        // replaces the earlier renumber-from-0 behavior.
         assertThat(kept).isEqualTo(3);
         assertThat(log.nextOffset()).isEqualTo(4L);
     }

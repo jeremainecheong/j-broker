@@ -9,7 +9,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * client for broker-hosted {@code /debug/chaos/*} endpoints. Maps
+ * Client for broker-hosted {@code /debug/chaos/*} endpoints. Maps
  * broker id → chaos URL from the {@code jbroker.admin.chaos.brokers}
  * property (comma-separated {@code id=host:port} pairs).
  *

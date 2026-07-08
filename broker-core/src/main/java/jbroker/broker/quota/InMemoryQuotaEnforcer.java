@@ -4,7 +4,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * single-broker in-memory token bucket. One bucket per
+ * Single-broker in-memory token bucket. One bucket per
  * {@code (principal, op)} pair; bucket refills at {@code bytesPerSec}
  * and caps at one second of capacity.
  *
@@ -66,7 +66,7 @@ public final class InMemoryQuotaEnforcer implements QuotaEnforcer {
         }
     }
 
-    /** shared counter side-effect (reset + size) for tests. */
+    /** Shared counter side-effect (reset + size) for tests. */
     int bucketCount() {
         return buckets.size();
     }

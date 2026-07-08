@@ -10,7 +10,7 @@ import jbroker.broker.client.BrokerClient;
 import org.HdrHistogram.Histogram;
 
 /**
- * produce-path benchmark.
+ * Produce-path benchmark.
  *
  * <pre>
  *   j-broker-bench producer --broker HOST:PORT --topic T --partition N

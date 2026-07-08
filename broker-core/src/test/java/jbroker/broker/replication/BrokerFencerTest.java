@@ -77,7 +77,7 @@ class BrokerFencerTest {
         fencer.tick(10_000_000_000L);
 
         // Broker 2 doesn't lead any partition, so no PartitionChangeRecord
-        // proposal is needed. (/c does not model ISR shrink-on-fence.)
+        // proposal is needed. (This path does not model ISR shrink-on-fence.)
         assertThat(proposer.proposals).isEmpty();
     }
 

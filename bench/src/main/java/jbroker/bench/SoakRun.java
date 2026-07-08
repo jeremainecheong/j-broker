@@ -8,7 +8,7 @@ import java.util.List;
 import jbroker.broker.client.BrokerClient;
 
 /**
- * the spec / §11.5 "idempotent-producer" load driver — the produce and
+ * The soak loss/duplication invariant's idempotent-producer load driver — the produce and
  * verify halves of {@code scripts/chaos/scenario-chaos-with-load.sh}.
  *
  * <p><b>soak-produce</b> sends sequenced payloads ({@code p<partition>-<seq>})

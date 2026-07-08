@@ -15,7 +15,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * covers (single consumer reads all partitions) and * (3 consumers, 6 partitions, evenly split) end-to-end through gRPC against
+ * Covers a single consumer reading all partitions, and 3 consumers with
+ * 6 partitions split evenly, end-to-end through gRPC against
  * a single-broker cluster (which by default leads partition 0 of
  * {@code __consumer_offsets} → it IS the coordinator for every group).
  */
@@ -77,7 +78,7 @@ class GroupHeartbeatEndToEndIT {
             assertThat(m2.getError()).isEqualTo(ErrorCode.OK);
             assertThat(m3.getError()).isEqualTo(ErrorCode.OK);
 
-            // cooperative incremental rebalance changed the
+            // Cooperative incremental rebalance changed the
             // dynamics here. m1 lost partitions but had no additions →
             // single-stage advance to kept set [0,1]. m2 lost [4,5] AND
             // gained [2] → stage 1 returns [3] (kept), then after m2 acks
@@ -110,7 +111,7 @@ class GroupHeartbeatEndToEndIT {
     }
 
     /**
-     * cooperative-rebalance helper: heartbeat a member through any
+     * Cooperative-rebalance helper: heartbeat a member through any
      * staged kept-set → target transition and return its final assignment.
      * Caller passes the assignment the member already has (from the join
      * response, or empty for a member that was just created).

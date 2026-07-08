@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Rebuilds {@link ProducerStateManager} dedup state from a partition's
  * on-disk log — the record-batch v2 header carries {@code producer_id},
- * {@code producer_epoch} and {@code base_sequence} (the spec) precisely so
+ * {@code producer_epoch} and {@code base_sequence} precisely so
  * this state is derivable from the log.
  *
  * <p>Why: the dedup map is in-memory only. A SIGKILLed broker restarts
@@ -17,7 +17,8 @@ import org.slf4j.LoggerFactory;
  * re-promoted the restarted broker, a producer retry of an
  * already-committed (pid, epoch, sequence) was appended a second time.
  * Found as duplicate payloads at consecutive offsets by
- * {@code scenario-chaos-with-load.sh}; violates the spec invariant #4.
+ * {@code scenario-chaos-with-load.sh}; violates the no-duplicate-delivery
+ * guarantee for idempotent producers.
  *
  * <p>Invoked lazily by {@link ProduceHandler} on the first idempotent
  * produce a partition sees after process start (mirrors the

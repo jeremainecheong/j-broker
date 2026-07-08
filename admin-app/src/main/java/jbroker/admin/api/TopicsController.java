@@ -28,7 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * {@code /api/v1/topics} — topic CRUD consumed by the topic list / detail UI
- * () and the {@code admin topics ...} CLI ().
+ * and the {@code admin topics ...} CLI.
  *
  * <p>Mutating operations (POST/DELETE/PATCH) route to the Raft leader via
  * {@link BrokerAdminClientPool#firstNonNotLeader} — a non-leader broker
@@ -124,7 +124,7 @@ public class TopicsController {
     }
 
     /**
-     * force synchronous compaction on every replica of
+     * Force synchronous compaction on every replica of
      * {@code (topic, partition)}. Fans out to every broker; each returns its
      * local survivor count, or {@code -1} if it doesn't host the partition.
      * Aggregated response reports total survivors summed across hosting
@@ -185,7 +185,7 @@ public class TopicsController {
     }
 
     /**
-     * fans DescribeTopicPartitions out to every broker and merges the
+     * Fans DescribeTopicPartitions out to every broker and merges the
      * per-partition state by overlaying whichever broker actually leads each
      * partition (and therefore reports real {@code highWatermark} /
      * {@code logEndOffset}; followers set sentinel -1).

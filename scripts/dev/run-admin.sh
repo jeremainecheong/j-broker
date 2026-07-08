@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# start the admin-app against a local broker at 127.0.0.1:9092 (override with $BROKERS).
+# Start the admin-app against a local broker at 127.0.0.1:9092 (override with $BROKERS).
 # Assumes `j-broker server` is already running; admin-app dials broker(s) via gRPC.
 set -euo pipefail
 

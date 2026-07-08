@@ -19,9 +19,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * having every broker track its own applied-batch history means the new leader
  * (an ex-follower) already has the dedup entries it needs on takeover.
  *
- * <p>Audit-finding #2: the previous {@code ConcurrentHashMap} had no eviction
+ * <p>A hardening pass found that the previous {@code ConcurrentHashMap} had no eviction
  * policy — a long-running broker with many transient producers would leak
- * memory indefinitely (TODO() was the original flag). This class now
+ * memory indefinitely (unbounded growth was the original flag). This class now
  * caps at {@link #DEFAULT_MAX_ENTRIES} and evicts least-recently-used keys
  * when the cap is exceeded. The {@link #evictionCount} gauge is exposed so
  * operators can alert on sustained eviction (indicates the cap is too low

@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * covers (offset commit + restart resumes from N) end-to-end:
+ * Covers offset commit + restart resumes from N end-to-end:
  * <ol>
  *   <li>Single-broker cluster with auto-created __consumer_offsets.</li>
  *   <li>Join group, commit offset 42 for orders/0.</li>

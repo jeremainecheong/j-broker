@@ -9,7 +9,7 @@ import jbroker.proto.common.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 /**
- * covers {@link ClusterController#mergeSelfReportedRoles}. Each
+ * Covers {@link ClusterController#mergeSelfReportedRoles}. Each
  * broker only knows its own role authoritatively; everything else it sees
  * via heartbeat state is reported as {@code UNKNOWN}. Admin-app fans out
  * and overlays concrete self-reports from every responder.

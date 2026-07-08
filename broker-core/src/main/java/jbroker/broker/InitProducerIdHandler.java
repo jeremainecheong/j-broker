@@ -13,9 +13,9 @@ import jbroker.proto.raft.ProducerIdAssignmentRecord;
  * {@code ProducerIdAssignmentRecord} through Raft so the counter survives
  * restart.
  *
- * <p>Milestone 6.7 only issues producer_epoch=0 on initial allocation. Epoch
+ * <p>Only producer_epoch=0 is issued on initial allocation. Epoch
  * bumping (for producer-id re-use on transactional restart) is part of
- * the transactional-producer work outside Milestone 6 scope.
+ * the transactional-producer work, which is out of scope here.
  */
 public final class InitProducerIdHandler {
 
@@ -33,7 +33,7 @@ public final class InitProducerIdHandler {
         // Raft records commit. Ids burned on propose failure are safe in
         // single-broker mode because a restart replays the Raft log and
         // the registry advances only on successful apply; multi-broker
-        // failover () will need the controller to track propose
+        // failover will need the controller to track propose
         // outcomes so a failed InitProducerId on an outgoing leader
         // doesn't collide with a fresh allocation on the new leader.
         long id = registry.allocateNext();

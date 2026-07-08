@@ -14,8 +14,7 @@ import java.util.List;
  * <p>Two epochs are tracked separately:
  * <ul>
  *   <li>{@code leaderEpoch} — increases only on leader change; followers
- *       use it to trigger log truncation via {@code OffsetsForLeaderEpoch}
- *       ().</li>
+ *       use it to trigger log truncation via {@code OffsetsForLeaderEpoch}.</li>
  *   <li>{@code partitionEpoch} — increases on any metadata change (ISR
  *       flip, replica reassignment). Resets to 0 on leader change.
  *       Followers can treat a partition-epoch-only bump as "refresh

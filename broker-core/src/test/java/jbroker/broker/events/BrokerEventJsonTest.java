@@ -6,7 +6,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * pin the snake_case contract for the SSE event payloads. The
+ * Pin the snake_case contract for the SSE event payloads. The
  * admin-app's /api/v1/events stream passes these strings through
  * verbatim, so the keys here are on the public wire and must match the
  * rest of the admin REST envelope.

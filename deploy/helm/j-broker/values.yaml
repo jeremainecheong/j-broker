@@ -38,7 +38,7 @@ broker:
   # __consumer_offsets partition count. Kafka convention is 50; the
   # broker's default. Override for tiny dev clusters.
   consumerOffsetsPartitions: 50
-  # per-broker advertised hostname template. Rendered per pod
+  # Per-broker advertised hostname template. Rendered per pod
   # via sprintf (%d → 1-indexed broker id). Leave empty to use the pod's
   # in-cluster DNS, which is correct for same-namespace clients but
   # wrong for ingress / NodePort clients. Typical override:
@@ -86,7 +86,7 @@ admin:
   brokersOverride: ""
   podAnnotations: {}
 
-# cluster-wide TLS bundle. Apply via `--set tls.enabled=true`
+# Cluster-wide TLS bundle. Apply via `--set tls.enabled=true`
 # plus a pre-created Secret carrying cert/key/ca.crt PEM files. When
 # enabled, every broker server + every inter-broker client speaks
 # mTLS; the admin-app uses the same bundle to dial brokers.

@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import jbroker.proto.common.TopicPartition;
 
 /**
- * Broker-local LRU of active fetch sessions (). Each session tracks the
+ * Broker-local LRU of active fetch sessions. Each session tracks the
  * last {@code (offset, leaderEpoch)} the broker served for every
  * {@code (topic, partition)} under its id. Clients bootstrap with
  * {@code session_id=0}; the broker allocates a fresh id and returns it in

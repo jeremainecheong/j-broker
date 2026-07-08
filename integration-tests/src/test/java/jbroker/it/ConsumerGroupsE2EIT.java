@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Milestone 7 end-to-end regression net across a 3-broker cluster.
+ * Consumer-group end-to-end regression net across a 3-broker cluster.
  *
  * <p>Two tests:
  * <ol>
@@ -35,13 +35,13 @@ import org.junit.jupiter.api.io.TempDir;
  *       {@code __consumer_offsets} partition leader; assert a new
  *       consumer in the same group can still read back the previously
  *       committed offsets (group state recovered on new coordinator).
- *       This closes the mechanic that could only exercise
- *       on single-broker restart.</li>
+ *       This closes the coordinator-failover mechanic that earlier
+ *       testing could only exercise on single-broker restart.</li>
  *   <li>{@link #endToEndRegressionOn3BrokerCluster} — a single-cluster
- *       pass that exercises (assignment), (commit/fetch),
- *       (DLT routing), and (incremental fetch sessions)
- *       in one run as a cross-slice regression net. Individual per-slice
- *       ITs cover these more thoroughly on single-broker fixtures.</li>
+ *       pass that exercises assignment, commit/fetch, DLT routing, and
+ *       incremental fetch sessions in one run as a cross-cutting
+ *       regression net. Individual dedicated ITs cover these more
+ *       thoroughly on single-broker fixtures.</li>
  * </ol>
  */
 class ConsumerGroupsE2EIT {
@@ -215,9 +215,8 @@ class ConsumerGroupsE2EIT {
                     + br2.metrics().incrementalFetchHits()
                     + br3.metrics().incrementalFetchHits();
 
-            // Single consumer (coverage — claims every partition)
-            // + incremental fetch sessions (coverage) + commit
-            // round-trip (coverage).
+            // Single consumer (claims every partition) + incremental
+            // fetch sessions + commit round-trip, all in one pass.
             var cfg = ConsumerConfig.builder("g-regression", "127.0.0.1", raftLeader.brokerPort())
                     .deadLetterPolicy(new DeadLetterPolicy("orders.dlt", 2, Duration.ofMillis(10)))
                     .build();
@@ -225,7 +224,7 @@ class ConsumerGroupsE2EIT {
                 consumer.subscribe(List.of("orders"), RebalanceListener.NO_OP);
 
                 // Drive via a handler that DLTs the "bad-msg" and processes
-                // everything else. .
+                // everything else.
                 var processed = new AtomicInteger();
                 RecordHandler<String, String> handler = rec -> {
                     if ("bad-msg".equals(rec.value())) {
@@ -239,7 +238,7 @@ class ConsumerGroupsE2EIT {
                     consumer.poll(Duration.ofMillis(300), handler);
                 }
                 assertThat(processed.get())
-                        .as("all non-DLT records should be handled (+ )")
+                        .as("all non-DLT records should be handled")
                         .isEqualTo(30);
                 // Single consumer → owns all 3 partitions.
                 assertThat(consumer.assignment()).hasSize(3);
@@ -264,9 +263,7 @@ class ConsumerGroupsE2EIT {
                     }
                 }
             }
-            assertThat(dltHasBadMsg)
-                    .as("DLT topic must contain the bad record")
-                    .isTrue();
+            assertThat(dltHasBadMsg).as("DLT topic must contain the bad record").isTrue();
         } finally {
             for (var b : brokers) {
                 try {

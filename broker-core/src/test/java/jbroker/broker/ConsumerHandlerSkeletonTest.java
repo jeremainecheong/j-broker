@@ -19,13 +19,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * skeleton verification — ensures the new Consumer-group RPCs are wired
+ * Skeleton verification — ensures the new Consumer-group RPCs are wired
  * end-to-end through {@link ConsumerHandler} and return the expected
  * placeholder error codes ({@code COORDINATOR_NOT_AVAILABLE} for
  * coordinator-routed RPCs, {@code OFFSET_OUT_OF_RANGE} for
- * {@code FetchOffsets}). Subsequent slices replace the placeholders.
+ * {@code FetchOffsets}). Later work replaces the placeholders.
  *
- * <p>{@code ListOffsets} IS implemented in it just delegates to
+ * <p>{@code ListOffsets} IS implemented. It just delegates to
  * {@link LogManager#logFor(String, int)} and returns {@code nextOffset()} for
  * the latest sentinel.
  */

@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * exercises {@link jbroker.broker.ConsumerHandler#findCoordinator}
+ * Exercises {@link jbroker.broker.ConsumerHandler#findCoordinator}
  * over real gRPC against a single broker. Confirms the coordinator endpoint
  * matches the leader of the deterministic coordinator partition for the
  * group, and that the response is reachable via the returned host:port

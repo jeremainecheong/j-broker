@@ -5,7 +5,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * in-process chaos injection state. One instance per broker,
+ * In-process chaos injection state. One instance per broker,
  * read by the gRPC interceptors that gate inbound / outbound Raft and
  * replication traffic, and written by the {@code /debug/chaos/*} HTTP
  * endpoints exposed on the broker.
@@ -70,20 +70,20 @@ public final class ChaosState {
 
     /**
      * Symmetric block — both outbound to and inbound from the peer. Matches
-     * pre-hardening pass behavior so existing partition scripts + tests are
-     * unaffected.
+     * the original symmetric-only partition behavior so existing partition
+     * scripts + tests are unaffected.
      */
     public void blockPeer(int peerId) {
         outboundBlocked.put(peerId, Boolean.TRUE);
         inboundBlocked.put(peerId, Boolean.TRUE);
     }
 
-    /** Audit-finding #3 — asymmetric: block only RPCs from self to peer; peer→self continues to work. */
+    /** Directional partition control, asymmetric: block only RPCs from self to peer; peer→self continues to work. */
     public void blockOutboundToPeer(int peerId) {
         outboundBlocked.put(peerId, Boolean.TRUE);
     }
 
-    /** Audit-finding #3 — asymmetric: block only RPCs from peer to self; self→peer continues to work. */
+    /** Directional partition control, asymmetric: block only RPCs from peer to self; self→peer continues to work. */
     public void blockInboundFromPeer(int peerId) {
         inboundBlocked.put(peerId, Boolean.TRUE);
     }
@@ -109,8 +109,8 @@ public final class ChaosState {
 
     /**
      * Observability: peer ids whose outbound RPCs are blocked. Kept for
-     * back-compat with pre-hardening pass callers that only knew about symmetric
-     * blocks; new callers that need full visibility can also read
+     * back-compat with callers written against the original symmetric-only
+     * partition API; new callers that need full visibility can also read
      * {@link #inboundBlockedPeers}.
      */
     public Map<Integer, Boolean> blockedPeers() {

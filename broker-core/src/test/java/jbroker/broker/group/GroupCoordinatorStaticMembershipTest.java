@@ -7,15 +7,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
- * drills into static-membership semantics introduced in and
- * relied on by (consumer restart with same instance_id triggers
- * no rebalance):
+ * Drills into static-membership semantics relied on so that a consumer
+ * restarting with the same instance_id triggers no rebalance:
  * <ul>
  *   <li>Same {@code instance_id} rejoining keeps the same {@code member_id}
  *       and {@code member_epoch}; generation does NOT bump.</li>
  *   <li>Different members under the same {@code instance_id} trigger eviction
  *       of the prior holder (slot-takeover); generation still does NOT bump
- *       in 's first cut — eviction-with-bump is a polish if
+ *       in the current implementation — eviction-with-bump is a future polish if
  *       coordinator failover surfaces a need.</li>
  *   <li>Empty {@code instance_id} keeps classic dynamic semantics — every
  *       join allocates a new member_id and bumps generation.</li>
@@ -90,7 +89,7 @@ class GroupCoordinatorStaticMembershipTest {
         coord.join("g1", "instance-A", Set.of("orders"), SESSION_TIMEOUT_MS, REBALANCE_TIMEOUT_MS, 0L);
         int genBefore = coord.generationOf("g1");
 
-        // Same instance_id but expanded subscription. first cut: the
+        // Same instance_id but expanded subscription. Current behavior: the
         // subscription is captured but the assignor doesn't re-fire on
         // static rejoin (assignment only changes when generation bumps,
         // which happens for new dynamic joins / leaves / evictions).

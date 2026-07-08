@@ -1,4 +1,4 @@
-// Milestone 8 acceptance gate: `k6 run scripts/k6/admin-api-smoke.js` passes thresholds.
+// Acceptance gate: `k6 run scripts/k6/admin-api-smoke.js` passes thresholds.
 //
 // VUs=10, 1 min. List / describe / create / delete on random topics.
 // Thresholds: p95 < 100ms, 0 errors.

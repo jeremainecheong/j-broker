@@ -8,7 +8,7 @@ import jdk.jfr.Name;
 import jdk.jfr.StackTrace;
 import jdk.jfr.Timespan;
 
-/** per-Produce RPC wall-clock latency + payload bytes. */
+/** Per-Produce RPC wall-clock latency + payload bytes. */
 @Name("jbroker.ProduceLatency")
 @Label("Produce Latency")
 @Description("Server-observed produce RPC latency including ack wait for acks=all.")

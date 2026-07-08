@@ -10,11 +10,11 @@ import java.time.Duration;
 import java.util.Arrays;
 
 /**
- * lightweight admin CLI. Talks to the Milestone 8 admin-app's REST API
+ * Lightweight admin CLI. Talks to the admin-app's REST API
  * via JDK {@link HttpClient} (no new dependency). Intentionally minimal:
  * status-code + raw-body output, no JSON pretty-printing. For interactive
  * exploration the UI is a better fit; this CLI exists to cover the
- * acceptance gate-listed admin operations in scripts.
+ * required admin operations in scripts.
  *
  * <pre>
  *   j-broker admin [--admin URL] cluster-info
@@ -70,7 +70,7 @@ public final class AdminCli {
                     System.err.println("--topic required");
                     return;
                 }
-                // admin REST envelope is snake_case.
+                // Admin REST envelope is snake_case.
                 postJson(
                         adminUrl + "/api/v1/topics",
                         String.format(

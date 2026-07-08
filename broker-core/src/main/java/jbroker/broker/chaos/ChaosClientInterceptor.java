@@ -11,7 +11,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 
 /**
- * outbound chaos gate. Stamps {@code jbroker-from-broker-id}
+ * Outbound chaos gate. Stamps {@code jbroker-from-broker-id}
  * metadata on every RPC so the peer's {@link ChaosServerInterceptor}
  * can decide whether to block; short-circuits locally when the
  * destination peer is in the caller's blocked set (prevents the RPC

@@ -25,10 +25,10 @@ import jbroker.raft.core.StateMachine;
  * chaos) goes through a seeded {@link Random} so the same seed replays bit
  * for bit.
  *
- * <p>Scope for : happy-path only — every effect-derived message is
+ * <p>Current scope: happy-path only — every effect-derived message is
  * delivered exactly once after a bounded random delay. Chaos (drop/reorder/
- * duplicate), crash injection, invariant checkers, and shrinking come in
- * later phases.
+ * duplicate), crash injection, invariant checkers, and shrinking come
+ * later.
  */
 public final class Simulator {
 
@@ -298,7 +298,7 @@ public final class Simulator {
                     /* No ClientRead in sim yet. */
                 }
                 case RaftEffect.RejectConfigChange ignored -> {
-                    /* No config change injection in . */
+                    /* No config change injection yet. */
                 }
             }
         }

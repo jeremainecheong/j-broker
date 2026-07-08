@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * admin POST {@code /debug/chaos/*} behaviors.
+ * Admin POST {@code /debug/chaos/*} behaviors.
  *
  * <p>Audit-finding #7 — the original tests only asserted the HTTP
  * contract (200 response + expected JSON) and did not validate that the

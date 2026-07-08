@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# admin UI runtime image. Spring Boot bootJar is self-contained, so
+# Admin UI runtime image. Spring Boot bootJar is self-contained, so
 # the runtime layer is just `java -jar admin-app.jar`.
 
 # Base images pinned by digest (2026-04-23) — re-pin when we pull in a

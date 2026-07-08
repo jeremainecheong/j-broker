@@ -42,7 +42,7 @@ class MetadataStateMachineSnapshotTest {
 
     @Test
     void restoreAcceptsV2SnapshotFromBeforeProducerIdRegistry() throws Exception {
-        // v2 snapshots (pre-) don't carry a producer-id section. Assert
+        // Older v2 snapshots don't carry a producer-id section. Assert
         // restore treats the counter as 0 rather than blowing up on EOF.
         var srcTopics = new TopicManager();
         srcTopics.onTopicCommitted("t", 1, 1, 1L);
@@ -72,15 +72,15 @@ class MetadataStateMachineSnapshotTest {
 
         assertThat(dstTopics.describe("t")).isPresent();
         // v2 stream carries no producer-id trailer — registry stays at its
-        // fresh-boot starting value (1 since 's legacy-sentinel fix).
+        // fresh-boot starting value (1, since the legacy-sentinel fix).
         assertThat(dstReg.peekNextProducerId()).isEqualTo(1L);
     }
 
     @Test
     void restoreAcceptsV4SnapshotFromBeforeP67() throws Exception {
-        // v4 stream = 's format: topics + assignments(with replicas +
+        // v4 stream = the older format: topics + assignments(with replicas +
         // partitionEpoch) but no producer-id trailer. A broker upgraded
-        // from → must read its existing snapshot without the
+        // from that older version must read its existing snapshot without the
         // counter and boot with a fresh registry.
         var baos = new ByteArrayOutputStream();
         var dout = new DataOutputStream(baos);

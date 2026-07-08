@@ -80,9 +80,9 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     }
 
     /**
-     * Full constructor — combines hardening pass (ProducerStateManager for
-     * idempotent dedup across failover) and hardening pass (per-peer
-     * {@code ClientInterceptor} factory so chaos outbound-partition gating
+     * Full constructor — combines a {@code ProducerStateManager} (for
+     * idempotent dedup across failover) and a per-peer
+     * {@code ClientInterceptor} factory (so chaos outbound-partition gating
      * actually fires on replica-fetch RPCs). Null is tolerated for either
      * optional dependency.
      */

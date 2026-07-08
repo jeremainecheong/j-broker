@@ -4,7 +4,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * opt-in TLS configuration for one side of a gRPC hop. Used by
+ * Opt-in TLS configuration for one side of a gRPC hop. Used by
  * broker servers (server-side mTLS), inter-broker peer clients (Raft +
  * replica + cluster), and every external client (producer, consumer,
  * admin-app, admin CLI).
@@ -14,7 +14,7 @@ import java.util.Objects;
  * artifacts directly consumable by gRPC's {@code SslContext} builders.
  *
  * <p>{@link #DISABLED} is the plaintext default that preserves every
- * earliertest fixture — broker Configs and client constructors without
+ * existing test fixture — broker Configs and client constructors without
  * an explicit {@code TlsConfig} all resolve to this, so existing call sites
  * keep their plaintext behavior.
  *

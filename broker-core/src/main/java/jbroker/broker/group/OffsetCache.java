@@ -49,7 +49,7 @@ public final class OffsetCache {
     }
 
     /**
-     * remove every cached offset for {@code group}. Called as part
+     * Remove every cached offset for {@code group}. Called as part
      * of admin-initiated group deletion so a subsequent FetchOffsets
      * returns OFFSET_OUT_OF_RANGE instead of stale values.
      *
@@ -62,7 +62,7 @@ public final class OffsetCache {
     }
 
     /**
-     * snapshot every committed offset for {@code group}. Used by the
+     * Snapshot every committed offset for {@code group}. Used by the
      * admin REST layer to compute per-partition lag against the log HWM.
      * Iteration is weakly consistent per {@link ConcurrentHashMap} — a new
      * commit that lands mid-iteration may or may not appear.

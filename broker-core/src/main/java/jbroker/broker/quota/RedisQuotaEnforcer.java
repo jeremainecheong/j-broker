@@ -13,11 +13,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * / Redis-backed token bucket via {@code INCRBY} + {@code EXPIRE}.
+ * Redis-backed token bucket via {@code INCRBY} + {@code EXPIRE}.
  * Keyed on {@code jbroker:quota:{op}:{principal}:{epochSecond}}; the
  * second-granularity bucket is trivially sliding because keys auto-expire.
  *
- * <p>replaces the earlier HTTP stub with a minimal hand-rolled RESP
+ * <p>Replaces the earlier HTTP stub with a minimal hand-rolled RESP
  * client. Each {@link #check} pipelines {@code INCRBY} + {@code EXPIRE 2}
  * on a pooled single connection guarded by a lock. On any I/O / parse
  * error the connection is torn down and the call falls back to the

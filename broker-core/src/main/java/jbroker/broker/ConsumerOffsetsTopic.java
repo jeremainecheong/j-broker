@@ -9,7 +9,7 @@ import java.util.Optional;
 
 /**
  * Constants + binary key/value codec for the {@code __consumer_offsets}
- * internal topic introduced in Milestone 7.
+ * internal topic.
  *
  * <p>Two record types live in the topic:
  * <ul>
@@ -20,8 +20,8 @@ import java.util.Optional;
  *   <li><b>Type 2 — group metadata.</b><br>
  *       Key bytes: {@code 0x02 | utf8(group)}.<br>
  *       Value bytes: serialized {@link GroupMetadataValue} (proto-encoded
- *       internally; landed in ). Milestone 7.2 only commits the codec for
- *       the key + a placeholder value (encoded as a length-prefixed byte
+ *       internally). The codec commits only the key +
+ *       a placeholder value (encoded as a length-prefixed byte
  *       blob so future shape changes don't require key-codec changes).</li>
  * </ul>
  *

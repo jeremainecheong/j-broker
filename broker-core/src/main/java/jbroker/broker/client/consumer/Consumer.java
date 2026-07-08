@@ -31,7 +31,7 @@ import jbroker.storage.RecordBatch;
 import jbroker.tls.TlsContexts;
 
 /**
- * Milestone 7 consumer client. Single-threaded — the application drives the
+ * Consumer client. Single-threaded — the application drives the
  * state machine by repeatedly calling {@link #poll}, which handles
  * heartbeats, fetches, and rebalance callbacks inline.
  *
@@ -53,7 +53,7 @@ import jbroker.tls.TlsContexts;
  *       {@code member_epoch=-1}) and release the gRPC channel.</li>
  * </ol>
  *
- * <p>Cooperative incremental rebalance () is honoured automatically:
+ * <p>Cooperative incremental rebalance is honoured automatically:
  * the consumer reports {@code owned_partitions} on each heartbeat, the
  * coordinator advances stages, and the listener fires on the actual diffs.
  * Apps that don't care about the staged dance can pass
@@ -87,7 +87,7 @@ public final class Consumer<K, V> implements AutoCloseable {
     private final Map<TopicPartition, Long> fetchOffsets = new HashMap<>();
     // Lazy ProducerGrpc stub over the bootstrap channel for DLT routing.
     private ProducerGrpc.ProducerBlockingStub dltProducerStub;
-    // incremental fetch session. 0 = no session; any positive value
+    // Incremental fetch session. 0 = no session; any positive value
     // is echoed on subsequent Fetch requests so the broker can reuse cached
     // per-partition state. Reset to 0 on FETCH_SESSION_ID_NOT_FOUND (LRU
     // eviction or broker restart).

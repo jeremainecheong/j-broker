@@ -90,18 +90,18 @@ message TopicRecord {
   int32 partitions = 2;
   int32 replication_factor = 3;
   int64 created_millis = 4;
-  // Milestone 7 — internal topics are hidden from {@code Admin.ListTopics} by
+  // Internal topics are hidden from {@code Admin.ListTopics} by
   // default (filtered by {@link TopicManager#list()}). __consumer_offsets
   // is the first internal topic; future ones (transactions, group state)
   // will share the flag.
   bool internal = 5;
-  // Marker for read-time compaction (latest-record-per-key wins). Real
-  // on-disk compaction is a Milestone 9+ concern; in P7 this only flags topics
+  // Marker for read-time compaction (latest-record-per-key wins). On-disk
+  // compaction enforcement is not yet implemented; this only flags topics
   // whose recovery scan should compact in memory.
   bool compact = 6;
-  // Milestone 8 — opaque topic configuration map. Broker does not read values
+  // Opaque topic configuration map. Broker does not read values
   // today; the admin API round-trips them unchanged so operators can see
-  // what was configured. Milestone 9 wires enforcement (retention, compaction).
+  // what was configured. Enforcement (retention, compaction) is not yet implemented.
   map<string, string> config = 7;
 }
 
@@ -119,11 +119,11 @@ message BrokerRegistrationRecord {
   // deployment or the private-network IP on bare metal.
   string host = 2;
   int32 port = 3;
-  // advertised address surfaced in FindCoordinator /
+  // Advertised address surfaced in FindCoordinator /
   // DescribeCluster replies so external clients can reach this broker
   // via its published port even when that differs from the inter-broker
   // bind address. When unset (empty string / 0), falls back to host/port
-  // — preserves earliersingle-network behavior.
+  // — preserves single-network behavior for deployments that don't set it.
   string advertised_host = 4;
   int32 advertised_port = 5;
 }
@@ -142,21 +142,21 @@ message PartitionChangeRecord {
   int32 leader = 3;
   repeated int32 isr = 4;
   // Bumps only on leader change. Followers use it to trigger log
-  // truncation via OffsetsForLeaderEpoch ().
+  // truncation via OffsetsForLeaderEpoch.
   int32 leader_epoch = 5;
 
-  // 6: reserved for controller_epoch (Milestone 6.5+).
+  // 6: reserved for controller_epoch.
   reserved 6;
 
   // Full replica set for this partition — superset of isr. An out-of-ISR
-  // replica still fetches so it can catch up and rejoin the ISR. Added in
-  // ; earlierrecords leave this empty and the state machine defaults
+  // replica still fetches so it can catch up and rejoin the ISR. Older
+  // records leave this empty and the state machine defaults
   // replicas = isr for backward compatibility.
   repeated int32 replicas = 7;
 
   // Bumps on every ISR or replica-set change under the same leader_epoch;
-  // resets to 0 on leader change. Added in so ISR flips don't look
-  // like leadership changes to the reconciliation path.
+  // resets to 0 on leader change. Exists so ISR flips don't look
+  // like leadership changes to the OffsetsForLeaderEpoch reconciliation path.
   int32 partition_epoch = 8;
 }
 
@@ -181,15 +181,15 @@ message ProducerIdAssignmentRecord {
   int64 next_producer_id = 3;
 }
 
-// Milestone 8 — deletes a topic cluster-wide. The state machine drops the
+// Deletes a topic cluster-wide. The state machine drops the
 // topic + every PartitionState keyed on it; on-disk segment cleanup is
 // best-effort via LogManager.deleteTopicDir.
 message DeleteTopicRecord {
   string topic = 1;
 }
 
-// Milestone 8 — merges a config map into an existing topic. Values are opaque
-// strings today; the broker does not read them (Milestone 9 wires enforcement).
+// Merges a config map into an existing topic. Values are opaque
+// strings today; the broker does not read them (enforcement is not yet implemented).
 // Missing keys in the record leave the existing config value in place;
 // passing an empty string value does NOT delete the key (use a future
 // RemoveConfigRecord for that).

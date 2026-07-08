@@ -28,12 +28,12 @@ import jbroker.proto.common.TopicPartition;
 import jbroker.storage.Log;
 
 /**
- * Handler for the Milestone 8 {@code Metadata} gRPC service — the read-only
+ * Handler for the {@code Metadata} gRPC service — the read-only
  * observability surface that the admin-app REST layer consumes.
  *
- * <p>Milestone 8 slice responsibilities:
+ * <p>Surface:
  * <ul>
- *   <li>{@link #describeCluster} (implemented below)</li>
+ *   <li>{@link #describeCluster}</li>
  *   <li>{@link #describeTopicPartitions}</li>
  *   <li>{@link #listConsumerGroups} + {@link #describeConsumerGroup}</li>
  *   <li>{@link #describeRaft}</li>
@@ -90,7 +90,7 @@ public final class MetadataServiceHandler {
                 null);
     }
 
-    /** back-compat overload without Raft observability / metrics. */
+    /** Back-compat overload without Raft observability / metrics. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -123,7 +123,7 @@ public final class MetadataServiceHandler {
                 null);
     }
 
-    /** back-compat overload without event publisher. */
+    /** Back-compat overload without event publisher. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -159,7 +159,7 @@ public final class MetadataServiceHandler {
                 null);
     }
 
-    /** back-compat constructor — adds the partition metrics provider. */
+    /** Back-compat constructor without the partition metrics provider. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -197,7 +197,7 @@ public final class MetadataServiceHandler {
                 jbroker.broker.metrics.PartitionMetricsProvider.NOOP);
     }
 
-    /** full constructor including partition metrics provider. */
+    /** Full constructor including partition metrics provider. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -237,7 +237,7 @@ public final class MetadataServiceHandler {
                 : partitionMetricsProvider;
     }
 
-    /** back-compat overload — no TopicManager / LogManager wired. */
+    /** Back-compat overload — no TopicManager / LogManager wired. */
     public MetadataServiceHandler(
             int selfBrokerId,
             BrokerRegistry brokerRegistry,
@@ -263,10 +263,10 @@ public final class MetadataServiceHandler {
     }
 
     /**
-     * Back-compat overload used by tests that didn't need real
+     * Back-compat overload used by early bootstrap tests that didn't need real
      * observability data. Wires every supplier to a harmless default so the
      * handler still returns well-formed {@code UNIMPLEMENTED} responses for
-     * the RPCs does not implement.
+     * the RPCs it does not implement.
      */
     public MetadataServiceHandler() {
         this(
@@ -379,7 +379,7 @@ public final class MetadataServiceHandler {
                 ps.setLeaderEpoch(state.leaderEpoch());
                 ps.setPartitionEpoch(state.partitionEpoch());
                 // HWM + LEO readable only if self is this partition's leader
-                // (Milestone 5/6 single-leader model). Followers return -1 so
+                // (single-leader model). Followers return -1 so
                 // the admin-app fan-out can pick the leader's answer.
                 if (logManager != null && state.leader() == selfBrokerId) {
                     try {
@@ -543,7 +543,7 @@ public final class MetadataServiceHandler {
     }
 
     /**
-     * snapshot the broker's rolling metrics. The admin REST layer
+     * Snapshot the broker's rolling metrics. The admin REST layer
      * fans out across brokers and returns the union (or aggregated) view.
      * Returns {@code null} if no {@link BrokerMetrics} is wired (tests).
      */
@@ -551,7 +551,7 @@ public final class MetadataServiceHandler {
         return brokerMetrics;
     }
 
-    /** returns the shared event publisher; null if none wired (tests). */
+    /** Returns the shared event publisher; null if none wired (tests). */
     public jbroker.broker.events.BrokerEventPublisher eventPublisher() {
         return eventPublisher;
     }
@@ -593,7 +593,7 @@ public final class MetadataServiceHandler {
                         .setRaftLastLogIndex(obs.lastLogIndex());
             }
         }
-        // per-partition metrics (leader-only).
+        // Per-partition metrics (leader-only).
         for (var s : partitionMetricsProvider.snapshot()) {
             var p = jbroker.proto.broker.PartitionMetrics.newBuilder()
                     .setTopic(s.topic())
@@ -608,7 +608,7 @@ public final class MetadataServiceHandler {
         return builder.build();
     }
 
-    /** Static helper: turn a {@code Role} enum name into the string the spec uses. */
+    /** Static helper: turn a {@code Role} enum name into the string the admin REST API uses. */
     public static String roleName(Object raftRole) {
         return raftRole == null ? "UNKNOWN" : raftRole.toString();
     }

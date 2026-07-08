@@ -30,7 +30,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * produce 1000, consume 400, assert
+ * Produce 1000, consume 400, assert
  * {@code GET /api/v1/consumer-groups/{id}} reports aggregate lag == 600 ± 10.
  */
 @SpringBootTest(
@@ -120,7 +120,7 @@ class ConsumerGroupLagIT {
             totalLag += pl.lag();
         }
         // 1000 produced - 400 consumed = 600. Allow ±10 for the in-flight
-        // commit/heartbeat timing wobble the spec explicitly tolerates.
+        // commit/heartbeat timing wobble this assertion is designed to tolerate.
         assertThat(totalLag).as("aggregate lag = produced - committed").isBetween(590L, 610L);
     }
 

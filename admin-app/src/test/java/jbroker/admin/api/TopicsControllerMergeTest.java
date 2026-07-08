@@ -9,7 +9,7 @@ import jbroker.proto.common.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 /**
- * covers {@link TopicsController#mergeLeaderReportedOffsets}. The
+ * Covers {@link TopicsController#mergeLeaderReportedOffsets}. The
  * broker-side {@code DescribeTopicPartitions} only fills real HWM/LEO when
  * self is the partition leader; every other broker returns -1 for those two
  * fields. Admin-app therefore fans out + overlays leader-reported offsets

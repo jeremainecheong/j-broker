@@ -9,19 +9,19 @@ enum ErrorCode {
   UNSUPPORTED_VERSION = 50;
   STALE_LEADER_EPOCH = 70;
   FENCED_LEADER_EPOCH = 71;
-  // Milestone 7 — consumer groups
+  // Consumer groups
   COORDINATOR_NOT_AVAILABLE = 80;
   NOT_COORDINATOR = 81;
   UNKNOWN_MEMBER_ID = 82;
   FENCED_MEMBER_EPOCH = 83;
   OFFSET_OUT_OF_RANGE = 84;
-  // incremental fetch session was evicted from the server-side cache
+  // Incremental fetch session was evicted from the server-side cache
   // (LRU full or broker restart). Client should reset session_id=0 and retry.
   FETCH_SESSION_ID_NOT_FOUND = 85;
-  // Milestone 8 — admin surface skeleton placeholder. An RPC whose body is not
-  // yet wired (lands the proto surface; later slices fill bodies).
+  // Admin surface skeleton placeholder. An RPC whose body is not
+  // yet wired (the proto surface is defined up front; request bodies are filled in incrementally).
   UNIMPLEMENTED = 99;
-  // admin tried to mutate a group the coordinator doesn't track
+  // Admin tried to mutate a group the coordinator doesn't track
   // (never-joined or already deleted).
   UNKNOWN_GROUP = 86;
 }
@@ -33,7 +33,7 @@ message BrokerEndpoint {
   string directory_id = 4;
 }
 
-// Identifier for a single partition of a topic. Milestone 7 surfaces this on
+// Identifier for a single partition of a topic. Used on
 // consumer-group RPCs (offset commit/fetch, assignment).
 message TopicPartition {
   string topic = 1;

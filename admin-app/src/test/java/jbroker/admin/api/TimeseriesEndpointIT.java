@@ -19,7 +19,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * end-to-end over the wire: the admin-app scrapes the broker
+ * End-to-end over the wire: the admin-app scrapes the broker
  * every second (accelerated via the scrape interval property), and
  * {@code /api/v1/metrics/timeseries} surfaces the ring buffer as
  * snake_case JSON.

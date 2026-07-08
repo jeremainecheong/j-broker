@@ -25,7 +25,7 @@ import org.junit.jupiter.api.io.TempDir;
  * still covers the steady-state "all 10k sockets open simultaneously"
  * scenario; operators opt into that run explicitly.
  *
- * <p>hardening pass widens the workload: instead of every client calling
+ * <p>This test widens the workload: instead of every client calling
  * {@code listTopics()}, the 10k clients split 40/40/20 across
  * produce / fetch / listTopics so the test actually exercises the
  * hot paths (ProduceHandler partition locks, FetchHandler session
@@ -117,7 +117,7 @@ class TenThousandClientsCiGradeIT {
             int totalOk = produceOk.get() + fetchOk.get() + listOk.get();
             int totalFail = produceFail.get() + fetchFail.get() + listFail.get();
             System.out.printf(
-                    "%d mixed ops in %dms — produce(ok=%d fail=%d) fetch(ok=%d fail=%d) list(ok=%d fail=%d)%n",
+                    "10k-client CI smoke: %d mixed ops in %dms — produce(ok=%d fail=%d) fetch(ok=%d fail=%d) list(ok=%d fail=%d)%n",
                     TOTAL_CONNECTIONS,
                     elapsedMs,
                     produceOk.get(),

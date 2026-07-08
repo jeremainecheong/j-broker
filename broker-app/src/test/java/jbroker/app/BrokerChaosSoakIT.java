@@ -21,15 +21,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * headline acceptance gate gate (in-process shrinkage of
+ * Headline zero-loss acceptance gate (in-process shrinkage of
  * {@code scenario-chaos-with-load.sh}): sustained acks=all produce load
  * against a 3-broker cluster while we periodically {@link
  * Broker#closeAbruptly()} random brokers and restart them, then assert
  * every acked record is consumable from some replica — zero loss.
  *
  * <p>Runtime is bounded at 30 s so this fits CI. The formal 10-minute
- * soak named in the spec / §11.3 is a local-only exercise and
- * not part of CI gating.
+ * soak is a local-only exercise and not part of CI gating.
  */
 class BrokerChaosSoakIT {
 
@@ -161,8 +160,8 @@ class BrokerChaosSoakIT {
             // Zero-loss assertion: every payload we saw acked is in the
             // consumed set. Duplicates / extra records are allowed (the
             // chaos soak's producer doesn't use idempotent-producer ids,
-            // so retries produced on failover may land as dupes — 's
-            // dedup is a separate path).
+            // so retries produced on failover may land as dupes — the
+            // idempotent-producer dedup is a separate path).
             var lost = new ArrayList<String>();
             for (var v : ackedPayloads) {
                 if (!consumed.contains(v)) lost.add(v);

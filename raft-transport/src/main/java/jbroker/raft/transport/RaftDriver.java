@@ -177,7 +177,7 @@ public final class RaftDriver implements AutoCloseable {
     }
 
     /**
-     * / chaos force-election — queues a self-addressed {@code TimeoutNow}
+     * Chaos force-election — queues a self-addressed {@code TimeoutNow}
      * so the core short-circuits the pre-vote + election-timeout wait and
      * jumps straight to {@code startElection} at {@code currentTerm + 1}.
      *
@@ -319,10 +319,10 @@ public final class RaftDriver implements AutoCloseable {
                     /* handled inline by log */
                 }
                 case RaftEffect.RejectClientPropose ignored -> {
-                    /* Milestone 5 wires this to client */
+                    /* client wiring not yet implemented */
                 }
                 case RaftEffect.DuplicateClientPropose ignored -> {
-                    /* Milestone 5 wires the cached-response path to the client */
+                    /* cached-response path to the client not yet implemented */
                 }
                 case RaftEffect.SendTimeoutNow t -> dispatchTimeoutNow(t);
                 case RaftEffect.ServeClientRead s -> LOG.warn(

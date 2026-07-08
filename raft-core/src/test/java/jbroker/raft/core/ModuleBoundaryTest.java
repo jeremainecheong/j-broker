@@ -7,7 +7,7 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import org.junit.jupiter.api.Test;
 
 /**
- * Enforces {@code raft-core} module boundaries per the spec: no Spring, no gRPC, no Jakarta.
+ * Enforces {@code raft-core} module boundaries: no Spring, no gRPC, no Jakarta.
  *
  * <p>Each rule uses {@code .allowEmptyShould(true)} because ArchUnit 1.3.0 errors when a rule
  * evaluates zero classes. The {@code jbroker.raft.core} package contains only {@code package-info}

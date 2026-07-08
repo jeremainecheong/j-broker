@@ -3,8 +3,8 @@ package jbroker.bench;
 import java.util.Arrays;
 
 /**
- * entry point for the perf harness. Dispatches on the first
- * argument. hardening pass adds self-contained multi-broker variants:
+ * Entry point for the perf harness. Dispatches on the first
+ * argument. The post-release hardening pass added self-contained multi-broker variants:
  *
  * <pre>
  *   j-broker-bench producer --broker HOST:PORT --topic T --partition N

@@ -7,7 +7,7 @@
       <h1>Overview</h1>
 
       <!--/*
-        alert strip. Renders only when the cluster-health pill
+        Alert strip. Renders only when the cluster-health pill
         would be yellow or red, so a healthy cluster shows no banner at
         all. Reuses the HealthBadge DTO to keep the logic single-sourced.
       */-->
@@ -93,7 +93,7 @@
       <div class="card topology">
         <svg th:attr="width=${500}, height=${260}, viewBox='0 0 500 260'"
              xmlns="http://www.w3.org/2000/svg">
-          <!-- one circle per broker on a ring. data-broker-role
+          <!-- One circle per broker on a ring. data-broker-role
                is load-bearing for the controller-marker E2E. -->
           <g th:each="n, it : ${cluster.nodes()}"
              th:with="count=${cluster.nodes().size()}, angle=${it.index * (2 * 3.141592653589793 / (count > 0 ? count : 1))},

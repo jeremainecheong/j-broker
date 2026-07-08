@@ -54,7 +54,7 @@ import org.slf4j.LoggerFactory;
  *   <li>One gRPC server exposing Producer / Consumer / Admin services.</li>
  * </ul>
  *
- * <p>Bigger broker clusters (Milestone 6+) replace the one-node Raft config with
+ * <p>Bigger broker clusters replace the one-node Raft config with
  * a multi-node config; the data-plane stays the same shape.
  */
 public final class Broker implements AutoCloseable {
@@ -68,7 +68,7 @@ public final class Broker implements AutoCloseable {
             int brokerPort,
             List<VoterAddress> voters,
             int consumerOffsetsPartitions,
-            /** when ≥ 0, the broker binds a cooperative chaos HTTP server on this port. */
+            /** When ≥ 0, the broker binds a cooperative chaos HTTP server on this port. */
             int chaosPort,
             /** PreferredLeaderBalancer tick interval, ms. Default 15_000. */
             long balancerTickMillis,
@@ -95,7 +95,7 @@ public final class Broker implements AutoCloseable {
             if (tls == null) tls = TlsConfig.DISABLED;
         }
 
-        /** pre-existing-call-sites overload: balancer timings default to 15_000 / 30_000. */
+        /** Pre-existing-call-sites overload: balancer timings default to 15_000 / 30_000. */
         public Config(
                 NodeId selfId,
                 Path dataDir,
@@ -117,7 +117,7 @@ public final class Broker implements AutoCloseable {
                     TlsConfig.DISABLED);
         }
 
-        /** full-9-arg overload keeping the pre-TLS shape callable. */
+        /** Full-9-arg overload keeping the pre-TLS shape callable. */
         public Config(
                 NodeId selfId,
                 Path dataDir,
@@ -166,7 +166,7 @@ public final class Broker implements AutoCloseable {
                     tls);
         }
 
-        /** set or replace the TLS bundle on an existing Config. */
+        /** Set or replace the TLS bundle on an existing Config. */
         public Config withTls(TlsConfig newTls) {
             return new Config(
                     selfId,
@@ -228,7 +228,7 @@ public final class Broker implements AutoCloseable {
         }
 
         /**
-         * override the preferred-leader balancer's tick interval and
+         * Override the preferred-leader balancer's tick interval and
          * stability window. Integration tests that need to observe a rebalance
          * within a few seconds compress both. Production callers should leave
          * this alone (defaults 15s / 30s).
@@ -331,21 +331,21 @@ public final class Broker implements AutoCloseable {
                 topicsDir,
                 new LogManager.Config(
                         128L * 1024 * 1024,
-                        Long.MAX_VALUE /* no auto-retention in Milestone 5 */,
+                        Long.MAX_VALUE /* no auto-retention yet */,
                         jbroker.storage.LogSegment.DEFAULT_INDEX_INTERVAL_BYTES,
                         TimeUnit.MINUTES.toMillis(5)));
 
-        // per-broker event publisher for the Milestone 8 SSE stream.
+        // Per-broker event publisher for the admin-facing SSE stream.
         // Declared here so the leader-epoch listener (next block) can
         // capture it. Wired into the MetadataServiceHandler at the bottom
         // of start() where the stream RPC reads from it.
         var eventPublisher = new jbroker.broker.events.BrokerEventPublisher();
 
-        // : whenever a partition's leader_epoch bumps and self is the
+        // Whenever a partition's leader_epoch bumps and self is the
         // new leader, record (epoch, current_leo) in the partition's
         // LeaderEpochCheckpoint so OffsetsForLeaderEpoch can answer.
         int selfId = config.selfId().value();
-        // track the most recent leader-change wall-clock so the
+        // Track the most recent leader-change wall-clock so the
         // PreferredLeaderBalancer can skip proposals during periods of
         // churn (stability window).
         var lastLeaderChangeMillis = new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
@@ -359,7 +359,7 @@ public final class Broker implements AutoCloseable {
                     log.warn("failed to record leader-epoch checkpoint for {}-{}", topic, partition, e);
                 }
             }
-            // emit a leader_changed event for admin SSE, regardless
+            // Emit a leader_changed event for admin SSE, regardless
             // of whether self is the new leader. Old-leader id is unavailable
             // at this call site (listener doesn't carry prior state) so we
             // encode -1; admin UIs use the epoch to detect consecutive bumps.
@@ -408,7 +408,7 @@ public final class Broker implements AutoCloseable {
             long id = eventPublisher.allocateId();
             eventPublisher.publish(new jbroker.broker.events.BrokerEvent.BrokerRegistered(id, bid, h, pt));
         };
-        // on DeleteTopic, evict LogManager cache + segment files so
+        // On DeleteTopic, evict LogManager cache + segment files so
         // topic-recreation with the same name can't pick up stale offsets,
         // and kick the replica-fetcher reconcile loop so any live fetcher
         // stops as soon as the metadata record applies.
@@ -465,7 +465,7 @@ public final class Broker implements AutoCloseable {
         // AdminHandler learns Raft leader id + registry so NOT_LEADER
         // responses can carry suggested_leader_* hints that the admin REST
         // layer surfaces into the error envelope.
-        // wire LogManager::compactLogNowIfPresent so the
+        // Wire LogManager::compactLogNowIfPresent so the
         // ForceCompactPartition admin RPC can trigger a synchronous compaction
         // on the responding broker's local log without touching Raft.
         //
@@ -491,16 +491,17 @@ public final class Broker implements AutoCloseable {
         var heartbeatHandler = new jbroker.broker.BrokerHeartbeatHandler(brokerLiveness, System::nanoTime);
 
         // Group coordinator: in-memory state for groups whose coordinator
-        // partition this broker leads. wires the heartbeat path;         // staticness; will wire the per-coord-partition activation
-        // listener so coordinator failover rebuilds state.
+        // partition this broker leads. The heartbeat path is wired; the
+        // per-coord-partition activation listener that rebuilds state on
+        // coordinator failover is still to come.
         var groupCoordinator = new GroupCoordinator(
                 topic -> topicManager.describe(topic).map(td -> td.partitions()).orElse(0), new RangeAssignor());
-        // in-memory offset commit/fetch cache. The recovery walk
+        // In-memory offset commit/fetch cache. The recovery walk
         // (below, after gRPC server start) re-reads any __consumer_offsets
         // partitions this broker leads after Raft replay finishes;
-        // coordinator-failover-time recovery is .
+        // coordinator-failover-time recovery is still to come.
         var offsetCache = new OffsetCache();
-        // persist GroupMetadataValue records on every membership
+        // Persist GroupMetadataValue records on every membership
         // change. Encodes via ConsumerOffsetsTopic.valueForGroupMetadata
         // and self-produces a Type-2 record into the appropriate
         // __consumer_offsets partition (key namespaced via 0x02). The
@@ -524,7 +525,7 @@ public final class Broker implements AutoCloseable {
                 System::currentTimeMillis);
         // Metadata service: DescribeCluster now wired to live
         // BrokerRegistry + BrokerLiveness + Raft state. Remaining RPCs
-        // return UNIMPLEMENTED until their owning slice lands.
+        // return UNIMPLEMENTED until they are implemented.
         //
         // RaftCore.currentLeader() tracks the leader only on followers —
         // the incumbent leader never populates its own leaderId field (it
@@ -546,7 +547,7 @@ public final class Broker implements AutoCloseable {
                 () -> raftDriver.role().toString(),
                 controllerIdSupplier,
                 () -> raftDriver.currentTerm().value(),
-                // Milestone 8 scope: metadata_offset is a forward-compat field.
+                // metadata_offset is a forward-compat field.
                 // WaitingStateMachine doesn't yet expose applied-offset; stub
                 // to 0L for now.
                 () -> 0L,
@@ -560,7 +561,7 @@ public final class Broker implements AutoCloseable {
                 brokerMetrics,
                 eventPublisher,
                 partitionMetricsProvider);
-        // cooperative chaos control plane. Only active when the
+        // Cooperative chaos control plane. Only active when the
         // config exposes a chaos port (≥ 0); interceptor is installed on
         // every inbound service so pause + peer-block affect broker-to-
         // broker RPCs as well as client traffic.
@@ -591,7 +592,7 @@ public final class Broker implements AutoCloseable {
                     config.selfId().value(),
                     config.chaosPort(),
                     eventPublisher,
-                    // force-election now wired. RaftDriver queues a
+                    // Force-election now wired. RaftDriver queues a
                     // self-addressed TimeoutNow so the core jumps straight to
                     // startElection at term+1 (skipping pre-vote). No-op on
                     // LEADER.
@@ -635,7 +636,7 @@ public final class Broker implements AutoCloseable {
         // port they advertised back to us in their voter entry — tests
         // construct voters with bound ports to guarantee this.
         final int selfIdVal = config.selfId().value();
-        // partitions whose offset log has already been replayed into
+        // Partitions whose offset log has already been replayed into
         // the OffsetCache. Set guards against re-walking on every tick.
         var recoveredPartitions = new java.util.concurrent.ConcurrentHashMap<Integer, Boolean>();
         var registrationTicker = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -643,7 +644,7 @@ public final class Broker implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
-        // : __consumer_offsets needs to exist before any consumer-group
+        // __consumer_offsets needs to exist before any consumer-group
         // RPC can land. The leader proposes it once after registrations
         // settle; the creator is idempotent so re-ticking under election
         // churn doesn't matter.
@@ -669,7 +670,7 @@ public final class Broker implements AutoCloseable {
                             // same value) so the duplicate is harmless.
                             if (brokerRegistry.addressFor(bid).isPresent()) continue;
                             try {
-                                // propagate the advertised listener
+                                // Propagate the advertised listener
                                 // fields into the registration record so
                                 // client-facing RPCs (FindCoordinator,
                                 // DescribeCluster) on every broker can
@@ -708,7 +709,7 @@ public final class Broker implements AutoCloseable {
                     // Recovery is NOT gated on Raft leadership: every broker
                     // must bootstrap its OffsetCache + GroupCoordinator for
                     // __consumer_offsets partitions IT leads locally. After
-                    // a coord failover (/ ), the new partition
+                    // a coordinator failover, the new partition
                     // leader may well be a Raft follower — the recovery walk
                     // still has to run so a fetchOffsets RPC arriving at the
                     // new coordinator returns the committed offset instead
@@ -793,7 +794,7 @@ public final class Broker implements AutoCloseable {
                         log.debug("fencer tick failed, retrying on next tick", e);
                     }
                     try {
-                        // drop members past their session timeout.
+                        // Drop members past their session timeout.
                         // Runs on every broker (each one is the coordinator
                         // for its own __consumer_offsets partitions) so the
                         // tick is unconditional, not leader-gated.
@@ -822,7 +823,7 @@ public final class Broker implements AutoCloseable {
         // back. Stops partition leadership from drifting onto a single
         // broker after a wave of failovers.
         //
-        // timings pulled from config so integration tests can
+        // Timings pulled from config so integration tests can
         // compress the schedule. Defaults remain 15s tick / 30s stability.
         var preferredBalancer = new jbroker.broker.controller.PreferredLeaderBalancer(
                 topicManager,
@@ -883,14 +884,14 @@ public final class Broker implements AutoCloseable {
                     new jbroker.broker.BrokerHeartbeatSender.PeerAddress(v.id().value(), v.host(), v.brokerPort()));
         }
         // metadata-offset is a forward-compat field in the heartbeat RPC;
-        // 's fencer only looks at wall-clock, so a placeholder 0 is
+        // the fencer only looks at wall-clock, so a placeholder 0 is
         // fine here. Wire up a real applied-offset supplier if a consumer
         // needs it.
         // 250ms heartbeat with 3s staleness threshold = 12 missed
         // heartbeats to trigger a false-positive fence — safe under
         // heavy GC / JVM load. Low enough traffic (6 RPCs/s per broker
         // in a 3-broker cluster) to be negligible.
-        // pause-aware: the sender consults ChaosState.isPaused so
+        // Pause-aware: the sender consults ChaosState.isPaused so
         // `pause-broker` from the chaos UI flips the broker to "dead" on
         // every peer's BrokerLiveness, the fencer kicks in, and the
         // admin's health pill correctly flips to yellow/red.
@@ -924,12 +925,12 @@ public final class Broker implements AutoCloseable {
                 chaosHttp);
     }
 
-    /** exposed for tests + the admin-app chaos proxy probe. */
+    /** Exposed for tests + the admin-app chaos proxy probe. */
     public int chaosPort() {
         return chaosHttp == null ? -1 : chaosHttp.port();
     }
 
-    /** broker-local counter bag (incremental-fetch hits, etc). */
+    /** Broker-local counter bag (incremental-fetch hits, etc). */
     public jbroker.broker.BrokerMetrics metrics() {
         return metrics;
     }
@@ -960,7 +961,7 @@ public final class Broker implements AutoCloseable {
     }
 
     /**
-     * test-only hook for staging a {@code PartitionChangeRecord}
+     * Test-only hook for staging a {@code PartitionChangeRecord}
      * through the local Raft driver. Integration tests that need to
      * produce a specific cluster topology (e.g. leader ≠ replicas[0] so
      * the PreferredLeaderBalancer has something to rebalance) call this
@@ -999,7 +1000,7 @@ public final class Broker implements AutoCloseable {
     }
 
     /**
-     * + for each {@code __consumer_offsets} partition this
+     * For each {@code __consumer_offsets} partition this
      * broker leads, walk the log twice (Type-1 records into the
      * {@link OffsetCache}, Type-2 records into the
      * {@link GroupCoordinator}). Subsequent ticks skip recovered
@@ -1032,7 +1033,7 @@ public final class Broker implements AutoCloseable {
     }
 
     /**
-     * encode and append a single Type-2 record carrying the
+     * Encode and append a single Type-2 record carrying the
      * group's latest snapshot into its coordinator partition. The
      * partition is determined by {@code floorMod(group.hashCode(),
      * partitionCount)}, matching the {@code FindCoordinator} routing.

@@ -81,7 +81,7 @@ public final class BrokerGrpcServices {
     }
 
     /**
-     * Back-compat overload used by Milestone 5/6 tests that don't yet wire the
+     * Back-compat overload used by older tests that don't yet wire the
      * consumer-group RPCs. Equivalent to the dual-handler form below with a
      * placeholder {@link ConsumerHandler} whose group RPCs always return
      * {@code COORDINATOR_NOT_AVAILABLE}.
@@ -266,7 +266,7 @@ public final class BrokerGrpcServices {
     }
 
     /**
-     * admin service with optional consumer-group mutation support.
+     * Admin service with optional consumer-group mutation support.
      * The {@code consumer} parameter may be null for single-topic test
      * harnesses; in production Broker.start always passes a wired
      * ConsumerHandler so the new delete/reset RPCs route correctly.

@@ -11,7 +11,7 @@ import jbroker.broker.client.BrokerClient;
 import jbroker.storage.Record;
 
 /**
- * follower replication throughput bench. Spins up an
+ * Follower replication throughput bench. Spins up an
  * in-process 3-broker RF=3 cluster, bulk-appends to the leader's log
  * directly (so the measurement isolates the replica-fetcher path rather
  * than the client→leader path), then waits for every follower's LEO to

@@ -31,7 +31,7 @@
       </div>
 
       <!--
-        self-hosted Chart.js 4.4.3 (UMD). Previously loaded from
+        Self-hosted Chart.js 4.4.3 (UMD). Previously loaded from
         unpkg which (a) 404'd the old `chart.umd.min.js` path on v4
         drops and (b) was ORB-blocked by Chrome anyway — which is why
         the canvases above stayed blank pre-fix.
@@ -42,7 +42,7 @@
         // Rolling 30-sample in-page ring; each tick we poll the admin REST
         // endpoints and push the latest (produce_bytes_per_sec, fetch_bytes_per_sec)
         // onto each chart. Labels are relative seconds since page load.
-        // admin JSON is snake_case (application.yml property
+        // Admin JSON is snake_case (application.yml property
         // naming strategy). Pre-fix this code read camelCase field names
         // so every tick pushed zeros even when the API had data.
         const MAX_POINTS = 30;
@@ -98,7 +98,7 @@
           chart.update('none');
         }
 
-        // hydrate historical samples from the server-side ring
+        // Hydrate historical samples from the server-side ring
         // before starting live polling so the charts show the full 5-min
         // window immediately, not a growing line starting from zero.
         async function hydrate() {

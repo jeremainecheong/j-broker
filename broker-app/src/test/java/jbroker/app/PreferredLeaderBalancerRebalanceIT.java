@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * prove {@code PreferredLeaderBalancer} actually proposes a
+ * Prove {@code PreferredLeaderBalancer} actually proposes a
  * leadership move when an imbalance exists. The balancer's decision
  * logic is unit-tested at {@code PreferredLeaderBalancerTest}, but
  * nothing previously drove a live 3-broker cluster through a

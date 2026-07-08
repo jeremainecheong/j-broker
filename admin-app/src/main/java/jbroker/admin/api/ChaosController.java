@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * admin-side proxy for the cooperative chaos endpoints every
+ * Admin-side proxy for the cooperative chaos endpoints every
  * broker hosts on its {@code jbroker.chaos.port}. The admin-app resolves
  * the target broker's chaos port from the static property
  * {@code jbroker.admin.chaos.brokers} (comma-separated {@code id=host:port})

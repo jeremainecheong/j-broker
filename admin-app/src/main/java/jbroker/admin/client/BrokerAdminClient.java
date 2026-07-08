@@ -35,7 +35,7 @@ import jbroker.tls.TlsContexts;
  * instance per configured broker; callers that need cluster-wide fan-out
  * iterate a {@link BrokerAdminClientPool}.
  *
- * <p>As of carries {@code Admin} + {@code Metadata} stubs; later
+ * <p>Carries {@code Admin} + {@code Metadata} stubs; later
  * slices add {@code Consumer} for consumer-group reads and the streaming
  * events RPC.
  */
@@ -73,7 +73,7 @@ public final class BrokerAdminClient implements AutoCloseable {
         return parse(hostPort, TlsConfig.DISABLED);
     }
 
-    /** parse helper that threads a TLS bundle into the created client. */
+    /** Parse helper that threads a TLS bundle into the created client. */
     public static BrokerAdminClient parse(String hostPort, TlsConfig tls) {
         int colon = hostPort.indexOf(':');
         if (colon < 0) throw new IllegalArgumentException("broker address needs host:port, got " + hostPort);
@@ -151,7 +151,7 @@ public final class BrokerAdminClient implements AutoCloseable {
     }
 
     /**
-     * synchronous compaction on this broker's local log for
+     * Synchronous compaction on this broker's local log for
      * {@code (topic, partition)}. Non-hosting brokers return
      * {@code records_kept = -1}; the admin-app fans out across brokers and
      * sums survivor counts from hosting replicas.
@@ -164,7 +164,7 @@ public final class BrokerAdminClient implements AutoCloseable {
                         .build());
     }
 
-    /** admin-initiated consumer-group removal. */
+    /** Admin-initiated consumer-group removal. */
     public jbroker.proto.broker.DeleteConsumerGroupResponse deleteConsumerGroup(String groupId) {
         return admin.withDeadlineAfter(5, TimeUnit.SECONDS)
                 .deleteConsumerGroup(jbroker.proto.broker.DeleteConsumerGroupRequest.newBuilder()
@@ -172,7 +172,7 @@ public final class BrokerAdminClient implements AutoCloseable {
                         .build());
     }
 
-    /** admin-initiated offset reset for a group. */
+    /** Admin-initiated offset reset for a group. */
     public jbroker.proto.broker.ResetConsumerGroupOffsetsResponse resetConsumerGroupOffsets(
             String groupId, java.util.List<jbroker.proto.broker.OffsetReset> resets) {
         var b = jbroker.proto.broker.ResetConsumerGroupOffsetsRequest.newBuilder()

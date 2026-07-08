@@ -19,7 +19,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * regression coverage for the Alpine {@code x-cloak} modal flash.
+ * Regression coverage for the Alpine {@code x-cloak} modal flash.
  *
  * <p>Without the CSS rule {@code [x-cloak] { display: none !important; }},
  * every modal that gates visibility on Alpine's {@code x-show} renders
@@ -105,7 +105,7 @@ class AlpineCloakIT {
 
     @Test
     void adminAppSelfHostsAlpineAndHtmxInsteadOfCDN() {
-        // root cause: unpkg.com script loads were failing in Chrome
+        // Root cause: unpkg.com script loads were failing in Chrome
         // (ORB) which left Alpine + htmx silently dead — modals wouldn't
         // open, health badge stuck on "checking…", sparklines empty. This
         // test pins the self-hosted shape: shell.html links into /vendor/

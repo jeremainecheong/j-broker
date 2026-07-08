@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Micro-benchmark. spec §Milestone 4 acceptance gate: {@code Log} sustains >200 MB/s append on
+ * Micro-benchmark. Acceptance bar: {@code Log} sustains >200 MB/s append on
  * a laptop SSD. We run a short, sized append loop and print throughput; a
  * soft assertion floors at 50 MB/s so the check isn't flaky on slow CI
  * spinning disks (if any), while still catching order-of-magnitude
@@ -71,9 +71,9 @@ class AppendThroughputTest {
             }
         }
         System.out.printf("Log append throughput best-of-%d: %.1f MB/s (%.2fs)%n", trials, bestMbPerSec, bestSeconds);
-        // CI may run on slow IO; lower bar here than spec's 200 MB/s so we
+        // CI may run on slow IO; lower bar here than the 200 MB/s target so we
         // still catch catastrophic regressions (compiler deopt, fsync
-        // amplification). The spec's 200 MB/s claim is for a laptop SSD.
+        // amplification). The 200 MB/s target is for a laptop SSD.
         assertThat(bestMbPerSec).isGreaterThan(50.0);
     }
 }

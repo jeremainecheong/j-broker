@@ -10,7 +10,7 @@ import java.util.Optional;
 
 /**
  * Persists the {@code (epoch, startOffset)} pairs that delimit leader epochs
- * in this partition's log. Milestone 6 uses this to honour the
+ * in this partition's log. The replication layer uses this to honour the
  * {@code OffsetsForLeaderEpoch} RPC when a follower rejoins after a partition
  * change. The format matches Kafka's simple line-oriented checkpoint file:
  *
@@ -22,7 +22,7 @@ import java.util.Optional;
  *  ...
  * </pre>
  *
- * <p>Scope in Milestone 4: infrastructure only — storage for the pairs plus
+ * <p>Scope here: infrastructure only — storage for the pairs plus
  * atomic temp-file-then-rename for crash safety. The RPC + usage land later.
  */
 public final class LeaderEpochCheckpoint {

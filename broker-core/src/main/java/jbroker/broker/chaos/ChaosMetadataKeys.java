@@ -3,7 +3,7 @@ package jbroker.broker.chaos;
 import io.grpc.Metadata;
 
 /**
- * gRPC metadata headers used by the chaos interceptors to
+ * GRPC metadata headers used by the chaos interceptors to
  * identify the calling broker. Both {@link ChaosClientInterceptor} (adds)
  * and {@link ChaosServerInterceptor} (reads) reference the same key
  * instance so there's one source of truth for the wire name.

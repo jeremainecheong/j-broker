@@ -3,10 +3,10 @@ package jbroker.broker;
 import java.util.Map;
 
 /**
- * Catalogue entry for a single topic. Milestone 7 added {@code internal} (hides
- * the topic from {@code Admin.ListTopics}) and {@code compact} (marks the
- * topic for read-time compaction during recovery walks). Milestone 8 added the
- * opaque {@code config} map surfaced by the admin REST API.
+ * Catalogue entry for a single topic. {@code internal} hides
+ * the topic from {@code Admin.ListTopics}, and {@code compact} marks the
+ * topic for read-time compaction during recovery walks. The
+ * opaque {@code config} map is surfaced by the admin REST API.
  */
 public record TopicDescription(
         String topic,

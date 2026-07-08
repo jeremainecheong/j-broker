@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# local 10-minute consumer-group churn sign-off.
+# Local 10-minute consumer-group churn sign-off.
 #
 # Drives `GroupChurnIT` at the spec-mandated 10-minute duration so a
 # real dev can observe sustained rebalance + produce behaviour end-to-end.
 # Excluded from default CI (the `chaos` JUnit tag gates it); invoke this
-# script directly before merging Milestone 7 for acceptance gate sign-off.
+# script directly before merging consumer-group changes.
 #
 # Override duration via the first positional argument (in seconds):
 #   ./scripts/chaos/group-churn.sh          # 600s (10 min)

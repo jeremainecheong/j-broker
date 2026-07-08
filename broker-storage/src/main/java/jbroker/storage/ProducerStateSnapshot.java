@@ -9,8 +9,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Infrastructure-only {@code producer-state} snapshot file. Milestone 6 will
- * populate the map; Milestone 4 provides atomic write/read and a simple binary
+ * Infrastructure-only {@code producer-state} snapshot file. The replication layer will
+ * populate the map; this class provides atomic write/read and a simple binary
  * format. Layout:
  *
  * <pre>

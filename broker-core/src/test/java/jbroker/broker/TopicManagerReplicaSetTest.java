@@ -70,7 +70,7 @@ class TopicManagerReplicaSetTest {
 
     @Test
     void legacyOnPartitionChangeDefaultsReplicasToIsr() {
-        // Backward-compatible overload used by earliercallers + snapshot v2
+        // Backward-compatible overload used by legacy callers + snapshot v2
         // restore — assumes ISR == replicas until a new PartitionChangeRecord
         // carrying a real replica set arrives.
         var tm = new TopicManager();

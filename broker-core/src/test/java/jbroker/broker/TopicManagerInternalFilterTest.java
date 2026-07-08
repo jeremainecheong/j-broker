@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
 /**
- * confirms {@link TopicManager#list()} hides internal topics (name
+ * Confirms {@link TopicManager#list()} hides internal topics (name
  * starts with {@code __}) while {@link TopicManager#listAll()} and
  * {@link TopicManager#listInternal()} expose them.
  */

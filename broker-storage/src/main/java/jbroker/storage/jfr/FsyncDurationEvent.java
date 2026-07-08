@@ -9,7 +9,7 @@ import jdk.jfr.StackTrace;
 import jdk.jfr.Timespan;
 
 /**
- * wraps {@code LogSegment.force()} on the append path. One event
+ * Wraps {@code LogSegment.force()} on the append path. One event
  * per invocation covers the log file, offset index, and time index flushes
  * together; separating them would triple the JFR event rate without
  * meaningful signal — they're always called as a batch.

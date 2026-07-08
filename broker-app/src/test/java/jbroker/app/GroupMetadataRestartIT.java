@@ -15,11 +15,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * proves that group membership state survives broker restart on the
+ * Proves that group membership state survives broker restart on the
  * same {@code dataDir}: after restart, a member with the same
  * {@code member_id} + {@code member_epoch} can heartbeat without getting
- * UNKNOWN_MEMBER_ID. This is the single-broker analogue of * (multi-broker coordinator failover); the multi-broker version follows
- * in once the full E2E-7 suite lands.
+ * UNKNOWN_MEMBER_ID. This is the single-broker analogue of the
+ * multi-broker coordinator-failover scenario; the multi-broker version
+ * follows once the full multi-broker coordinator-failover coverage lands.
  *
  * <p>The mechanism under test: each {@code join} fires a snapshot listener
  * which appends a Type-2 GroupMetadataValue record to

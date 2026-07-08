@@ -60,7 +60,7 @@ public final class ReplicaPeerClient implements AutoCloseable {
     }
 
     /**
-     * Queries the leader's {@code OffsetsForLeaderEpoch} (). Throws
+     * Queries the leader's {@code OffsetsForLeaderEpoch}. Throws
      * {@link RuntimeException} on a non-NONE error so the follower's
      * reconciliation loop surfaces the failure cleanly.
      */

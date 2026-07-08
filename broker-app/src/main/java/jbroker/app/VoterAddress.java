@@ -8,7 +8,7 @@ import jbroker.raft.core.NodeId;
  * data-plane RPCs (at {@code brokerPort}); {@code id} is the same identity
  * used everywhere else (broker_id == NodeId.value()).
  *
- * <p>Voters are static in j-broker (the spec) — adding or removing a voter
+ * <p>Voters are static in j-broker — adding or removing a voter
  * requires restart. {@code BrokerRegistrationRecord}s propagate the
  * broker-gRPC address into every broker's {@code BrokerRegistry} so
  * follower fetchers can dial peers without consulting this static config.

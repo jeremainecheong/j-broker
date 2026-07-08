@@ -1,7 +1,7 @@
 package jbroker.broker.quota;
 
 /**
- * byte-bucket rate limiter for produce / fetch paths. Implementations
+ * Byte-bucket rate limiter for produce / fetch paths. Implementations
  * may be Redis-backed ({@link RedisQuotaEnforcer}), in-memory, or a no-op.
  *
  * <p>{@link #check} is called with the number of bytes the caller

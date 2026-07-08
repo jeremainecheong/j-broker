@@ -8,7 +8,7 @@ import jdk.jfr.Name;
 import jdk.jfr.StackTrace;
 
 /**
- * periodic follower-lag signal. Leader fires this every time it
+ * Periodic follower-lag signal. Leader fires this every time it
  * records a follower's {@code ReplicaFetch} with a non-trivial lag; the
  * emit side applies a minimum-threshold guard so we don't spam under
  * steady-state replication.

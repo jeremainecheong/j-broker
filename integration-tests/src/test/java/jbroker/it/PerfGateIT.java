@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * end-to-end produce + consume perf gate. Runs in CI under
+ * End-to-end produce + consume perf gate. Runs in CI under
  * the {@code perf} tag so a merge that halves throughput or triples tail
  * latency breaks the build rather than silently shipping.
  *
@@ -102,7 +102,7 @@ class PerfGateIT {
                         fetchLatencies.get(Math.min(fetchLatencies.size() - 1, (int) (fetchLatencies.size() * 0.99)));
 
                 System.out.printf(
-                        "E2E-hardening pass perf-gate: produce p50=%.2fms p99=%.2fms rps=%.0f | consume-fetch p99=%.2fms (samples=%d)%n",
+                        "perf-gate: produce p50=%.2fms p99=%.2fms rps=%.0f | consume-fetch p99=%.2fms (samples=%d)%n",
                         p50ProduceNs / 1e6, p99ProduceNs / 1e6, producerRps, p99FetchNs / 1e6, fetchLatencies.size());
 
                 assertThat(p99ProduceNs)

@@ -15,7 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * broker-side chaos control plane. Exposes seven cooperative
+ * Broker-side chaos control plane. Exposes seven cooperative
  * endpoints under {@code /debug/chaos/*} gated by
  * {@code jbroker.chaos.enabled=true}. The broker faults <em>itself</em>
  * in response; admin-app's proxy picks the right broker and targets
@@ -133,8 +133,8 @@ public final class ChaosHttpServer implements AutoCloseable {
             respond(ex, 400, "{\"error\":\"peer query param required\"}");
             return;
         }
-        // Audit-finding #3 — optional direction=outbound|inbound|both. Default
-        // is "both" (symmetric, pre-hardening pass behavior). "outbound" blocks only
+        // Optional direction=outbound|inbound|both. Default
+        // is "both" (symmetric, the original partition behavior). "outbound" blocks only
         // self→peer; "inbound" blocks only peer→self. Asymmetric partitions
         // are what Raft elections actually need to defend against.
         String direction = q.getOrDefault("direction", "both").toLowerCase();

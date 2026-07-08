@@ -10,7 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * bounded in-memory history of cluster-wide throughput +
+ * Bounded in-memory history of cluster-wide throughput +
  * latency samples, populated by {@link MetricsScraper}'s fixed-rate
  * tick. Prior to this, the admin UI's sparklines only showed samples
  * collected while a browser tab was open; navigating away reset the

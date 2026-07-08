@@ -9,7 +9,7 @@ import jbroker.proto.common.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 /**
- * coverage for the bounded time-series ring the admin-app
+ * Coverage for the bounded time-series ring the admin-app
  * feeds sparklines from. Pure unit — no broker needed.
  */
 class ThroughputHistoryTest {

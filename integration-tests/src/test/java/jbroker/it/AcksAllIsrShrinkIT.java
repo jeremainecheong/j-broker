@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * full round-trip for acks=all behaviour under ISR shrink.
+ * Full round-trip for acks=all behaviour under ISR shrink.
  *
  * <p>Unit tests already cover the happy path + shrinks inside the
  * ProduceHandler (see {@link jbroker.broker.ProduceHandlerAcksAllTest}),

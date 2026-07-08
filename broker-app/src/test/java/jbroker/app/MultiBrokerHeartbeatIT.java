@@ -9,9 +9,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * sanity: 3 brokers send point-to-point BrokerHeartbeat RPCs and
+ * Sanity check: 3 brokers send point-to-point BrokerHeartbeat RPCs and
  * every broker's BrokerLiveness map converges with fresh entries for all
- * three broker IDs. 's fencer builds on this.
+ * three broker IDs. The fencer builds on this.
  */
 class MultiBrokerHeartbeatIT {
 

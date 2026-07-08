@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
- * Converts internal failures into theREST error envelope. Keep
+ * Converts internal failures into the admin REST error envelope. Keep
  * the mapping narrow — one handler per recoverable exception type — so
  * controllers stay free of error-translation boilerplate.
  */
@@ -39,7 +39,7 @@ public class RestExceptionHandler {
     }
 
     /**
-     * uniform 400 envelope for bean-validation failures on controller
+     * Uniform 400 envelope for bean-validation failures on controller
      * request bodies. The first field error becomes the message; additional
      * errors are squashed into the hint map so the UI can render per-field
      * messages without parsing the message string.

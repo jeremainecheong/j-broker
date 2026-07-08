@@ -17,7 +17,7 @@ import org.slf4j.LoggerFactory;
  * leader via {@link Peer} and appends them byte-for-byte to the local
  * {@link jbroker.storage.Log}.
  *
- * <p>Milestone 6.4: on {@link ErrorCodes#FENCED_EPOCH}, the fetcher calls
+ * <p>On {@link ErrorCodes#FENCED_EPOCH}, the fetcher calls
  * {@code OffsetsForLeaderEpoch} with its last-seen leader_epoch, truncates
  * any divergent suffix returned, and signals {@link PollResult#RECONCILED}
  * so the driver re-polls with the fresh epoch on the next tick.

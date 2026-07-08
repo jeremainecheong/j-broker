@@ -12,7 +12,7 @@ import jbroker.raft.core.NodeId;
 import jbroker.raft.core.Role;
 
 /**
- * shared helpers for the in-process multi-broker bench
+ * Shared helpers for the in-process multi-broker bench
  * variants. Picking free ports, spinning up an N-broker cluster on a
  * temp data dir, and waiting for a single Raft leader + full broker
  * registry — all three bench modes (acks=all, replication, compaction)

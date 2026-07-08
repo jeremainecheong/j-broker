@@ -55,7 +55,7 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
     }
 
     /**
-     * chaos-aware constructor. {@code paused.getAsBoolean()} is
+     * Chaos-aware constructor. {@code paused.getAsBoolean()} is
      * polled once per tick; when it returns true the whole tick no-ops so
      * peers' {@link BrokerLiveness} eventually flips this broker to dead and
      * the fencer promotes a replacement leader. Combined with the existing

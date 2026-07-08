@@ -7,7 +7,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * per-broker event publisher. Maintains an in-process ring buffer
+ * Per-broker event publisher. Maintains an in-process ring buffer
  * of the last 2048 events (keyed by monotonic id) plus a list of live
  * subscribers. On {@link #publish} the event is appended to the ring and
  * fanned out to every subscriber's queue.

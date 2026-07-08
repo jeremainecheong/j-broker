@@ -25,7 +25,7 @@ import jbroker.tls.TlsConfig;
 import jbroker.tls.TlsContexts;
 
 /**
- * Minimal single-broker client surface for Milestone 5. Bundles Producer,
+ * Minimal single-broker client surface. Bundles Producer,
  * Consumer, and Admin stubs against one gRPC channel. No retries, no
  * batching — the simplest possible shape that lets the E2E test cover
  * "produce N, consume N" end-to-end.
@@ -90,7 +90,7 @@ public final class BrokerClient implements AutoCloseable {
         return resp.getTopic();
     }
 
-    /** Milestone 8 — delete a topic cluster-wide. Raises on NOT_LEADER / IO / UNKNOWN_TOPIC. */
+    /** Delete a topic cluster-wide. Raises on NOT_LEADER / IO / UNKNOWN_TOPIC. */
     public void deleteTopic(String topic) {
         var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
                 .deleteTopic(DeleteTopicRequest.newBuilder().setTopic(topic).build());
@@ -99,7 +99,7 @@ public final class BrokerClient implements AutoCloseable {
         }
     }
 
-    /** Milestone 8 — merge a config overlay into an existing topic. Returns the merged map. */
+    /** Merge a config overlay into an existing topic. Returns the merged map. */
     public java.util.Map<String, String> updateTopicConfig(String topic, java.util.Map<String, String> config) {
         var b = UpdateTopicConfigRequest.newBuilder().setTopic(topic);
         b.putAllConfig(config);
@@ -112,7 +112,7 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     /**
-     * force synchronous compaction on the responding broker's local
+     * Force synchronous compaction on the responding broker's local
      * log for {@code (topic, partition)}. Returns the survivor count, or
      * -1 if the broker has no open log for that partition. Throws on any
      * populated {@code error} (unknown topic, invalid partition, I/O error).
@@ -130,7 +130,7 @@ public final class BrokerClient implements AutoCloseable {
         return resp.getRecordsKept();
     }
 
-    /** Milestone 8 — create a topic with a config map. */
+    /** Create a topic with a config map. */
     public void createTopicWithConfig(String topic, int partitions, int rf, java.util.Map<String, String> config) {
         var b = CreateTopicRequest.newBuilder()
                 .setTopic(topic)
@@ -144,7 +144,7 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     /**
-     * Allocate a fresh idempotent-producer id (). Returns the assigned
+     * Allocate a fresh idempotent-producer id. Returns the assigned
      * {@code producer_id}; epoch is always 0 on initial allocation. Feed
      * the returned id to {@link #idempotentProduce} together with a
      * client-tracked {@code base_sequence} per {@code (topic, partition)}.
@@ -257,7 +257,7 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     /**
-     * Idempotent variant (): carries the producer id + epoch + base
+     * Idempotent variant: carries the producer id + epoch + base
      * sequence the caller obtained from {@link #initProducerId}. The broker
      * de-duplicates retries with the same sequence within a
      * {@code (topic, partition, producer_id, producer_epoch)} scope.
@@ -341,10 +341,10 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     /**
-     * offset-preserving fetch variant. Like {@link #fetch} but
+     * Offset-preserving fetch variant. Like {@link #fetch} but
      * surfaces each record's absolute offset and key alongside its value,
      * which integration tests (in particular the post-compaction sparse-
-     * offset assertion in ) need to prove log-layer guarantees
+     * offset assertion) need to prove log-layer guarantees
      * survive the gRPC hop.
      */
     public List<FetchedRecord> fetchRecords(String topic, int partition, long offset, int maxBytes) {

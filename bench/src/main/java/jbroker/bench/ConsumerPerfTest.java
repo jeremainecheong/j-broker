@@ -5,7 +5,7 @@ import jbroker.broker.client.BrokerClient;
 import org.HdrHistogram.Histogram;
 
 /**
- * fetch-path benchmark.
+ * Fetch-path benchmark.
  *
  * <pre>
  *   j-broker-bench consumer --broker HOST:PORT --topic T --partition N

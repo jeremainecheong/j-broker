@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# helm chart smoke tests. Runs `helm template` across a matrix of
+# Helm chart smoke tests. Runs `helm template` across a matrix of
 # values combinations and greps the rendered manifest for structural
 # invariants. No live Kubernetes required.
 #

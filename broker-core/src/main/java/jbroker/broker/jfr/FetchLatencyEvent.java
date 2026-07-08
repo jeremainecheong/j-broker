@@ -8,7 +8,7 @@ import jdk.jfr.Name;
 import jdk.jfr.StackTrace;
 import jdk.jfr.Timespan;
 
-/** per-Fetch RPC wall-clock latency + bytes returned to the client. */
+/** Per-Fetch RPC wall-clock latency + bytes returned to the client. */
 @Name("jbroker.FetchLatency")
 @Label("Fetch Latency")
 @Description("Server-observed fetch RPC latency including zero-copy transfer time.")

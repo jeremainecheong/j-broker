@@ -48,7 +48,7 @@ public final class AdminHandler {
     }
 
     /**
-     * abstracts the LogManager handle so AdminHandler can trigger a
+     * Abstracts the LogManager handle so AdminHandler can trigger a
      * synchronous compaction without depending on {@code broker-storage}
      * directly. Returns {@link OptionalInt#empty()} when the target log
      * isn't open on this broker (non-hosting replica, or cold handle).
@@ -83,7 +83,7 @@ public final class AdminHandler {
         this.compactor = compactor;
     }
 
-    /** pre-existing-call-sites overload: no compactor wired. */
+    /** Back-compat overload for pre-existing call sites: no compactor wired. */
     public AdminHandler(
             TopicManager topicManager,
             MetadataProposer proposer,
@@ -104,7 +104,7 @@ public final class AdminHandler {
     }
 
     /**
-     * Back-compat overload: self-only replica set. Used by Milestone 5 tests
+     * Back-compat overload: self-only replica set. Used by tests
      * that don't spin up a BrokerRegistry.
      */
     public AdminHandler(TopicManager topicManager, MetadataProposer proposer, int selfBrokerId) {
@@ -228,7 +228,7 @@ public final class AdminHandler {
     }
 
     /**
-     * synchronously compact this broker's local log for
+     * Synchronously compact this broker's local log for
      * {@code (topic, partition)}. Topic-level validations (unknown topic,
      * out-of-range partition) return a populated {@code error}; a missing
      * local log (non-hosting broker) returns {@code records_kept = -1}

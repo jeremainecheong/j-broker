@@ -7,7 +7,7 @@ import jdk.jfr.Label;
 import jdk.jfr.Name;
 import jdk.jfr.StackTrace;
 
-/** fired from {@code TopicManager.onPartitionChange} when the leader flips. */
+/** Fired from {@code TopicManager.onPartitionChange} when the leader flips. */
 @Name("jbroker.PartitionLeaderChange")
 @Label("Partition Leader Change")
 @Description("Leader broker changed for a topic-partition.")

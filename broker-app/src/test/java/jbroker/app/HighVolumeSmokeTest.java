@@ -12,9 +12,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * High-volume produce/consume: spec §Milestone 5 acceptance gate says "producing 100k messages
- * and consuming them returns the same 100k in order within partitions". This
- * test exercises exactly that against a live in-process broker.
+ * High-volume produce/consume: producing 100k messages and consuming them
+ * should return the same 100k in order within partitions. This test
+ * exercises exactly that against a live in-process broker.
  *
  * <p>Tagged by filename, not scope — we still want it to run on CI because
  * it's the truest end-to-end coverage we have. Each message is small so the

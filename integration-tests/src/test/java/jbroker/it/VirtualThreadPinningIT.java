@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * with a JFR recording capturing
+ * With a JFR recording capturing
  * {@code jdk.VirtualThreadPinned} during concurrent produce load, the
  * emitted event count on hot paths is zero.
  *
@@ -35,8 +35,8 @@ class VirtualThreadPinningIT {
         Path jfrPath = Files.createTempFile("jbroker-e2e-10-2-", ".jfr");
         var recording = new Recording();
         // jdk.VirtualThreadPinned is emitted when a virtual thread parks
-        // while holding a monitor — the exact condition the change
-        // eliminates. Threshold 0ms so every pinning event is captured.
+        // while holding a monitor — the exact condition the ReentrantLock
+        // migration eliminates. Threshold 0ms so every pinning event is captured.
         recording.enable("jdk.VirtualThreadPinned").withThreshold(java.time.Duration.ZERO);
         recording.setDestination(jfrPath);
         recording.start();

@@ -10,7 +10,7 @@ import jbroker.proto.broker.BrokerHeartbeatResponse;
  * has an independent view of the cluster's liveness.
  *
  * <p>Heartbeats do NOT go through Raft — the design pivoted to
- * point-to-point RPCs after the investigation showed that follower
+ * point-to-point RPCs after an investigation showed that follower
  * calls to {@code raftDriver.propose()} are silently dropped. Point-to-
  * point matches real KRaft's broker heartbeat protocol.
  */

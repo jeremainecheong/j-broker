@@ -20,14 +20,14 @@ public final class TopicManager {
      * re-applying the same record is a no-op.
      *
      * <p>Back-compat overload: defaults {@code internal} and {@code compact}
-     * to {@code false} for pre-Milestone 7 callers + tests.
+     * to {@code false} for older callers + tests.
      */
     public void onTopicCommitted(String topic, int partitions, int replicationFactor, long createdMillis) {
         onTopicCommitted(topic, partitions, replicationFactor, createdMillis, false, false);
     }
 
     /**
-     * Milestone 7 form: also accepts {@code internal} and {@code compact} flags.
+     * Extended form: also accepts {@code internal} and {@code compact} flags.
      * Topics whose name starts with {@code __} are forced to {@code internal=true}
      * even if the caller passes {@code false}, so {@link #list()} reliably
      * hides them.
@@ -42,7 +42,7 @@ public final class TopicManager {
         onTopicCommitted(topic, partitions, replicationFactor, createdMillis, internal, compact, java.util.Map.of());
     }
 
-    /** Milestone 8 form: also captures a {@code config} map. */
+    /** Extended form: also captures a {@code config} map. */
     public void onTopicCommitted(
             String topic,
             int partitions,
@@ -59,7 +59,7 @@ public final class TopicManager {
     }
 
     /**
-     * Milestone 8 — drop a topic + every partition entry keyed on it. Called from
+     * Drop a topic + every partition entry keyed on it. Called from
      * the state machine when a {@code DeleteTopicRecord} commits. Idempotent;
      * re-deleting an unknown topic is a no-op.
      */
@@ -69,7 +69,7 @@ public final class TopicManager {
     }
 
     /**
-     * Milestone 8 — merge a config overlay into an existing topic. Missing topic
+     * Merge a config overlay into an existing topic. Missing topic
      * is a no-op (the state machine logs and skips; apply() is idempotent and
      * a snapshot might still contain the update after the topic was deleted).
      */
@@ -106,7 +106,7 @@ public final class TopicManager {
             }
             return existing;
         });
-        // emit when the proposal won (merged == next) AND the leader
+        // Emit when the proposal won (merged == next) AND the leader
         // actually changed (or this is the first proposal for the partition).
         if (merged == next && (prior == null || prior.leader() != leader)) {
             var event = new jbroker.broker.jfr.PartitionLeaderChangeEvent();

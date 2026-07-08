@@ -16,11 +16,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Covers the Milestone 6.2 data-plane goal: a follower pulling batches from a
+ * Covers the data-plane goal: a follower pulling batches from a
  * leader via ReplicaFetch. Uses one real {@link Broker} (playing the
  * leader) and a second bare {@link LogManager} + {@link ReplicaFetcher}
- * (playing the follower). The full 3-broker metadata-Raft cluster lands
- * in Milestone 6.5 — this IT scopes strictly to the replication RPC.
+ * (playing the follower). The full 3-broker metadata-Raft cluster is
+ * covered elsewhere — this IT scopes strictly to the replication RPC.
  */
 class ReplicaFetchEndToEndIT {
 
@@ -52,8 +52,9 @@ class ReplicaFetchEndToEndIT {
                 // Use broker-id 1 so the ISR check on the leader accepts us —
                 // in single-broker mode the only member of the ISR is broker 1.
                 // This IT exercises the replication RPC end-to-end; the full
-                // multi-broker ISR story lands in where a real controller
-                // will propose PartitionChangeRecords adding follower broker ids.
+                // multi-broker ISR story is covered elsewhere, where a real
+                // controller proposes PartitionChangeRecords adding follower
+                // broker ids.
                 var fetcher = new ReplicaFetcher(
                         followerLm,
                         "replicated",

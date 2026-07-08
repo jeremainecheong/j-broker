@@ -20,7 +20,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * background scraper that fans out {@code DescribeMetrics} across
+ * Background scraper that fans out {@code DescribeMetrics} across
  * brokers and exposes the latest snapshot to {@link PrometheusMetricsBinder}.
  *
  * <p>Each cycle pulls every reachable broker; unreachable brokers drop
@@ -68,7 +68,7 @@ public class MetricsScraper {
 
     void tick() {
         try {
-            // fan out describeMetrics across brokers concurrently
+            // Fan out describeMetrics across brokers concurrently
             // via a virtual-thread-per-task executor, closed inside a
             // try-with-resources so the scrape waits for every fork to
             // finish before returning (structured-concurrency semantics

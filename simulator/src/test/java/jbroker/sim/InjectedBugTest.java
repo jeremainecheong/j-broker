@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Validates that the simulator's invariant checkers can catch a deliberately
- * broken Raft implementation within a bounded number of seeds (spec §Milestone 3
- * acceptance gate: "deliberately injected bug caught by simulator within 1000 seeds").
+ * broken Raft implementation within a bounded number of seeds (acceptance
+ * gate: "deliberately injected bug caught by simulator within 1000 seeds").
  *
  * <p>The bug: persist {@code currentTerm} but drop {@code votedFor}. A node
  * can then vote for multiple candidates at the same term — classic Raft

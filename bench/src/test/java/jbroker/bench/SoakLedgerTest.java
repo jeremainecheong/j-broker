@@ -34,7 +34,7 @@ class SoakLedgerTest {
         // A produce whose ack never reached the client may still have
         // committed — its presence exactly once is fine; only acked-and-
         // missing (loss) or present-more-than-once (duplication) violate
-        // theinvariant.
+        // the soak loss/duplication invariant.
         var r = SoakLedger.compare(List.of("p0-0"), List.of("p0-0", "p0-99"));
         assertThat(r.missing()).isEmpty();
         assertThat(r.duplicated()).isEmpty();

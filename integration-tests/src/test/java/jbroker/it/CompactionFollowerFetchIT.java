@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * compaction on the leader while followers (and clients)
+ * Compaction on the leader while followers (and clients)
  * concurrently fetch from the same partition.
  *
  * <p>{@link ForceCompactIT} proves the gRPC fetch path returns

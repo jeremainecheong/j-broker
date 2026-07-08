@@ -8,7 +8,7 @@ import jbroker.storage.LogManager;
 import jbroker.storage.RecordBatch;
 
 /**
- * companion to {@link OffsetCacheRecovery}. Reads a
+ * Companion to {@link OffsetCacheRecovery}. Reads a
  * {@code __consumer_offsets} partition end-to-end and applies every
  * Type-2 (group-metadata) record it finds into a {@link GroupCoordinator}
  * via {@link GroupCoordinator#restoreGroup}. Latest-record-per-key wins

@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * prove {@code BrokerRegistrationRecord.advertised_host / port}
+ * Prove {@code BrokerRegistrationRecord.advertised_host / port}
  * flow through to {@code FindCoordinator} and {@code DescribeCluster}
  * replies so external clients see a reachable address, not the broker's
  * inter-broker bind address.
@@ -90,7 +90,7 @@ class AdvertisedListenersIT {
                 var resp = stub.findCoordinator(
                         FindCoordinatorRequest.newBuilder().setKey("g").build());
                 assertThat(resp.getCoordinator().getHost())
-                        .as("earliersingle-network behavior: advertised falls back to internal bind")
+                        .as("single-network behavior: advertised falls back to internal bind")
                         .isEqualTo("127.0.0.1");
                 assertThat(resp.getCoordinator().getPort()).isEqualTo(brokerPort);
             } finally {

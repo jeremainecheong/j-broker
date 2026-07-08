@@ -13,8 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * at full scale — 1M keyed records across 100 keys → compact →
- * assert count ≈ 100 and wall-clock &lt; 60s on commodity hardware.
+ * 1M keyed records across 100 keys → compact → assert count ≈ 100 and
+ * wall-clock &lt; 60s on commodity hardware, at full scale.
  *
  * <p>Tagged {@code slow}: default CI skips; opt into with
  * {@code JBROKER_RUN_SLOW_TESTS=1 ./gradlew test}.
@@ -68,7 +68,7 @@ class MillionRecordCompactionIT {
             // acceptable trade-off for the @slow opt-in.
             long totalMs = appendElapsedMs + compactElapsedMs;
             System.out.printf(
-                    "append %dms + compact %dms = %dms total (kept=%d)%n",
+                    "compaction-scale: append %dms + compact %dms = %dms total (kept=%d)%n",
                     appendElapsedMs, compactElapsedMs, totalMs, kept);
             assertThat(totalMs)
                     .as("append + compact should finish under 60s on commodity hardware")

@@ -28,7 +28,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * trigger a leader-assignment event (here: topic
+ * Trigger a leader-assignment event (here: topic
  * creation, which fires a {@code LeaderChanged} as partition 0's initial
  * leader assignment lands) and assert it arrives on a connected SSE client
  * within 1 s.
@@ -101,7 +101,8 @@ class LeaderChangeSseIT {
             admin.createTopic("sse-orders", 1, 1);
         }
 
-        // Scan received lines for a `leader_changed` event within 5s. // tolerance in the spec is 1s, but the first-event-received latency
+        // Scan received lines for a `leader_changed` event within 5s. The
+        // required tolerance is 1s, but the first-event-received latency
         // floor is higher on a cold JVM; 5s keeps the assertion honest without
         // fighting cache warm-up. At steady state the wall-clock from
         // createTopic to on-wire event is sub-100ms.

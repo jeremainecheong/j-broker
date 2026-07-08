@@ -3,7 +3,7 @@ package jbroker.broker.metrics;
 import java.util.List;
 
 /**
- * supplies per-partition metrics for {@code DescribeMetrics}.
+ * Supplies per-partition metrics for {@code DescribeMetrics}.
  * Returns entries only for partitions this broker leads; followers omit
  * remote-led partitions to avoid double-counting across a cluster-wide
  * Prometheus scrape.

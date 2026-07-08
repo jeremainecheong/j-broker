@@ -25,8 +25,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>A stale broker with no surviving ISR members emits a proposal with
  * {@code leader = -1} (sentinel "no leader"); the partition becomes
- * unavailable until that broker returns and re-joins the ISR. 's
- * {@code acks=all} treats leader=-1 as "reject write."
+ * unavailable until that broker returns and re-joins the ISR. The
+ * {@code acks=all} path treats leader=-1 as "reject write."
  *
  * <p><b>Never-heard-from leaders are fenceable.</b> A partition leader with
  * no {@link BrokerLiveness} entry at all (it died before its first

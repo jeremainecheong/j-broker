@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# compound chaos scenario.
+# Compound chaos scenario.
 #
 # Runs group churn + produce load concurrently — the consumer-group-
 # rebalance flavour of compound chaos (rolling rebalance while the
 # producer hammers partitions). The broker-kill-under-load flavour is
-# its own scenario: `scenario-chaos-with-load.sh` (the spec), which
+# its own scenario: `scenario-chaos-with-load.sh`, which
 # SIGKILLs a broker every 30s under sustained idempotent acks=all load
 # and asserts zero lost / zero duplicated records.
 #

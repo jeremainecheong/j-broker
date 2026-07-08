@@ -6,7 +6,7 @@ import jbroker.proto.broker.OffsetsForLeaderEpochResponse;
 import jbroker.storage.LogManager;
 
 /**
- * Answers the follower-reconciliation RPC (): given a follower's
+ * Answers the follower-reconciliation RPC: given a follower's
  * last-seen {@code leader_epoch}, returns the end offset of that epoch in
  * the leader's log. The follower compares the response against its local
  * LEO to decide whether to truncate before resuming {@code ReplicaFetch}.

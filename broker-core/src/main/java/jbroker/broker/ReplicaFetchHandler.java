@@ -16,12 +16,12 @@ import jbroker.storage.LogManager;
  * {@link FollowerStateTracker}, then returns records + advanced HWM.
  *
  * <p>HWM is computed as {@code min(LEO across ISR)}; the follower uses it
- * to know what's safe for consumers (Milestone 6.6 enforces this on the
+ * to know what's safe for consumers (enforced on the
  * Consumer.Fetch path).
  */
 public final class ReplicaFetchHandler {
 
-    /** minimum lag (records) for ReplicationLagEvent emission. */
+    /** Minimum lag (records) for ReplicationLagEvent emission. */
     private static final long LAG_EVENT_THRESHOLD_RECORDS = 10L;
 
     private final LogManager logManager;
@@ -93,7 +93,7 @@ public final class ReplicaFetchHandler {
             }
             long hwm = tracker.computeHwm(
                     req.getTopic(), req.getPartition(), state.get().isr(), selfBrokerId, leaderLeo);
-            // emit ReplicationLag when the follower is meaningfully
+            // Emit ReplicationLag when the follower is meaningfully
             // behind the leader. Leader-side because only the leader has the
             // authoritative leaderLeo; suppressed below a small threshold to
             // keep JFR volume manageable at steady state.

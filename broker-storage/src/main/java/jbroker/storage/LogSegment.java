@@ -24,7 +24,7 @@ public final class LogSegment implements AutoCloseable {
     public static final int DEFAULT_INDEX_INTERVAL_BYTES = 4 * 1024;
 
     /**
-     * serialise all IO-touching methods via a ReentrantLock
+     * Serialise all IO-touching methods via a ReentrantLock
      * rather than an intrinsic monitor. Blocking FileChannel ops held
      * under `synchronized` pin a virtual thread's carrier OS thread;
      * ReentrantLock does not.
@@ -145,7 +145,7 @@ public final class LogSegment implements AutoCloseable {
     /**
      * Append a pre-encoded batch byte-for-byte. The batch's {@code baseOffset}
      * must equal this segment's {@link #nextOffset()} — used by the follower
-     * replication path () to preserve the leader's baseSequence,
+     * replication path to preserve the leader's baseSequence,
      * producerId, producerEpoch, partitionLeaderEpoch, and timestamps.
      *
      * <p>Verifies the batch's header matches {@code expectedBaseOffset} and
@@ -415,11 +415,11 @@ public final class LogSegment implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
-        // fsync on close so a clean shutdown durably persists the tail
+        // Fsync on close so a clean shutdown durably persists the tail
         // of the active segment. Previously the active segment relied on
         // the OS page cache to flush post-process-exit, which is unsafe for
         // kill -9. FsyncDurationEvent also fires here, which is what the
-        // teardown observes. must use the same
+        // JfrEventEmissionIT teardown observes. Must use the same
         // ReentrantLock as transferTo() so concurrent fetches drain before
         // the channel is closed (pre-fix this raced as synchronized vs
         // lock, yielding ClosedChannelException for in-flight reads during

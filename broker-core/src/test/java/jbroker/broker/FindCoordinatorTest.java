@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * verifies {@link ConsumerHandler#findCoordinator} maps groups to
+ * Verifies {@link ConsumerHandler#findCoordinator} maps groups to
  * coordinator partitions deterministically (same group_id always maps to
  * the same coordinator broker), returns the leader's host:port via
  * {@link BrokerRegistry}, and surfaces {@code COORDINATOR_NOT_AVAILABLE}

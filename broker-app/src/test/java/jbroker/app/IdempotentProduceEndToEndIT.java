@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Milestone 6.7 end-to-end: exercise the idempotent-producer flow through the
+ * End-to-end: exercise the idempotent-producer flow through the
  * public {@link BrokerClient} surface. Proves that a retry with the same
  * {@code (producer_id, epoch, base_sequence)} does not double-append.
  */

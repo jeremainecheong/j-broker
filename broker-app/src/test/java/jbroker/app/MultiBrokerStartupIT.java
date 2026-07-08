@@ -11,9 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * sanity: 3 in-process brokers with a shared static voter list boot,
+ * Sanity check: 3 in-process brokers with a shared static voter list boot,
  * elect a single Raft leader, and run far enough that every broker's state
- * machine settles at the same term. The replication acceptance gate gate is in
+ * machine settles at the same term. The replication acceptance gate is in
  * {@link MultiBrokerReplicationIT}; this IT only covers metadata-layer
  * wiring.
  */

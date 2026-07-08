@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * wire-up IT — confirms the new Consumer-group RPCs are exposed on the
+ * Wire-up IT — confirms the Consumer-group RPCs are exposed on the
  * gRPC server with the placeholder error codes documented in
  * {@code ConsumerHandler}'s javadoc.
  *
@@ -37,8 +37,8 @@ class ConsumerProtoWireUpIT {
         try {
             var stub = ConsumerGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
             // Before __consumer_offsets auto-creates, FindCoordinator
-            // legitimately returns CNA. After / the heartbeat,
-            // commit, and fetch RPCs all moved off the placeholder path
+            // legitimately returns CNA. The heartbeat,
+            // commit, and fetch RPCs have all moved off the placeholder path
             // and have proper coverage in GroupHeartbeatEndToEndIT and
             // OffsetCommitFetchEndToEndIT.
             var find = stub.findCoordinator(

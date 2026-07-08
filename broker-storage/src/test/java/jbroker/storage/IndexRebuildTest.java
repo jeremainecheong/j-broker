@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * spec §Milestone 4 acceptance gate: {@code .index} and {@code .timeindex} can be regenerated
+ * Acceptance gate: {@code .index} and {@code .timeindex} can be regenerated
  * from {@code .log} on startup. We delete them and reopen; reads at arbitrary
  * offsets should still work (falling back to a sequential scan from the
  * segment's start when the index lookup misses).

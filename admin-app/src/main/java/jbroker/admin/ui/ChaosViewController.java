@@ -6,7 +6,7 @@ import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
 
 /**
- * chaos control plane UI. Renders a live topology SVG + per-broker
+ * Chaos control plane UI. Renders a live topology SVG + per-broker
  * action grid. State is fetched client-side via {@code /api/v1/cluster}
  * and {@code /api/v1/chaos/state} on a 3s poll so kill / pause / partition
  * actions are visible in real time without a page reload.

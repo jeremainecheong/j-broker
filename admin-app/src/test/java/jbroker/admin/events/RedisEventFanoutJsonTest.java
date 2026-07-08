@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
 /**
- * pure unit coverage of the hand-rolled JSON envelope. The
+ * Pure unit coverage of the hand-rolled JSON envelope. The
  * shape is narrow enough that a general-purpose JSON library would be
  * overkill in the hot pub/sub receive path, but narrow-shape parsers
  * bit-rot quickly without a test pinning the edge cases (embedded

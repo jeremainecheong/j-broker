@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * acceptance gate gate: acks=all produces block until every ISR member has
+ * Acceptance gate: acks=all produces block until every ISR member has
  * replicated the record. Verified end-to-end in a 3-broker cluster by
  * issuing {@code produceAcksAll} calls and reading the same offsets
  * back on every replica.

@@ -13,7 +13,7 @@ public final class ErrorCodes {
     /** acks=all: HWM did not reach the produced offset within the timeout. */
     public static final int NOT_ENOUGH_REPLICAS = 9;
 
-    // Milestone 7 — consumer groups. Numerics match common.proto::ErrorCode.
+    // Consumer groups. Numerics match common.proto::ErrorCode.
     /** Coordinator-routed RPC arrived before {@code __consumer_offsets} has a leader. */
     public static final int COORDINATOR_NOT_AVAILABLE = 80;
     /** This broker is not the coordinator for the requested group; client must {@code FindCoordinator}. */
@@ -24,15 +24,15 @@ public final class ErrorCodes {
     public static final int FENCED_MEMBER_EPOCH = 83;
     /** {@code FetchOffsets} for a (group, tp) the group has never committed. */
     public static final int OFFSET_OUT_OF_RANGE = 84;
-    /** client-supplied fetch {@code session_id} was not found in the broker cache. */
+    /** Client-supplied fetch {@code session_id} was not found in the broker cache. */
     public static final int FETCH_SESSION_ID_NOT_FOUND = 85;
 
-    // Milestone 9 — rate limiting.
-    /** per-principal quota exceeded on produce or fetch path. Retry after {@code throttleMillis}. */
+    // Rate limiting.
+    /** Per-principal quota exceeded on produce or fetch path. Retry after {@code throttleMillis}. */
     public static final int QUOTA_VIOLATED = 86;
 
-    // Milestone 8 — admin surface placeholders.
-    /** Milestone 8 skeleton placeholder: RPC is wired but the body has not yet been implemented. */
+    // Admin surface placeholders.
+    /** Skeleton placeholder: RPC is wired but the body has not yet been implemented. */
     public static final int UNIMPLEMENTED = 99;
 
     private ErrorCodes() {}

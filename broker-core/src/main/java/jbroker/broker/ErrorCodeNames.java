@@ -6,7 +6,7 @@ import java.util.Map;
  * Maps numeric broker error codes (see {@link ErrorCodes}) to their
  * string-form names. The admin REST layer uses the names as the
  * {@code error_code} field of the JSON error envelope defined in
- * e.g. numeric {@code 5} renders as {@code "NOT_LEADER"}.
+ * E.g. numeric {@code 5} renders as {@code "NOT_LEADER"}.
  *
  * <p>Every public {@code int} constant in {@link ErrorCodes} has a
  * corresponding entry here; {@link #nameTable()} is read-only and safe to

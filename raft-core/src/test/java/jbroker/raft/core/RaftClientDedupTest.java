@@ -16,9 +16,9 @@ import org.junit.jupiter.api.io.TempDir;
  * re-appending or re-applying.
  *
  * <p>Scope: in-memory, per leader-term. Dedup state is lost on leadership
- * change (rebuilt from log scan on becoming leader). Sufficient for the spec
- * Milestone 2 acceptance gate "duplicate client requests return cached response, not
- * re-executed" within a single leadership.
+ * change (rebuilt from log scan on becoming leader). Sufficient to guarantee
+ * that duplicate client requests return the cached response, not
+ * re-executed, within a single leadership.
  */
 class RaftClientDedupTest {
 

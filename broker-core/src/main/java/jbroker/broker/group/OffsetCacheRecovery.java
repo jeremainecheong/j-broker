@@ -12,12 +12,12 @@ import jbroker.storage.RecordBatch;
  * every record and applying the latest one per
  * {@code (group, topic, partition)} key into an {@link OffsetCache}.
  *
- * <p>Compaction is read-time: real on-disk compaction is a Milestone 9+ concern.
+ * <p>Compaction is read-time: real on-disk compaction is not yet implemented.
  * Until then, the recovery walk simply iterates the entire log and the
  * "last write wins" semantics fall out of natural offset ordering.
  *
- * <p>Group-metadata (Type-2) records are skipped by they're written
- * by 's coordinator failover work and read by a separate recovery walk
+ * <p>Group-metadata (Type-2) records are skipped here. They're written
+ * by the coordinator failover work and read by a separate recovery walk
  * that rebuilds {@link GroupCoordinator} state.
  */
 public final class OffsetCacheRecovery {

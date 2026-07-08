@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * prove {@code DELETE /api/v1/consumer-groups/{id}} actually
+ * Prove {@code DELETE /api/v1/consumer-groups/{id}} actually
  * removes a group: subsequent {@code ListConsumerGroups} no longer lists
  * it, and {@code FetchOffsets} against its old (topic, partition) returns
  * {@code OFFSET_OUT_OF_RANGE}. Exercises both
@@ -92,7 +92,7 @@ class DeleteGroupRoundTripIT {
                 assertThat(preOffset.getResults(0).getError()).isEqualTo(ErrorCode.OK);
                 assertThat(preOffset.getResults(0).getOffset()).isEqualTo(3L);
 
-                // Admin delete — the whole point of this slice.
+                // Admin delete — the whole point of this test.
                 var del = admin.deleteConsumerGroup(DeleteConsumerGroupRequest.newBuilder()
                         .setGroupId("g-doomed")
                         .build());

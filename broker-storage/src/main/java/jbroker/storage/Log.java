@@ -33,7 +33,7 @@ public final class Log implements AutoCloseable {
     private final Config config;
     private final CopyOnWriteArrayList<LogSegment> segments = new CopyOnWriteArrayList<>();
     /**
-     * mutation lock. Replaces `synchronized (this)` on the hot
+     * Mutation lock. Replaces `synchronized (this)` on the hot
      * append / nextOffset paths so virtual threads running produce/fetch
      * no longer pin their carrier OS thread while holding a monitor.
      * Cold paths (retain, truncate, compact, close) use the same lock
@@ -140,7 +140,7 @@ public final class Log implements AutoCloseable {
 
     /**
      * Truncate the log so its LEO becomes {@code targetOffset}. Used by the
-     * follower reconciliation path (): after {@code OffsetsForLeaderEpoch}
+     * follower reconciliation path: after {@code OffsetsForLeaderEpoch}
      * reveals a divergent suffix, the follower drops everything at or after
      * {@code targetOffset} and re-fetches from there.
      *
@@ -218,7 +218,7 @@ public final class Log implements AutoCloseable {
             if (seg.baseOffset() <= offset) candidate = seg;
             else break;
         }
-        // if the requested offset is below every segment's base
+        // If the requested offset is below every segment's base
         // (e.g. after sparse-offset compaction a consumer still holds a
         // pre-compaction offset), return the earliest available segment
         // instead of nothing so the fetch path surfaces records from the
@@ -267,15 +267,15 @@ public final class Log implements AutoCloseable {
     }
 
     /**
-     * synchronous log compaction. For each key, keeps only the record
+     * Synchronous log compaction. For each key, keeps only the record
      * with the highest offset; a record with {@code value == null} is a
      * tombstone and removes the key entirely. Records with {@code key == null}
      * are passed through unchanged.
      *
      * <p>Implementation is stop-the-world: reads every batch into memory,
      * dedups, rewrites a single new segment, swaps in place. Good enough for
-     * the target (1M records, 1000 keys, laptop-sized). A streaming
-     * cleaner with segment-granular swaps is a Milestone 10 optimisation.
+     * the compaction-scale target (1M records, 1000 keys, laptop-sized). A streaming
+     * cleaner with segment-granular swaps is a future optimisation.
      *
      * <p>Returns the number of records retained after compaction.
      */

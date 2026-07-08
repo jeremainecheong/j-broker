@@ -11,13 +11,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Milestone 7.2 — proposes the {@code __consumer_offsets} {@code CreateTopicRecord}
+ * Proposes the {@code __consumer_offsets} {@code CreateTopicRecord}
  * exactly once per cluster, when the active controller observes that the
  * topic doesn't yet exist. Idempotent: callers may invoke {@link #ensureCreated()}
  * on every controller tick without producing duplicate proposals.
  *
  * <p>Replication factor is clamped to {@code min(3, |knownBrokers|)} so a
- * single-broker cluster (e.g. existing P5/P6 ITs) doesn't deadlock waiting
+ * single-broker cluster (e.g. existing single-broker ITs) doesn't deadlock waiting
  * for absent followers. The fixed 50-partition shape matches Kafka
  * convention; changing it would invalidate every committed offset's
  * coordinator routing (see spec §"`__consumer_offsets` internal topic").

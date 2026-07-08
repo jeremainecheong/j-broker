@@ -9,7 +9,7 @@ import jbroker.proto.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 
 /**
- * proves the cooperative incremental rebalance protocol:
+ * Proves the cooperative incremental rebalance protocol:
  * <ul>
  *   <li>A member that loses partitions sees the kept set advertised first;
  *       only after it acks (sends owned_partitions == kept) does the
@@ -125,7 +125,7 @@ class GroupCoordinatorIncrementalRebalanceTest {
 
     @Test
     void leaveTriggersRebalance_othersGetReleasedPartitionsAfterAck() {
-        // happy-path mechanic: when a member leaves, surviving
+        // Happy-path mechanic: when a member leaves, surviving
         // members pick up the released partitions on their next heartbeat
         // (via stage-1 → stage-2 dance for any that have additions).
         var coord = newCoord(java.util.Map.of("orders", 6));

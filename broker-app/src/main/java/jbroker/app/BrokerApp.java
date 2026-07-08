@@ -66,22 +66,22 @@ public final class BrokerApp {
         int raftPort = Integer.parseInt(flag(args, "--raft-port", "9192"));
         int id = Integer.parseInt(flag(args, "--id", "1"));
         String votersSpec = flag(args, "--voters", null);
-        // advertised listeners. Format: "id=host:port,id=host:port,..."
+        // Advertised listeners. Format: "id=host:port,id=host:port,..."
         // Applies per broker id on top of the voter list. Only the advertised
         // entry for THIS broker gets used in our own BrokerRegistrationRecord,
         // but the leader's propose path reads every voter's advertised slot
         // to register the whole cluster in one tick; pass a matching spec on
         // each broker for consistent behavior. Absent → fall back to voter
-        // host/port (earlierbehavior).
+        // host/port (the original single-network behavior).
         String advertisedListenersSpec = flag(args, "--advertised-listeners", null);
         int chaosPort = Integer.parseInt(flag(args, "--chaos-port", "-1"));
         int consumerOffsetsPartitions = Integer.parseInt(flag(
                 args,
                 "--consumer-offsets-partitions",
                 String.valueOf(jbroker.broker.ConsumerOffsetsTopic.PARTITION_COUNT)));
-        // mTLS opt-in. Enabled only when --tls-enabled is set AND the
+        // MTLS opt-in. Enabled only when --tls-enabled is set AND the
         // required --tls-cert / --tls-key / --tls-trust all point at PEM
-        // files. Absent → plaintext (earlierdefault).
+        // files. Absent → plaintext (the original default).
         boolean tlsEnabled = switchFlag(args, "--tls-enabled");
         String tlsCert = flag(args, "--tls-cert", null);
         String tlsKey = flag(args, "--tls-key", null);
@@ -179,7 +179,7 @@ public final class BrokerApp {
     }
 
     /**
-     * parse a {@code --advertised-listeners id=host:port,...} spec
+     * Parse a {@code --advertised-listeners id=host:port,...} spec
      * and return a new voter list with those entries overlaid on top of
      * the bind-time list. Voter ids missing from the spec keep their bind
      * host/port as the advertised value (falls back to current behavior).
@@ -277,7 +277,7 @@ public final class BrokerApp {
         int partition = Integer.parseInt(flag(args, "--partition", "0"));
         boolean fromBeginning = switchFlag(args, "--from-beginning");
         try (var client = clientFor(brokerAddr)) {
-            long offset = fromBeginning ? 0L : -1L; // -1 not implemented yet — treat as 0 for Milestone 5
+            long offset = fromBeginning ? 0L : -1L; // -1 not implemented yet — treat as 0 for now
             if (offset < 0) offset = 0L;
             while (true) {
                 var batch = client.fetch(topic, partition, offset, 1024 * 1024);
@@ -294,7 +294,7 @@ public final class BrokerApp {
     }
 
     /**
-     * real consumer-group-aware CLI. Unlike {@code console-consumer}
+     * Real consumer-group-aware CLI. Unlike {@code console-consumer}
      * (single-partition raw Fetch, no coordinator), this drives a full
      * {@link jbroker.broker.client.consumer.Consumer} session: join →
      * heartbeat → auto-assigned partitions → poll → commitSync on every
@@ -324,7 +324,7 @@ public final class BrokerApp {
     }
 
     /**
-     * extracted for testability. Joins the group, polls until
+     * Extracted for testability. Joins the group, polls until
      * {@code running} flips false, commits on every non-empty poll,
      * prints each record to stdout. Leaving is the consumer's close()
      * on try-with-resources; the caller flips {@code running} to stop.

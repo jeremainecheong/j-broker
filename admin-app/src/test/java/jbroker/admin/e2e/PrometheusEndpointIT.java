@@ -23,8 +23,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * {@code /actuator/prometheus} serves well-formed
- * Prometheus text containing the expected {@code jbroker_*} meter families.
+ * {@code /actuator/prometheus} serves well-formed Prometheus text
+ * containing the expected {@code jbroker_*} meter families.
  *
  * <p>Verifies:
  * <ul>

@@ -39,7 +39,7 @@ public class RaftController {
 
     @GetMapping
     public java.util.List<RaftNodeState> raftClusterState() {
-        // describeRaft is a blocking gRPC per broker. Fan-out via
+        // DescribeRaft is a blocking gRPC per broker. Fan-out via
         // a virtual-thread-per-task executor turns N * RTT into max(RTT)
         // on the UI's Raft page. Try-with-resources on the executor
         // waits for every fork before returning (structured-concurrency

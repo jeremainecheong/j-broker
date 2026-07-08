@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.DoubleAdder;
 import org.springframework.stereotype.Component;
 
 /**
- * bridges {@link MetricsScraper}'s snapshots into the
+ * Bridges {@link MetricsScraper}'s snapshots into the
  * {@link MeterRegistry} that backs {@code /actuator/prometheus}.
  *
  * <p>Per-broker scalars use functional gauges reading from an

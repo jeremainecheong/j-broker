@@ -1,4 +1,4 @@
-// admin UI client glue. Intentionally minimal.
+// Admin UI client glue. Intentionally minimal.
 //
 // Responsibilities:
 //   1. Highlight the current-page nav link by matching window.location.pathname

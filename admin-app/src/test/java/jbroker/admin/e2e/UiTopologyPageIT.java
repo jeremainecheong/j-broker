@@ -22,7 +22,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * the UI topology page renders and reflects live cluster
+ * The UI topology page renders and reflects live cluster
  * state. Asserted via HTML content scraping (no screenshots) so CI doesn't
  * need a browser runtime.
  */

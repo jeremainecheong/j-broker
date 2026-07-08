@@ -7,7 +7,7 @@ import jbroker.proto.common.TopicPartition;
 
 /**
  * Server-side strategy that maps consumer-group members to partitions.
- * Milestone 7 ships two: {@link RangeAssignor} (Kafka default — contiguous
+ * Ships two: {@link RangeAssignor} (Kafka default — contiguous
  * runs) and {@link UniformAssignor} (round-robin — even load when topics
  * share members).
  *

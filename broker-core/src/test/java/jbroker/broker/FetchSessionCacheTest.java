@@ -6,7 +6,7 @@ import jbroker.proto.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 
 /**
- * unit tests for the incremental fetch session cache.
+ * Unit tests for the incremental fetch session cache.
  * Covers: allocation, round-trip update/lookup, and LRU eviction at the
  * cap.
  */

@@ -50,7 +50,7 @@ public final class FollowerStateTracker {
      * caught-up broker is added to ISR, its stale tracker LEO can't regress
      * the committed HWM.
      *
-     * <p>TODO(): at steady state after a broker restart, the
+     * <p>TODO: at steady state after a broker restart, the
      * never-fetched case means consumers see HWM=0 for up to
      * {@code lagTimeoutMs} (default 10s) until the lag timeout kicks that
      * broker out of the ISR. The acks=all produce path will need a

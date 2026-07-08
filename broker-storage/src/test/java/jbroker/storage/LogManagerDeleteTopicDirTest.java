@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * verifies {@link LogManager#deleteTopicDir} evicts the in-memory
+ * Verifies {@link LogManager#deleteTopicDir} evicts the in-memory
  * {@code (topic, partition) -> Log} cache, closes the underlying handles,
  * and cleans up segment files on disk. Critical because a topic recreated
  * with the same name after a DELETE must start from offset 0 rather than
@@ -39,7 +39,7 @@ class LogManagerDeleteTopicDirTest {
             assertThat(Files.exists(root.resolve("audits-0"))).isTrue();
 
             // Recreating the same topic hands back a fresh Log starting at
-            // offset 0 — the bug closes.
+            // offset 0 — closing the topic-recreation offset-reset bug.
             var fresh = mgr.logFor("orders", 0);
             assertThat(fresh.nextOffset()).isEqualTo(0L);
         }

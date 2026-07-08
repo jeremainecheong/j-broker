@@ -1,4 +1,4 @@
-// sustained read-heavy admin traffic. VUs=100, 5 min. p99 < 500 ms.
+// Sustained read-heavy admin traffic. VUs=100, 5 min. p99 < 500 ms.
 import http from "k6/http";
 import { sleep } from "k6";
 

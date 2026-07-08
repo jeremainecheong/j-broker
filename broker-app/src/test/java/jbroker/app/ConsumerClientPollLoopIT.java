@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * end-to-end exercise of {@link Consumer} against a real
+ * End-to-end exercise of {@link Consumer} against a real
  * single-broker cluster. Covers the full happy-path lifecycle:
  * subscribe → join → poll → assignment → fetch → commit → close.
  */

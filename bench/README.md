@@ -11,9 +11,9 @@ flowchart LR
     subgraph Scenarios[Scenarios]
         PPT[ProducerPerfTest]
         CPT[ConsumerPerfTest]
-        APT[AcksAllPerfTest<br/>hardening pass]
-        RPT[ReplicationPerfTest<br/>hardening pass]
-        Comp[CompactionPausePerfTest<br/>hardening pass]
+        APT[AcksAllPerfTest]
+        RPT[ReplicationPerfTest]
+        Comp[CompactionPausePerfTest]
         BC[BatchCorrectness]
     end
 
@@ -81,7 +81,7 @@ From `scripts/bench/run-readme-bench.sh` on Apple-silicon laptop (Darwin 24.2, M
 
 Raw CSV in `docs/bench/results.csv`.
 
-## Batched produce (P13 perf work)
+## Batched produce
 
 `BrokerClient.produceBatch(topic, partition, List<Record>)` issues ONE RPC with N records instead of N RPCs. ~150× throughput improvement on a laptop (PR #99). Use this when you care about throughput more than exact per-record commit visibility.
 

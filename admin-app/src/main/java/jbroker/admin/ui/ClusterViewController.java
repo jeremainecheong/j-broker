@@ -10,7 +10,7 @@ import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
 
 /**
- * cluster overview landing page. Builds on top of the old topology
+ * Cluster overview landing page. Builds on top of the old topology
  * view by adding an alert strip + summary-card grid + throughput
  * sparklines. The old topology (SVG + node table) stays as the bottom
  * section of the page so every cluster signal is visible on one screen.

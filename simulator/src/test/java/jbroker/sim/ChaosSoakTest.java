@@ -7,14 +7,14 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Runs many seeds under message-level chaos. Each seed is deterministic, so
- * a violation gives a seed that can be replayed under a debugger. Per spec
- * §Milestone 3 acceptance gate: no Raft safety invariant should ever violate across thousands
+ * a violation gives a seed that can be replayed under a debugger. Acceptance
+ * gate: no Raft safety invariant should ever violate across thousands
  * of seeds.
  */
 class ChaosSoakTest {
 
     /**
-     * spec §Milestone 3 acceptance gate: 10,000 seeds without a safety violation. Each seed
+     * Acceptance gate: 10,000 seeds without a safety violation. Each seed
      * exercises drop + duplicate + jitter-induced reorder. Runs in ~10-20s
      * locally; CI budget is well under the 20-minute workflow cap.
      */

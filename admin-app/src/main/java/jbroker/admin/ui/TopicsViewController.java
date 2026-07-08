@@ -25,7 +25,7 @@ import org.springframework.web.bind.annotation.RequestParam;
  * partition card renders real HWM/LEO instead of the follower-sentinel
  * fallback. Calling {@code pool.firstSuccessful} directly here would pin
  * the response to whichever broker answers first — fine if that broker
- * happens to lead every partition, wrong otherwise (see / 2026-04-24
+ * happens to lead every partition, wrong otherwise (see the 2026-04-24
  * admin-UI audit root cause).
  */
 @Controller

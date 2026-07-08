@@ -14,10 +14,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@code nextProducerId} — never regressing, so a stale replay during
  * snapshot restore or follower catch-up is a no-op.
  *
- * <p>In Milestone 6.7 single-broker mode, the controller (== this broker) is
+ * <p>In single-broker mode, the controller (== this broker) is
  * the only producer-id allocator, so the counter on the apply side and the
- * proposer side always match. Multi-broker Milestone 6 will keep the counter
- * in the Raft state machine so a new active controller picks up where the
+ * proposer side always match. In multi-broker mode the counter
+ * lives in the Raft state machine so a new active controller picks up where the
  * previous one left off.
  */
 public final class ProducerIdRegistry {

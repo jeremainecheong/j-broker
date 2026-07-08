@@ -6,7 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 
 /**
- * Pure loss/duplication accounting for thesoak invariant:
+ * Pure loss/duplication accounting for the soak invariant:
  * every <b>acked</b> record must be consumed exactly once, and <b>no</b>
  * record may appear more than once. Records that were sent but never
  * acked (client saw an error / broker died mid-produce) are allowed to

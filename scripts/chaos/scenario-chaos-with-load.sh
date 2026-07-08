@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# the spec success criterion #10 / §11.5 — chaos with load.
+# Chaos with load — the capstone durability soak.
 #
 # Steady idempotent acks=all producer against the docker-compose 3-broker
 # cluster while a chaos loop `docker kill`s a broker every KILL_INTERVAL
@@ -17,7 +17,7 @@
 # Usage:
 #   scripts/chaos/scenario-chaos-with-load.sh [DURATION_SECONDS]
 #
-#   DURATION_SECONDS  soak length (default 600 = the spec's 10 minutes)
+#   DURATION_SECONDS  soak length (default 600)
 #   KILL_INTERVAL     seconds between broker kills (default 30)
 #   RATE              produced records/second across partitions (default 200)
 #

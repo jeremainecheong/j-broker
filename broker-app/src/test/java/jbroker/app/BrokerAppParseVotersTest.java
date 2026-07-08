@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import org.junit.jupiter.api.Test;
 
 /**
- * covers every branch of {@link BrokerApp#parseVoters(String)}. The
+ * Covers every branch of {@link BrokerApp#parseVoters(String)}. The
  * CLI relies on this for multi-broker docker-compose bootstrap, so a silent
  * parse failure here mis-routes the whole cluster.
  */

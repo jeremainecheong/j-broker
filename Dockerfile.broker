@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# broker runtime image. Two-stage build:
+# Broker runtime image. Two-stage build:
 #   1. JDK builder runs `:broker-app:installDist` (skips tests) to produce a
 #      self-contained distribution under broker-app/build/install/broker-app/
 #      with a launcher script at bin/broker-app.

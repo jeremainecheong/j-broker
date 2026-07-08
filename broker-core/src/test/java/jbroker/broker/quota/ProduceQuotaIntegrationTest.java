@@ -21,7 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * integration coverage for {@link ProduceHandler} + {@link QuotaEnforcer}.
+ * Integration coverage for {@link ProduceHandler} + {@link QuotaEnforcer}.
  * Verifies a denied admission returns {@link ErrorCodes#QUOTA_VIOLATED} instead of
  * appending to the log.
  */

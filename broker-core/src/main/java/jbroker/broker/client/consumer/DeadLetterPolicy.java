@@ -9,7 +9,7 @@ import java.time.Duration;
  * <p>When a {@link RecordHandler} rejects a record with
  * {@link RetryableException}, the consumer retries up to {@link #maxAttempts}
  * (sleeping {@link #backoff} between tries — constant; no jitter, no
- * exponential growth in this slice). On final failure the record is produced
+ * exponential growth currently). On final failure the record is produced
  * verbatim to {@link #dltTopic}, decorated with an
  * {@code X-DLT-Failure-Cause} header carrying the last exception's class
  * and message as UTF-8 bytes. The consumer advances its fetch offset and

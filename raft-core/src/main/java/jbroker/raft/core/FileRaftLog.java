@@ -12,7 +12,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Append-only file-backed Raft log for Milestone 1.
+ * Append-only file-backed Raft log.
  *
  * <p>Frame format per entry:
  *
@@ -25,8 +25,8 @@ import java.util.Optional;
  *   byte[] payload
  * </pre>
  *
- * <p>No compression, no CRC — this is a Milestone 1 log; the production log
- * format (record batches v2) lands in Milestone 4.
+ * <p>No compression, no CRC — this is a minimal log; a production log
+ * format (record batches v2) is planned but not yet implemented.
  */
 public final class FileRaftLog implements RaftLog, AutoCloseable {
 
@@ -259,7 +259,7 @@ public final class FileRaftLog implements RaftLog, AutoCloseable {
      * lastIncludedIndex}/{@code Term}. A crash between the log rewrite and the
      * meta persist leaves the log on disk with entries whose indices are
      * inconsistent with {@code firstIndex()}. Full crash-safety needs a
-     * temp-file + atomic-rename strategy; tracked as Milestone 3 hardening.
+     * temp-file + atomic-rename strategy; tracked as a future hardening item.
      */
     @Override
     public synchronized void truncatePrefix(long firstIndex, Term firstTerm) {

@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * proves the recovery walk reads {@code __consumer_offsets}
+ * Proves the recovery walk reads {@code __consumer_offsets}
  * partitions back into the {@link OffsetCache} with latest-write-wins
  * semantics (read-time compaction).
  */
@@ -102,7 +102,7 @@ class OffsetCacheRecoveryTest {
         int applied = OffsetCacheRecovery.rebuild(lm, 0, cache);
 
         // Only the offset record applied; the group-metadata one is
-        // silently skipped (will read those into GroupCoordinator).
+        // silently skipped (a separate recovery walk reads those into GroupCoordinator).
         assertThat(applied).isEqualTo(1);
         assertThat(cache.get("g1", "orders", 0).orElseThrow().offset()).isEqualTo(7L);
     }

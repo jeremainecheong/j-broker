@@ -21,8 +21,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * {@code /api/v1/cluster} + {@code /api/v1/nodes} — the cluster-overview
- * surface consumed by the cluster topology UI page () and the
- * {@code admin cluster-info} CLI command ().
+ * surface consumed by the cluster topology UI page and the
+ * {@code admin cluster-info} CLI command.
  *
  * <p>Reads are first-success-among-brokers via {@link BrokerAdminClientPool}.
  * Every broker's metadata replica returns the same answer (modulo in-flight
@@ -41,7 +41,7 @@ public class ClusterController {
 
     @GetMapping("/cluster")
     public ClusterSummary cluster() {
-        // fan out so every broker can report its OWN role.
+        // Fan out so every broker can report its OWN role.
         // Broker-core's DescribeCluster stamps "UNKNOWN" for peers it doesn't
         // self-track; first-successful-only therefore shows 2/3 UNKNOWN in a
         // 3-broker cluster. Merging self-reports across responses gives every
@@ -111,7 +111,7 @@ public class ClusterController {
     }
 
     /**
-     * tiny payload polled by every admin page's cluster-health badge
+     * Tiny payload polled by every admin page's cluster-health badge
      * (every 5s via htmx). Derived from the existing {@code /cluster} response;
      * kept as a separate route so browser intermediaries cache it independently
      * and so a flaky admin-client-pool fallback doesn't knock the whole

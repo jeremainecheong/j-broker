@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dev-only mTLS CA + broker server certs + admin-app client cert
+# Dev-only mTLS CA + broker server certs + admin-app client cert
 # generator. Produces PEM artifacts directly consumable by j-broker's
 # TlsConfig (certChain/privateKey/trustStore). Idempotent: re-runs regenerate
 # certs in place. Do NOT use in production — keys are unencrypted and SANs

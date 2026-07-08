@@ -19,7 +19,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * load-bearing contract test: every {@code /api/v1/*} JSON payload
+ * Load-bearing contract test: every {@code /api/v1/*} JSON payload
  * uses snake_case keys. Guards against a future contributor dropping a
  * {@code @JsonProperty("someCamelCase")} override onto a DTO field.
  *

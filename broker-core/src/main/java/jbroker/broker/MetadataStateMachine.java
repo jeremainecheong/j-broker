@@ -53,7 +53,7 @@ public final class MetadataStateMachine implements StateMachine {
     }
 
     /**
-     * fires after a {@code DeleteTopicRecord} applies. Consumers:
+     * Fires after a {@code DeleteTopicRecord} applies. Consumers:
      * <ul>
      *   <li>{@code ReplicaFetcherManager.scheduleReconcile()} so in-flight
      *       fetchers on a deleted topic stop promptly rather than waiting
@@ -164,13 +164,13 @@ public final class MetadataStateMachine implements StateMachine {
                     applyPartitionChange(p);
                 }
             }
-                // : advance the producer-id counter. ProducerIdRegistry is
+                // Advance the producer-id counter. ProducerIdRegistry is
                 // idempotent under replay — duplicate / out-of-order applies
                 // cannot regress the counter.
             case PRODUCER_ID_ASSIGNMENT -> producerIdRegistry.applyAssignment(
                     record.getProducerIdAssignment().getNextProducerId());
             case BROKER -> {
-                // : broker-gRPC address discovery. extends this
+                // Broker-gRPC address discovery; the advertised-listener override extends this
                 // with optional advertised_host / advertised_port so external
                 // clients can reach the broker via its published listener.
                 var r = record.getBroker();
@@ -178,7 +178,7 @@ public final class MetadataStateMachine implements StateMachine {
                         r.getBrokerId(), r.getHost(), r.getPort(), r.getAdvertisedHost(), r.getAdvertisedPort());
             }
             case DELETE_TOPIC -> {
-                // drop the topic from the catalogue, then let the
+                // Drop the topic from the catalogue, then let the
                 // broker-level listener evict LogManager cache entries,
                 // delete on-disk segments, and kick the replica-fetcher
                 // reconcile loop so any in-flight fetch against the now-
@@ -200,7 +200,7 @@ public final class MetadataStateMachine implements StateMachine {
     }
 
     private void applyPartitionChange(jbroker.proto.raft.PartitionChangeRecord p) {
-        // Empty replicas list = earlierrecord; default to ISR for
+        // Empty replicas list = legacy record; default to ISR for
         // backward compatibility (same replica set either way).
         var replicas = p.getReplicasList().isEmpty() ? p.getIsrList() : p.getReplicasList();
         int priorLeaderEpoch = topicManager
@@ -229,20 +229,20 @@ public final class MetadataStateMachine implements StateMachine {
     }
 
     // Snapshot format versions.
-    //  v1 (pre-): topics only.
-    //  v2 ():     adds partition-state section (leader, ISR, epoch).
-    //  v3 ():     adds replica set alongside ISR.
-    //  v4 ():     splits leader_epoch from partition_epoch.
-    //  v5 ():     appends producer-id counter.
-    //  v6 ():     per-topic internal + compact flags.
-    //  v7 ():     per-topic config map.
+    //  v1: topics only.
+    //  v2:            adds partition-state section (leader, ISR, epoch).
+    //  v3:            adds replica set alongside ISR.
+    //  v4:            splits leader_epoch from partition_epoch.
+    //  v5:            appends producer-id counter.
+    //  v6:            per-topic internal + compact flags.
+    //  v7:            per-topic config map.
     private static final byte SNAPSHOT_VERSION = 7;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
         var dout = new java.io.DataOutputStream(out);
         dout.writeByte(SNAPSHOT_VERSION);
-        // v6 snapshot includes internal topics (Milestone 7's __consumer_offsets);
+        // v6 snapshot includes internal topics (the internal __consumer_offsets);
         // listAll() returns the full catalogue while list() filters internals.
         var list = topicManager.listAll();
         dout.writeInt(list.size());

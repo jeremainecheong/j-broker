@@ -17,9 +17,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * at full scale — 10k concurrent client connections each
- * issuing one operation. Stresses the broker's acceptor path + virtual-
- * thread handler pool.
+ * 10k concurrent client connections each issuing one operation, at full
+ * scale. Stresses the broker's acceptor path + virtual-thread handler
+ * pool.
  *
  * <p>Tagged {@code slow}: default CI skips; opt into with
  * {@code JBROKER_RUN_SLOW_TESTS=1 ./gradlew test}. Requires a high
@@ -85,7 +85,7 @@ class TenThousandClientsIT {
                 for (var f : exec.invokeAll(tasks)) f.get();
                 long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
                 System.out.printf(
-                        "%d clients complete in %dms (success=%d fail=%d)%n",
+                        "10k-clients: %d clients complete in %dms (success=%d fail=%d)%n",
                         CLIENTS, elapsedMs, successes.get(), failures.get());
             }
 

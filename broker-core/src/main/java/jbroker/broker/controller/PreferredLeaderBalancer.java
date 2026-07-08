@@ -8,7 +8,7 @@ import jbroker.broker.PartitionState;
 import jbroker.broker.TopicManager;
 
 /**
- * periodic preferred-leader rebalance task. For each partition
+ * Periodic preferred-leader rebalance task. For each partition
  * whose current leader is not {@code replicas[0]}, the balancer proposes
  * a {@code PartitionChangeRecord} moving the leader back to its
  * preferred replica. Skipped when the preferred replica is out of ISR

@@ -66,7 +66,8 @@ public final class LogManager implements AutoCloseable {
 
     /**
      * Per-partition {@link LeaderEpochCheckpoint}. Lazily opened alongside
-     * the partition directory; reused across calls. Used by the      * follower reconciliation path via {@code OffsetsForLeaderEpoch}.
+     * the partition directory; reused across calls. Used by the
+     * follower reconciliation path via {@code OffsetsForLeaderEpoch}.
      */
     public LeaderEpochCheckpoint leaderEpochCheckpoint(String topic, int partition) throws IOException {
         String key = topic + "-" + partition;
@@ -85,7 +86,7 @@ public final class LogManager implements AutoCloseable {
     }
 
     /**
-     * Milestone 8 — evict every {@code (topic, *)} entry from the in-memory cache,
+     * Evict every {@code (topic, *)} entry from the in-memory cache,
      * close the underlying {@link Log} handles, and best-effort delete the
      * on-disk partition directories. Used by
      * {@link jbroker.broker.MetadataStateMachine} on {@code DeleteTopicRecord}
@@ -144,20 +145,20 @@ public final class LogManager implements AutoCloseable {
         }
     }
 
-    /** topic → compact flag. Populated by the broker when a topic is created. */
+    /** Topic → compact flag. Populated by the broker when a topic is created. */
     private final ConcurrentHashMap<String, Boolean> compactTopics = new ConcurrentHashMap<>();
 
     public void markTopicCompact(String topic, boolean compact) {
         compactTopics.put(topic, compact);
     }
 
-    /** synchronous compaction trigger, primarily for tests + admin tooling. */
+    /** Synchronous compaction trigger, primarily for tests + admin tooling. */
     public int compactLogNow(String topic, int partition) throws IOException {
         return logFor(topic, partition).compactByKey();
     }
 
     /**
-     * synchronous compaction that no-ops cleanly when this broker
+     * Synchronous compaction that no-ops cleanly when this broker
      * has no open log for {@code (topic, partition)}. Lets the admin
      * {@code ForceCompactPartition} RPC fan out to every broker and have
      * non-hosting brokers return without creating stray partition dirs.
@@ -177,7 +178,7 @@ public final class LogManager implements AutoCloseable {
             var log = entry.getValue();
             try {
                 log.retain(cutoff);
-                // also compact logs belonging to compact-policy topics.
+                // Also compact logs belonging to compact-policy topics.
                 // Key on the topic portion of the "<topic>-<partition>" map key;
                 // the partition suffix follows the last dash on a numeric.
                 String key = entry.getKey();

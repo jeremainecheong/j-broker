@@ -1,6 +1,6 @@
 # k6 load tests
 
-Three scripts, the spec / success criterion #9. `admin-api-smoke` and `admin-api-load` run on stock k6; `sse-connections` imports `k6/x/sse` and needs a binary built with [xk6-sse](https://github.com/phymbert/xk6-sse):
+Three scripts covering sustained admin-API read traffic and SSE connection load at scale. `admin-api-smoke` and `admin-api-load` run on stock k6; `sse-connections` imports `k6/x/sse` and needs a binary built with [xk6-sse](https://github.com/phymbert/xk6-sse):
 
 ```bash
 mkdir -p bin && docker run --rm -v "$PWD/bin:/xk6" grafana/xk6 build --with github.com/phymbert/xk6-sse

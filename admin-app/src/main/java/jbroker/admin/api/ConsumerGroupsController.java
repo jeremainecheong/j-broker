@@ -36,9 +36,8 @@ import org.springframework.web.bind.annotation.RestController;
  *       {@code NOT_COORDINATOR}.</li>
  * </ul>
  *
- * <p>Reset-offsets + delete-group are deferred out of . covers
- * lag accuracy which is the acceptance gate gate; the two mutations arrive in a later
- * Milestone 8/9 slice.
+ * <p>Reset-offsets + delete-group are admin mutations layered on top of
+ * this read surface; lag accuracy is the acceptance gate for the reads.
  */
 @RestController
 @RequestMapping("/api/v1/consumer-groups")
@@ -109,7 +108,7 @@ public class ConsumerGroupsController {
     }
 
     /**
-     * admin-initiated group removal. Fans across brokers and picks
+     * Admin-initiated group removal. Fans across brokers and picks
      * the one that returns OK (the coordinator); if every broker returns
      * NOT_COORDINATOR we propagate the last response as a 409.
      */
@@ -140,7 +139,7 @@ public class ConsumerGroupsController {
     }
 
     /**
-     * admin-initiated offset reset. Body shape:
+     * Admin-initiated offset reset. Body shape:
      * <pre>{@code
      * {
      *   "resets": [

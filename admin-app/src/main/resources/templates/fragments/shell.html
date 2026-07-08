@@ -6,7 +6,7 @@
     <title th:text="${title}">j-broker admin</title>
     <link rel="stylesheet" th:href="@{/app.css}" />
     <!--
-      self-host htmx + Alpine.js.
+      Self-hosted htmx + Alpine.js.
       Previously loaded from unpkg.com which (a) fails in networks that
       block outbound CDN traffic and (b) Chrome ORB was blocking the
       response due to unpkg returning a permissive-but-off content-type
@@ -25,7 +25,7 @@
   </head>
   <body>
     <!--
-      shared top-nav fragment. Every page inherits:
+      Shared top-nav fragment. Every page inherits:
         * brand
         * route links (highlight via app.js based on window.location.pathname)
         * live cluster-health badge (htmx polls /api/v1/health/badge every 5s)
@@ -58,7 +58,7 @@
     </nav>
 
     <!--
-      badge-response fragment. The /api/v1/health/badge endpoint
+      Badge-response fragment. The /api/v1/health/badge endpoint
       returns JSON by default, so we expose a tiny Thymeleaf fragment that
       the UI re-renders into the nav on each htmx tick. Wire via a
       @GetMapping(produces = "text/html") in a dedicated view controller so
@@ -81,7 +81,7 @@
 
     <!--
       Shared page footer. Single source of truth so we don't drift between
-      stale "Milestone 8" labels and current version strings across templates.
+      stale footer labels and version strings across templates.
       Keep this static — templating the version from Gradle is a bigger
       lift and adds zero user value.
     -->

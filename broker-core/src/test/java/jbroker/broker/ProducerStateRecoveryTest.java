@@ -21,8 +21,9 @@ import org.junit.jupiter.api.io.TempDir;
  * {@link ProducerStateManager} is in-memory only, so a SIGKILLed broker
  * restarts with a full log but an empty dedup map — and {@code cached ==
  * null} meant "trust and append". A retry of an already-committed
- * (pid, epoch, sequence) was then double-appended, violating the spec
- * invariant #4. The handler must rebuild producer state from the log
+ * (pid, epoch, sequence) was then double-appended, violating the
+ * idempotent-producer invariant that a committed (pid, epoch, sequence) is
+ * never re-applied. The handler must rebuild producer state from the log
  * before trusting an empty cache.
  */
 class ProducerStateRecoveryTest {

@@ -99,11 +99,11 @@ public final class IsrManager {
 
         // Invariant: ISR must always contain the leader. If we'd shrink the
         // leader out, skip the proposal — that's a data-loss footgun the
-        // controller-driven failover () will resolve.
+        // controller-driven failover will resolve.
         if (!nextIsr.contains(selfBrokerId) || nextIsr.isEmpty()) return null;
 
         // ISR-only flip: keep leader_epoch so followers don't trigger
-        // 's OffsetsForLeaderEpoch reconciliation cycle; bump
+        // the OffsetsForLeaderEpoch reconciliation cycle; bump
         // partition_epoch so every follower sees it as newer metadata.
         var change = PartitionChangeRecord.newBuilder()
                 .setTopic(topic)

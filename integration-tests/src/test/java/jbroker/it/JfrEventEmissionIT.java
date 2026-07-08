@@ -19,9 +19,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * with a JFR recording active during produce load on
+ * With a JFR recording active during produce load on
  * a 3-broker cluster, the recorded file contains at least one of each
- * Milestone 9 custom event type.
+ * custom event type.
  *
  * <p>We drive produce traffic through the broker client so ProduceLatency
  * and FetchLatency both get exercised (followers issue ReplicaFetch

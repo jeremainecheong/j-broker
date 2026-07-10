@@ -84,6 +84,18 @@ public final class LeaderEpochCheckpoint {
         return Optional.ofNullable(found);
     }
 
+    /**
+     * Drop every entry whose {@code startOffset >= offset}. Must accompany
+     * a log truncation to the same offset: entries describing wiped ranges
+     * would otherwise keep answering {@link #epochFor} with a lineage the
+     * log no longer has — and {@link #assign}'s monotonicity guard would
+     * refuse the corrected entries when the range is refetched.
+     */
+    public synchronized void truncateFrom(long offset) throws IOException {
+        boolean changed = entries.removeIf(e -> e.startOffset() >= offset);
+        if (changed) flush();
+    }
+
     private void flush() throws IOException {
         var tmp = path.resolveSibling(path.getFileName() + ".tmp");
         var sb = new StringBuilder();

@@ -216,7 +216,7 @@ public final class LogSegment implements AutoCloseable {
      * producer fields (producerId, producerEpoch, baseSequence) in the encoded
      * batch header. Required so followers replicating the batch can observe
      * the dedup state and the broker can correctly reject duplicate retries
-     * after a leader failover.
+     * after a leader failover. Batches carry {@code partitionLeaderEpoch = 0}.
      */
     public int append(
             long firstTimestamp,
@@ -226,9 +226,39 @@ public final class LogSegment implements AutoCloseable {
             short producerEpoch,
             int baseSequence)
             throws IOException {
+        return append(
+                firstTimestamp,
+                maxTimestamp,
+                records,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                /*partitionLeaderEpoch*/ 0);
+    }
+
+    /**
+     * Full append — additionally stamps {@code partitionLeaderEpoch} into
+     * the batch header so replicated logs carry their lineage per batch.
+     */
+    public int append(
+            long firstTimestamp,
+            long maxTimestamp,
+            List<Record> records,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            int partitionLeaderEpoch)
+            throws IOException {
         lock.lock();
         try {
-            return appendLocked(firstTimestamp, maxTimestamp, records, producerId, producerEpoch, baseSequence);
+            return appendLocked(
+                    firstTimestamp,
+                    maxTimestamp,
+                    records,
+                    producerId,
+                    producerEpoch,
+                    baseSequence,
+                    partitionLeaderEpoch);
         } finally {
             lock.unlock();
         }
@@ -240,14 +270,23 @@ public final class LogSegment implements AutoCloseable {
             List<Record> records,
             long producerId,
             short producerEpoch,
-            int baseSequence)
+            int baseSequence,
+            int partitionLeaderEpoch)
             throws IOException {
         if (records.isEmpty()) throw new IllegalArgumentException("records must be non-empty");
         long baseOff = nextOffset;
         int size = RecordBatch.estimatedSize(records);
         var buf = ByteBuffer.allocate(size);
         int written = RecordBatch.encode(
-                buf, baseOff, 0, firstTimestamp, maxTimestamp, producerId, producerEpoch, baseSequence, records);
+                buf,
+                baseOff,
+                partitionLeaderEpoch,
+                firstTimestamp,
+                maxTimestamp,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                records);
         buf.flip();
         int pos = (int) logChannel.size();
         while (buf.hasRemaining()) {

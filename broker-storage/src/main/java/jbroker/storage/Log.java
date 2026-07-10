@@ -107,15 +107,41 @@ public final class Log implements AutoCloseable {
     /**
      * Audit-finding #1 — append that preserves the caller-supplied idempotent-
      * producer fields so follower replication can observe dedup state.
+     * Batches carry {@code partitionLeaderEpoch = 0} (pre-lineage callers).
      */
     public long append(List<Record> records, long nowMillis, long producerId, short producerEpoch, int baseSequence)
+            throws IOException {
+        return append(records, nowMillis, producerId, producerEpoch, baseSequence, /*partitionLeaderEpoch*/ 0);
+    }
+
+    /**
+     * Full append — additionally stamps the current {@code
+     * partitionLeaderEpoch} into the batch header. The epoch is the log's
+     * LINEAGE marker: followers replicate the batch byte-identically and
+     * derive their leader-epoch checkpoints from these headers, which is
+     * what makes divergent tails detectable on fetch.
+     */
+    public long append(
+            List<Record> records,
+            long nowMillis,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            int partitionLeaderEpoch)
             throws IOException {
         lock.lock();
         try {
             var active = segments.get(segments.size() - 1);
             long firstTimestamp = nowMillis;
             long maxTimestamp = nowMillis;
-            active.append(firstTimestamp, maxTimestamp, records, producerId, producerEpoch, baseSequence);
+            active.append(
+                    firstTimestamp,
+                    maxTimestamp,
+                    records,
+                    producerId,
+                    producerEpoch,
+                    baseSequence,
+                    partitionLeaderEpoch);
             long assignedLast = active.nextOffset() - 1;
             if (active.sizeBytes() >= config.segmentBytes()) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());

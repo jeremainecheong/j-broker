@@ -209,9 +209,13 @@ public final class ProduceHandler {
         }
 
         long startNs = System.nanoTime();
+        // Stamped into the batch header: the log's lineage marker.
+        // Followers derive their leader-epoch checkpoints from it, which is
+        // what makes divergent tails detectable on replica fetch.
+        int partitionLeaderEpoch = state.get().leaderEpoch();
         boolean idempotent = req.getProducerId() > 0;
         if (!idempotent) {
-            var appended = appendOnly(req, parsed);
+            var appended = appendOnly(req, parsed, partitionLeaderEpoch);
             if (appended.error != null) return appended.error;
             return finishProduce(req, appended.first, appended.last, startNs);
         }
@@ -243,7 +247,7 @@ public final class ProduceHandler {
         var appendHolder = new AppendHolder();
         var result = producerState.dedupOrAppend(
                 key, req.getBaseSequence(), parsed.records().size(), () -> {
-                    var appended = appendOnly(req, parsed);
+                    var appended = appendOnly(req, parsed, partitionLeaderEpoch);
                     appendHolder.error = appended.error;
                     if (appended.error != null) {
                         // Nothing on disk (corrupt batch / IO / fenced
@@ -314,7 +318,7 @@ public final class ProduceHandler {
      * the idempotent-dedup lock, so that dedup state always reflects what is
      * on disk regardless of how the ack turns out.
      */
-    private Appended appendOnly(ProduceRequest req, RecordBatch.Parsed parsed) {
+    private Appended appendOnly(ProduceRequest req, RecordBatch.Parsed parsed, int partitionLeaderEpoch) {
         try {
             var log = logManager.logFor(req.getTopic(), req.getPartition());
             long now = System.currentTimeMillis();
@@ -323,7 +327,12 @@ public final class ProduceHandler {
             // the dedup state (and a leader rebooting from its own log can
             // rebuild state without help).
             long last = log.append(
-                    parsed.records(), now, req.getProducerId(), (short) req.getProducerEpoch(), req.getBaseSequence());
+                    parsed.records(),
+                    now,
+                    req.getProducerId(),
+                    (short) req.getProducerEpoch(),
+                    req.getBaseSequence(),
+                    partitionLeaderEpoch);
             long first = last - (parsed.records().size() - 1);
             return Appended.ok(first, last);
         } catch (IllegalArgumentException | IOException e) {

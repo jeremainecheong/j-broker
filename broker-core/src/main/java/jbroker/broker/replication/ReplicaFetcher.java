@@ -89,15 +89,24 @@ public final class ReplicaFetcher {
     public PollResult pollOnce(int expectedLeaderEpoch) throws IOException {
         var local = logManager.logFor(topic, partition);
         long fetchOffset = local.nextOffset();
-        var req = ReplicaFetchRequest.newBuilder()
+        var reqBuilder = ReplicaFetchRequest.newBuilder()
                 .setTopic(topic)
                 .setPartition(partition)
                 .setFollowerBrokerId(selfBrokerId)
                 .setLeaderEpoch(expectedLeaderEpoch)
                 .setFetchOffset(fetchOffset)
-                .setMaxBytes(1024 * 1024)
-                .build();
-        var resp = peer.fetch(req);
+                .setMaxBytes(1024 * 1024);
+        // Advertise the epoch owning our last local batch (log LINEAGE, not
+        // metadata) so the leader can fence a diverged tail before we glue
+        // its records on top of one. Absent for empty logs and logs
+        // predating checkpoint maintenance — the leader skips the check.
+        if (fetchOffset > 0) {
+            logManager
+                    .leaderEpochCheckpoint(topic, partition)
+                    .epochFor(fetchOffset - 1)
+                    .ifPresent(e -> reqBuilder.setLastFetchedEpoch(e.epoch()));
+        }
+        var resp = peer.fetch(reqBuilder.build());
         if (resp.hasError() && resp.getError().getCode() != ErrorCodes.NONE) {
             int code = resp.getError().getCode();
             if (code == ErrorCodes.FENCED_EPOCH) {
@@ -139,6 +148,13 @@ public final class ReplicaFetcher {
             byte[] slice = new byte[endPos - startPos];
             System.arraycopy(bytes, startPos, slice, 0, slice.length);
             local.appendRaw(slice, decoded.baseOffset());
+            // Derive our leader-epoch checkpoint from the replicated batch
+            // headers: (epoch, baseOffset) on every epoch increase. This is
+            // the offset-accurate lineage record that both sides of the
+            // fetch-time divergence check depend on — the metadata-apply
+            // listener only records entries on the broker that IS the new
+            // leader, so followers get theirs here.
+            recordLineage(decoded.partitionLeaderEpoch(), decoded.baseOffset());
             // Audit-finding #1 — every applied idempotent batch advances our
             // local ProducerStateManager so a future takeover as leader
             // already has the dedup state needed to recognize retries.
@@ -158,14 +174,32 @@ public final class ReplicaFetcher {
     }
 
     private PollResult reconcileOnFencedEpoch(int followerEpoch, int leaderCurrentEpoch) throws IOException {
+        var local = logManager.logFor(topic, partition);
+        // Reconcile by LOG lineage, not metadata: ask the leader where the
+        // epoch owning our last local batch ends in ITS history. Using the
+        // metadata epoch here would ask about an epoch our log may not
+        // even contain, missing the divergent range entirely. Falls back
+        // to the metadata epoch for logs without lineage entries.
+        int reconcileEpoch = local.nextOffset() > 0
+                ? logManager
+                        .leaderEpochCheckpoint(topic, partition)
+                        .epochFor(local.nextOffset() - 1)
+                        .map(jbroker.storage.LeaderEpochCheckpoint.Entry::epoch)
+                        .orElse(followerEpoch)
+                : followerEpoch;
         log.warn(
-                "replica fetch fenced for {}-{}: follower epoch {}, leader at {}; reconciling",
+                "replica fetch fenced for {}-{}: follower epoch {} (lineage {}), leader at {}; reconciling",
                 topic,
                 partition,
                 followerEpoch,
+                reconcileEpoch,
                 leaderCurrentEpoch);
-        long endOffset = peer.offsetsForLeaderEpoch(topic, partition, followerEpoch);
-        var local = logManager.logFor(topic, partition);
+        long endOffset = peer.offsetsForLeaderEpoch(topic, partition, reconcileEpoch);
+        if (endOffset == UNDEFINED_EPOCH_OFFSET) {
+            // Leader remembers nothing at or below our lineage epoch: our
+            // entire log predates its history. Rebuild from zero.
+            endOffset = 0L;
+        }
         if (endOffset < local.nextOffset()) {
             log.warn(
                     "truncating {}-{} from {} to {} after OffsetsForLeaderEpoch",
@@ -174,8 +208,33 @@ public final class ReplicaFetcher {
                     local.nextOffset(),
                     endOffset);
             local.truncateTo(endOffset);
+            // The checkpoint must shrink with the log — entries describing
+            // the wiped range would keep answering with a lineage we no
+            // longer have, and assign()'s monotonicity guard would refuse
+            // the corrected entries on refetch.
+            logManager.leaderEpochCheckpoint(topic, partition).truncateFrom(endOffset);
         }
         return PollResult.RECONCILED;
+    }
+
+    /** Sentinel from {@code OffsetsForLeaderEpoch}: requested epoch predates the leader's history. */
+    private static final long UNDEFINED_EPOCH_OFFSET = -1L;
+
+    /**
+     * Record an (epoch, startOffset) lineage entry when replicated batches
+     * cross into a higher epoch. Failures are logged, not thrown — lineage
+     * is a safety net; replication itself must not stall on checkpoint IO.
+     */
+    private void recordLineage(int batchEpoch, long baseOffset) {
+        try {
+            var cp = logManager.leaderEpochCheckpoint(topic, partition);
+            var entries = cp.entries();
+            if (entries.isEmpty() || entries.get(entries.size() - 1).epoch() < batchEpoch) {
+                cp.assign(batchEpoch, baseOffset);
+            }
+        } catch (IOException e) {
+            log.warn("failed to record lineage ({}, {}) for {}-{}: {}", batchEpoch, baseOffset, topic, partition, e);
+        }
     }
 
     public long highWatermark() {

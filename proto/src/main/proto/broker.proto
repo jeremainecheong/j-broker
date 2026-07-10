@@ -166,6 +166,16 @@ message ReplicaFetchRequest {
   int32 leader_epoch = 4;
   int64 fetch_offset = 5;
   int32 max_bytes = 6;
+  // Epoch that owns the LAST batch in the follower's local log (its log
+  // LINEAGE, from its leader-epoch checkpoint) — distinct from
+  // leader_epoch above, which is only what metadata currently says. The
+  // leader fences the fetch when this doesn't match its own lineage at
+  // fetch_offset - 1: a follower whose log diverged while its metadata
+  // stayed current would otherwise glue the leader's log on top of a
+  // divergent tail and report a healthy LEO for records it doesn't
+  // actually hold. Absent on legacy fetchers, empty logs, and logs
+  // predating checkpoint maintenance — the leader then skips the check.
+  optional int32 last_fetched_epoch = 7;
 }
 
 message ReplicaFetchResponse {

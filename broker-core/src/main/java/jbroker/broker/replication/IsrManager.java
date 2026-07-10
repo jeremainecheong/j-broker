@@ -105,6 +105,9 @@ public final class IsrManager {
         // ISR-only flip: keep leader_epoch so followers don't trigger
         // the OffsetsForLeaderEpoch reconciliation cycle; bump
         // partition_epoch so every follower sees it as newer metadata.
+        // CAS-guarded: if a leader change or another flip lands between
+        // this read and the apply, the record is dropped and the next
+        // tick re-derives from fresh state.
         var change = PartitionChangeRecord.newBuilder()
                 .setTopic(topic)
                 .setPartition(partition)
@@ -113,6 +116,8 @@ public final class IsrManager {
                 .addAllReplicas(state.replicas())
                 .setLeaderEpoch(state.leaderEpoch())
                 .setPartitionEpoch(state.partitionEpoch() + 1)
+                .setPriorLeaderEpoch(state.leaderEpoch())
+                .setPriorPartitionEpoch(state.partitionEpoch())
                 .build();
         log.debug(
                 "ISR flip proposed for {}-{}: shrink={}, expand={}, new isr={}, partition_epoch {}->{}",

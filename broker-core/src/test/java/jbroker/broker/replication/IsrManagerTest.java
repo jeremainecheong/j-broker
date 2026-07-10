@@ -58,6 +58,11 @@ class IsrManagerTest {
             // ISR flip is a partition-epoch event, not a leader-epoch event.
             assertThat(change.getLeaderEpoch()).isEqualTo(5);
             assertThat(change.getPartitionEpoch()).isEqualTo(1);
+            // CAS guard: derived from (le=5, pe=0); a leader change or
+            // competing flip landing first must invalidate this proposal.
+            assertThat(change.hasPriorLeaderEpoch()).isTrue();
+            assertThat(change.getPriorLeaderEpoch()).isEqualTo(5);
+            assertThat(change.getPriorPartitionEpoch()).isZero();
         }
     }
 

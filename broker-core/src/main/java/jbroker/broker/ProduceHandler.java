@@ -23,6 +23,12 @@ import jbroker.storage.RecordBatch;
  * duplicates, returning the cached offsets. Out-of-order sequences,
  * including a retry with a different record count, are rejected with
  * {@link ErrorCodes#OUT_OF_ORDER_SEQUENCE}.
+ *
+ * <p>Dedup state reflects the LOG, not the ack: a batch that appended but
+ * failed its acks=all replication wait stays recorded, so a retry dedups
+ * to the cached offsets instead of appending a second copy — and then
+ * re-runs the replication wait on those offsets, because "seen before"
+ * does not imply "committed."
  */
 public final class ProduceHandler {
 
@@ -202,9 +208,12 @@ public final class ProduceHandler {
             return err(ErrorCodes.CORRUPT_BATCH, e.getMessage() == null ? e.toString() : e.getMessage());
         }
 
+        long startNs = System.nanoTime();
         boolean idempotent = req.getProducerId() > 0;
         if (!idempotent) {
-            return appendAndRespond(req, parsed);
+            var appended = appendOnly(req, parsed);
+            if (appended.error != null) return appended.error;
+            return finishProduce(req, appended.first, appended.last, startNs);
         }
 
         // The dedup map is in-memory only: after a restart this broker has
@@ -219,41 +228,49 @@ public final class ProduceHandler {
         // so every broker (leader + followers) keeps the same view of applied
         // (pid, epoch, baseSequence) batches — that's what makes idempotent
         // retries survive leader failover.
+        //
+        // Only the APPEND runs under the dedup lock. The acks=all wait
+        // happens after, for fresh and cached results alike, because dedup
+        // state must reflect the LOG, not the ack: an append that landed
+        // but failed its replication wait (floor rejection, HWM timeout)
+        // is on disk, and a retry that re-appended it would fill the log
+        // with duplicate batches — soak v5 hit exactly that, eight copies
+        // of one record at consecutive offsets seeding permanent replica
+        // divergence. The retry instead dedups to the cached offsets and
+        // re-runs the replication wait on them.
         var key = new ProducerStateManager.DedupKey(
                 req.getTopic(), req.getPartition(), req.getProducerId(), req.getProducerEpoch());
         var appendHolder = new AppendHolder();
         var result = producerState.dedupOrAppend(
                 key, req.getBaseSequence(), parsed.records().size(), () -> {
-                    var resp = appendAndRespond(req, parsed);
-                    appendHolder.response = resp;
-                    if (resp.hasError()) {
+                    var appended = appendOnly(req, parsed);
+                    appendHolder.error = appended.error;
+                    if (appended.error != null) {
+                        // Nothing on disk (corrupt batch / IO / fenced
+                        // epoch) — state must not advance.
                         return null;
                     }
-                    return new long[] {resp.getBaseOffset(), resp.getLastOffset()};
+                    return new long[] {appended.first, appended.last};
                 });
         if (result.hasError()) {
-            // Out-of-order sequence, or append IOException. Either way:
+            // Out-of-order sequence, or append failure. Either way:
             // surface the error from the append side when present, else
             // OUT_OF_ORDER from the dedup check.
-            if (appendHolder.response != null && appendHolder.response.hasError()) {
-                return appendHolder.response;
+            if (appendHolder.error != null) {
+                return appendHolder.error;
             }
             return err(ErrorCodes.OUT_OF_ORDER_SEQUENCE, result.errorMessage());
         }
-        if (result.cached()) {
-            return ProduceResponse.newBuilder()
-                    .setBaseOffset(result.baseOffset())
-                    .setLastOffset(result.lastOffset())
-                    .build();
-        }
-        // Fresh append — appendAndRespond already built the full response
-        // (including latency metric + JFR event), just surface it verbatim.
-        return appendHolder.response;
+        // Fresh append or cached retry: identical from here. The cached
+        // path MUST NOT short-circuit acks=all — the original attempt may
+        // have failed its replication wait, so "I have seen this batch"
+        // does not imply "this batch is committed."
+        return finishProduce(req, result.baseOffset(), result.lastOffset(), startNs);
     }
 
-    /** Capture slot so the Appender lambda can hand its full response back to the caller. */
+    /** Capture slot so the Appender lambda can hand its append error back to the caller. */
     private static final class AppendHolder {
-        ProduceResponse response;
+        ProduceResponse error;
     }
 
     /**
@@ -280,8 +297,24 @@ public final class ProduceHandler {
         });
     }
 
-    private ProduceResponse appendAndRespond(ProduceRequest req, RecordBatch.Parsed parsed) {
-        long startNs = System.nanoTime();
+    /** Outcome of the bare append: offsets on success, an error response otherwise. */
+    private record Appended(long first, long last, ProduceResponse error) {
+        static Appended ok(long first, long last) {
+            return new Appended(first, last, null);
+        }
+
+        static Appended failed(ProduceResponse error) {
+            return new Appended(-1L, -1L, error);
+        }
+    }
+
+    /**
+     * Append the batch to the local log — nothing else. The acks=all
+     * replication wait deliberately lives in {@link #finishProduce}, outside
+     * the idempotent-dedup lock, so that dedup state always reflects what is
+     * on disk regardless of how the ack turns out.
+     */
+    private Appended appendOnly(ProduceRequest req, RecordBatch.Parsed parsed) {
         try {
             var log = logManager.logFor(req.getTopic(), req.getPartition());
             long now = System.currentTimeMillis();
@@ -292,29 +325,45 @@ public final class ProduceHandler {
             long last = log.append(
                     parsed.records(), now, req.getProducerId(), (short) req.getProducerEpoch(), req.getBaseSequence());
             long first = last - (parsed.records().size() - 1);
-            if (req.getAcks() == ACKS_ALL) {
-                var wait = waitForIsrReplication(req.getTopic(), req.getPartition(), last);
-                if (wait != null) return wait;
-            }
-            long latencyNanos = System.nanoTime() - startNs;
-            int bytes = req.getBatch().size();
-            metrics.recordProduce(latencyNanos, bytes);
-            var jfr = new jbroker.broker.jfr.ProduceLatencyEvent();
-            if (jfr.shouldCommit()) {
-                jfr.topic = req.getTopic();
-                jfr.partition = req.getPartition();
-                jfr.latencyNanos = latencyNanos;
-                jfr.bytes = bytes;
-                jfr.acks = req.getAcks();
-                jfr.commit();
-            }
-            return ProduceResponse.newBuilder()
-                    .setBaseOffset(first)
-                    .setLastOffset(last)
-                    .build();
+            return Appended.ok(first, last);
         } catch (IllegalArgumentException | IOException e) {
-            return err(ErrorCodes.CORRUPT_BATCH, e.getMessage() == null ? e.toString() : e.getMessage());
+            return Appended.failed(
+                    err(ErrorCodes.CORRUPT_BATCH, e.getMessage() == null ? e.toString() : e.getMessage()));
         }
+    }
+
+    /**
+     * Complete a produce whose batch is known to sit at {@code [first, last]}
+     * in the log (freshly appended or dedup-cached): run the acks=all
+     * replication wait if requested, then record metrics and build the
+     * success response.
+     */
+    private ProduceResponse finishProduce(ProduceRequest req, long first, long last, long startNs) {
+        if (req.getAcks() == ACKS_ALL) {
+            ProduceResponse wait;
+            try {
+                wait = waitForIsrReplication(req.getTopic(), req.getPartition(), last);
+            } catch (IOException e) {
+                return err(ErrorCodes.IO_ERROR, e.getMessage() == null ? e.toString() : e.getMessage());
+            }
+            if (wait != null) return wait;
+        }
+        long latencyNanos = System.nanoTime() - startNs;
+        int bytes = req.getBatch().size();
+        metrics.recordProduce(latencyNanos, bytes);
+        var jfr = new jbroker.broker.jfr.ProduceLatencyEvent();
+        if (jfr.shouldCommit()) {
+            jfr.topic = req.getTopic();
+            jfr.partition = req.getPartition();
+            jfr.latencyNanos = latencyNanos;
+            jfr.bytes = bytes;
+            jfr.acks = req.getAcks();
+            jfr.commit();
+        }
+        return ProduceResponse.newBuilder()
+                .setBaseOffset(first)
+                .setLastOffset(last)
+                .build();
     }
 
     /**

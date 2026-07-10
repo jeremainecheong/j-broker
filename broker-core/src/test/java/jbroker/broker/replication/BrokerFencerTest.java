@@ -82,7 +82,7 @@ class BrokerFencerTest {
     }
 
     @Test
-    void noSurvivingIsrMemberEmitsSentinelLeader() {
+    void noSurvivingIsrMemberGoesOfflineWithIsrPreserved() {
         var tm = new TopicManager();
         tm.onTopicCommitted("t", 1, 1, 0L);
         tm.onPartitionChange("t", 0, /*leader*/ 2, List.of(2), List.of(2), 5, 0);
@@ -96,8 +96,101 @@ class BrokerFencerTest {
         fencer.tick(10_000_000_000L);
 
         assertThat(proposer.proposals).hasSize(1);
-        assertThat(proposer.proposals.get(0).getLeader()).isEqualTo(-1);
-        assertThat(proposer.proposals.get(0).getIsrList()).isEmpty();
+        var p = proposer.proposals.get(0);
+        assertThat(p.getLeader()).isEqualTo(-1);
+        // The ISR is preserved, NOT blanked: broker 2 is the only replica
+        // known to hold every committed record, and recovery may only
+        // elect from this set. An empty ISR here is how #115's
+        // shorter-log promotion became possible.
+        assertThat(p.getIsrList()).containsExactly(2);
+    }
+
+    @Test
+    void offlinePartitionRecoversWhenPreservedIsrMemberReturns() {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 3, 0L);
+        // Offline (leader=-1) with ISR preserved at {2}; replicas {2,1,3}.
+        tm.onPartitionChange("t", 0, /*leader*/ -1, List.of(2), List.of(2, 1, 3), /*leaderEpoch*/ 6, 0);
+
+        var liveness = new BrokerLiveness();
+        liveness.recordSignal(2, 0L, 9_500_000_000L); // fresh (0.5s old)
+
+        var proposer = new CapturingProposer();
+        var fencer = new BrokerFencer(1, tm, liveness, proposer, () -> Role.LEADER, staleThresholdNanos());
+
+        fencer.tick(10_000_000_000L);
+
+        assertThat(proposer.proposals).hasSize(1);
+        var p = proposer.proposals.get(0);
+        assertThat(p.getLeader()).isEqualTo(2);
+        assertThat(p.getIsrList()).containsExactly(2);
+        assertThat(p.getLeaderEpoch()).isEqualTo(7);
+        assertThat(p.getPriorLeaderEpoch()).isEqualTo(6);
+        assertThat(p.getPriorPartitionEpoch()).isZero();
+    }
+
+    @Test
+    void offlinePartitionNeverRecoversOntoNonIsrReplica() {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 3, 0L);
+        tm.onPartitionChange("t", 0, /*leader*/ -1, List.of(2), List.of(2, 1, 3), 6, 0);
+
+        var liveness = new BrokerLiveness();
+        // Brokers 1 (self) and 3 are alive and fully caught up on
+        // heartbeats — but they are NOT in the preserved ISR, so they may
+        // be missing acked records. Broker 2 stays dead.
+        liveness.recordSignal(3, 0L, 9_500_000_000L);
+
+        var proposer = new CapturingProposer();
+        var fencer = new BrokerFencer(1, tm, liveness, proposer, () -> Role.LEADER, staleThresholdNanos());
+
+        fencer.tick(10_000_000_000L);
+        fencer.tick(15_000_000_000L);
+
+        assertThat(proposer.proposals)
+                .as("availability is sacrificed, not consistency: no ISR member alive → stay offline")
+                .isEmpty();
+    }
+
+    @Test
+    void offlinePartitionRecoversOntoSelfWithoutLivenessEntry() {
+        // The controller never heartbeats itself, so it has no liveness
+        // entry — but if it is in the preserved ISR it is alive by
+        // definition (it is running this tick).
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 3, 0L);
+        tm.onPartitionChange("t", 0, /*leader*/ -1, List.of(1), List.of(2, 1, 3), 6, 0);
+
+        var proposer = new CapturingProposer();
+        var fencer = new BrokerFencer(1, tm, new BrokerLiveness(), proposer, () -> Role.LEADER, staleThresholdNanos());
+
+        fencer.tick(10_000_000_000L);
+
+        assertThat(proposer.proposals).hasSize(1);
+        assertThat(proposer.proposals.get(0).getLeader()).isEqualTo(1);
+    }
+
+    @Test
+    void demotionProposalsCarryCasGuard() {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 3, 0L);
+        tm.onPartitionChange("t", 0, /*leader*/ 2, List.of(2, 1, 3), List.of(2, 1, 3), /*leaderEpoch*/ 5, /*pe*/ 3);
+
+        var liveness = new BrokerLiveness();
+        liveness.recordSignal(1, 0L, 10_000_000_000L);
+        liveness.recordSignal(2, 0L, 0L); // stale
+        liveness.recordSignal(3, 0L, 10_000_000_000L);
+
+        var proposer = new CapturingProposer();
+        var fencer = new BrokerFencer(1, tm, liveness, proposer, () -> Role.LEADER, staleThresholdNanos());
+
+        fencer.tick(10_000_000_000L);
+
+        assertThat(proposer.proposals).hasSize(1);
+        var p = proposer.proposals.get(0);
+        assertThat(p.hasPriorLeaderEpoch()).isTrue();
+        assertThat(p.getPriorLeaderEpoch()).isEqualTo(5);
+        assertThat(p.getPriorPartitionEpoch()).isEqualTo(3);
     }
 
     @Test

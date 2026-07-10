@@ -24,9 +24,22 @@ import org.slf4j.LoggerFactory;
  * leaderships.
  *
  * <p>A stale broker with no surviving ISR members emits a proposal with
- * {@code leader = -1} (sentinel "no leader"); the partition becomes
- * unavailable until that broker returns and re-joins the ISR. The
+ * {@code leader = -1} (sentinel "no leader") and the ISR <b>unchanged</b>:
+ * the dead leader stays in it, because the ISR of an offline partition
+ * records which replicas hold every committed record — blanking it would
+ * let any returning replica take leadership with a shorter log and erase
+ * acked records (#115's promotion). The partition is unavailable
+ * (unavailable-not-inconsistent) until an ISR member returns; the
  * {@code acks=all} path treats leader=-1 as "reject write."
+ *
+ * <p><b>Recovery:</b> the same tick scans offline partitions and, when a
+ * preserved-ISR member is live again (fresh heartbeat, or it is this
+ * controller itself), proposes it as the new leader with a bumped epoch.
+ *
+ * <p>Every proposal carries a compare-and-set guard — the (leaderEpoch,
+ * partitionEpoch) it was derived from — so a proposal computed from a
+ * stale metadata view (a freshly elected controller whose apply lags its
+ * log) is dropped at apply time instead of overwriting newer state.
  *
  * <p><b>Never-heard-from leaders are fenceable.</b> A partition leader with
  * no {@link BrokerLiveness} entry at all (it died before its first
@@ -90,11 +103,12 @@ public final class BrokerFencer {
         }
         for (var assignment : topicManager.allPartitionAssignments()) {
             int leader = assignment.state().leader();
-            // Already at the no-leader sentinel (fenced with an empty ISR):
-            // nothing to demote. Without this guard the never-seen grace
-            // clock treated "-1" as an unheard-from broker and re-fenced
-            // the partition every tick, inflating leader_epoch.
-            if (leader <= NO_LEADER) continue;
+            if (leader <= NO_LEADER) {
+                // Offline partition (fenced earlier, ISR preserved).
+                // Nothing to demote — but an ISR member may be back.
+                maybeRecoverOfflinePartition(assignment, nowNanos);
+                continue;
+            }
             if (leader == selfBrokerId) continue;
             var sig = liveness.lastSignal(leader);
             long lastSignalNanos;
@@ -125,20 +139,17 @@ public final class BrokerFencer {
                 newIsr.add(member);
                 if (newLeader == NO_LEADER) newLeader = member;
             }
+            if (newIsr.isEmpty()) {
+                // No surviving ISR member: the partition goes offline and
+                // the ISR is preserved — the dead leader is the only
+                // replica known to hold every committed record, and the
+                // recovery pass may only ever elect from this set.
+                // Blanking it would let any returning replica (with a
+                // possibly shorter log) take leadership (#115).
+                newIsr.addAll(assignment.state().isr());
+            }
             int newLeaderEpoch = assignment.state().leaderEpoch() + 1;
-            var record = PartitionChangeRecord.newBuilder()
-                    .setTopic(assignment.topic())
-                    .setPartition(assignment.partition())
-                    .setLeader(newLeader)
-                    .addAllIsr(newIsr)
-                    .addAllReplicas(assignment.state().replicas())
-                    .setLeaderEpoch(newLeaderEpoch)
-                    .setPartitionEpoch(0)
-                    .build();
-            var payload = MetadataRecord.newBuilder()
-                    .setPartitionChange(record)
-                    .build()
-                    .toByteArray();
+            propose(assignment, newLeader, newIsr, newLeaderEpoch);
             log.warn(
                     "fencing broker {} from {}-{}; new leader={}, leader_epoch={} isr={}",
                     leader,
@@ -147,7 +158,58 @@ public final class BrokerFencer {
                     newLeader,
                     newLeaderEpoch,
                     newIsr);
-            proposer.propose(payload);
         }
+    }
+
+    /**
+     * Offline-partition recovery: elect the first preserved-ISR member
+     * that is demonstrably alive — a fresh heartbeat signal, or this
+     * controller itself (it is running, so it never has a self-signal but
+     * is alive by definition). Members outside the preserved ISR are
+     * never considered, no matter how alive: they may be missing acked
+     * records.
+     */
+    private void maybeRecoverOfflinePartition(jbroker.broker.PartitionAssignment assignment, long nowNanos) {
+        for (int member : assignment.state().isr()) {
+            boolean alive = member == selfBrokerId
+                    || liveness.lastSignal(member)
+                            .map(s -> nowNanos - s.wallClockNanos() <= staleThresholdNanos)
+                            .orElse(false);
+            if (!alive) continue;
+            int newLeaderEpoch = assignment.state().leaderEpoch() + 1;
+            propose(assignment, member, assignment.state().isr(), newLeaderEpoch);
+            log.warn(
+                    "recovering offline partition {}-{}: ISR member {} is back; new leader_epoch={} isr={}",
+                    assignment.topic(),
+                    assignment.partition(),
+                    member,
+                    newLeaderEpoch,
+                    assignment.state().isr());
+            return;
+        }
+    }
+
+    private void propose(
+            jbroker.broker.PartitionAssignment assignment,
+            int newLeader,
+            java.util.List<Integer> newIsr,
+            int newLeaderEpoch) {
+        var record = PartitionChangeRecord.newBuilder()
+                .setTopic(assignment.topic())
+                .setPartition(assignment.partition())
+                .setLeader(newLeader)
+                .addAllIsr(newIsr)
+                .addAllReplicas(assignment.state().replicas())
+                .setLeaderEpoch(newLeaderEpoch)
+                .setPartitionEpoch(0)
+                // CAS guard: this proposal was derived from the state
+                // below; apply drops it if the state moved on (stale
+                // controller view, #115).
+                .setPriorLeaderEpoch(assignment.state().leaderEpoch())
+                .setPriorPartitionEpoch(assignment.state().partitionEpoch())
+                .build();
+        var payload =
+                MetadataRecord.newBuilder().setPartitionChange(record).build().toByteArray();
+        proposer.propose(payload);
     }
 }

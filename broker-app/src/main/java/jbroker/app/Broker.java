@@ -912,6 +912,11 @@ public final class Broker implements AutoCloseable {
                                     .addAllReplicas(ps.replicas())
                                     .setLeaderEpoch(proposal.leaderEpoch())
                                     .setPartitionEpoch(0)
+                                    // CAS guard: dropped at apply if the
+                                    // partition state moved since ps was
+                                    // read (stale balancer view).
+                                    .setPriorLeaderEpoch(ps.leaderEpoch())
+                                    .setPriorPartitionEpoch(ps.partitionEpoch())
                                     .build();
                             var payload = jbroker.proto.raft.MetadataRecord.newBuilder()
                                     .setPartitionChange(record)

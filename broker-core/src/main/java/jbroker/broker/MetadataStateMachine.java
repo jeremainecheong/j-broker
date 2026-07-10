@@ -200,6 +200,33 @@ public final class MetadataStateMachine implements StateMachine {
     }
 
     private void applyPartitionChange(jbroker.proto.raft.PartitionChangeRecord p) {
+        // CAS guard (#115): a guarded record names the (leaderEpoch,
+        // partitionEpoch) it was derived from. If the current state has
+        // moved on — e.g. an ISR shrink committed between the proposer's
+        // read and this apply — the record was computed from a stale view
+        // and must be dropped; the proposer re-derives on its next tick.
+        // Deterministic across brokers: every apply sees the same prior
+        // state in the same order. Without this, a freshly elected
+        // controller whose apply lagged its log could fence with an
+        // outdated ISR and promote a shorter-log replica.
+        if (p.hasPriorLeaderEpoch()) {
+            var current = topicManager.partitionState(p.getTopic(), p.getPartition());
+            int curLeaderEpoch = current.map(PartitionState::leaderEpoch).orElse(-1);
+            int curPartitionEpoch = current.map(PartitionState::partitionEpoch).orElse(-1);
+            if (curLeaderEpoch != p.getPriorLeaderEpoch() || curPartitionEpoch != p.getPriorPartitionEpoch()) {
+                org.slf4j.LoggerFactory.getLogger(MetadataStateMachine.class)
+                        .warn(
+                                "dropping stale-guarded partition change for {}-{}: derived from (le={}, pe={}) "
+                                        + "but current is (le={}, pe={}); proposer must re-derive",
+                                p.getTopic(),
+                                p.getPartition(),
+                                p.getPriorLeaderEpoch(),
+                                p.getPriorPartitionEpoch(),
+                                curLeaderEpoch,
+                                curPartitionEpoch);
+                return;
+            }
+        }
         // Empty replicas list = legacy record; default to ISR for
         // backward compatibility (same replica set either way).
         var replicas = p.getReplicasList().isEmpty() ? p.getIsrList() : p.getReplicasList();

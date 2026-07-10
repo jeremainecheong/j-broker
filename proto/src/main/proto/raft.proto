@@ -158,6 +158,19 @@ message PartitionChangeRecord {
   // resets to 0 on leader change. Exists so ISR flips don't look
   // like leadership changes to the OffsetsForLeaderEpoch reconciliation path.
   int32 partition_epoch = 8;
+
+  // Compare-and-set guard. A proposal derived from partition state
+  // (fencer demotions/recoveries, ISR flips, preferred-leader moves)
+  // carries the epochs of the state it was derived FROM; apply drops the
+  // record when the current state no longer matches, forcing the
+  // proposer to re-derive from fresh state. Closes the stale-view window
+  // where a freshly elected controller whose state-machine apply lags
+  // its Raft log fences with an outdated ISR and promotes a shorter-log
+  // replica (the #115 acked-record loss). Absent on legacy records and
+  // on create-topic initial state (no prior state exists) — those keep
+  // the plain accept-if-newer merge.
+  optional int32 prior_leader_epoch = 9;
+  optional int32 prior_partition_epoch = 10;
 }
 
 // Atomic create-topic bundle: TopicRecord + the initial PartitionChangeRecord

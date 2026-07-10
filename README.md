@@ -28,7 +28,7 @@ The success metric was never feature count — it was *being able to explain eve
 
 - **Durable partitioned log** — per-partition segment files with offset + timestamp indexes, fsync-at-batch-boundary, crash-safe recovery.
 - **Raft-replicated metadata** — topic CRUD, partition assignments, producer IDs, consumer-group offsets all survive any minority failure.
-- **Replication** — follower ReplicaFetch pulls from leader; ISR tracks in-sync replicas; high-watermark gates consumer visibility; leader-epoch fencing prevents torn writes on failover.
+- **Replication** — follower ReplicaFetch pulls from leader; ISR tracks in-sync replicas; high-watermark gates consumer visibility; `min.insync.replicas` floors acks=all durability; leader-epoch fencing prevents torn writes on failover; election is ISR-only.
 - **Idempotent producer** — `(producer_id, epoch, base_sequence)` triple deduplicates retries server-side; dedup state is rebuilt from the log on restart, so it survives failover.
 - **Consumer groups** — join/heartbeat/leave, cooperative-sticky-ish assignment, offset commit + fetch, coordinator-partition sharding over `__consumer_offsets`.
 - **Log compaction** — Kafka-style latest-value-per-key; preserves original absolute offsets so pre-compaction consumer offsets still resolve ([broker-storage/README.md](broker-storage/README.md)).
@@ -182,7 +182,7 @@ Compaction keeps the latest value per key, Kafka-style, with one subtlety that s
 
 Followers pull from partition leaders (`ReplicaFetch`); the leader tracks each follower's log-end offset and last-fetch time, shrinks/expands the ISR accordingly, and advances the high watermark as `max(prior_hwm, min(LEO across ISR))`. The `max` clamp keeps the HWM monotonic — without it, an ISR shrink can briefly move `min(LEO)` backwards and acked records *visibly disappear*, the worst kind of bug because nothing logs it.
 
-Leader-epoch fencing protects the log across failovers: a deposed leader's appends are rejected with `FENCED_EPOCH`, and a recovering follower calls `OffsetsForLeaderEpoch` and truncates to the returned boundary before fetching again — the only safe way to reconcile divergent logs. `acks=all` produces hold a `CompletableFuture` keyed by `(partition, offset)` that completes only when the HWM passes the produced offset, i.e. when every ISR member has the record. Deep dive: [`broker-core/README.md`](broker-core/README.md) §replication.
+Leader-epoch fencing protects the log across failovers: a deposed leader's appends are rejected with `FENCED_EPOCH`, and a recovering follower calls `OffsetsForLeaderEpoch` and truncates to the returned boundary before fetching again — the only safe way to reconcile divergent logs. `acks=all` produces complete only when the HWM passes the produced offset **and** the ISR still holds at least `min.insync.replicas` members (cluster default 2, per-topic override) — an ISR shrunk to the leader alone gets `NOT_ENOUGH_REPLICAS` before the append rather than a single-copy ack. Election is ISR-only: a partition whose last ISR member dies goes offline with its ISR preserved and recovers onto that member when it returns, instead of promoting a shorter-log replica. Deep dive: [`broker-core/README.md`](broker-core/README.md) §durability model.
 
 ### Consumer groups
 
@@ -317,7 +317,9 @@ Per-module breakdown in each module's README.
 
 The broker is feature-complete: everything listed under *What it does* is implemented, integration-tested on real 3-node clusters, and exercised by the chaos scenarios in `scripts/chaos/`. The capstone verification is a 10-minute SIGKILL soak under sustained load that audits every acked record afterwards.
 
-**One known open defect**: [#115](https://github.com/jeremainecheong/j-broker/issues/115) — under a compound Docker failure mode, an `acks=all` record can be acked and then lost. The chain: a SIGKILL'd broker's peers keep gRPC channels wedged on stale Docker DNS, the ISR shrinks to the leader alone (no min-ISR floor exists to refuse writes), and the leader then dies before anyone replicates. The soak that found it, the evidence, and the fix plan are on the issue. Until it lands, `acks=all` is majority-durable only while the ISR actually holds a majority.
+That soak once caught a real acked-record loss ([#115](https://github.com/jeremainecheong/j-broker/issues/115)): wedged DNS starved replication, the ISR shrank to one broker, `acks=all` was satisfied by a single copy, and a shorter-log replica was later promoted over it. Closing it took a six-fix campaign — container logging, channel rebuilds on unresolvable hosts, a `min.insync.replicas` floor, ISR-only election with CAS-guarded metadata, dedup that reflects the log rather than the ack, and lineage-aware replica fetch — with the verification soak itself surfacing the last two. The full derivation of why these close every leg of the loss chain is in [`broker-core/README.md`](broker-core/README.md) §durability model. The latest soak run: **`acked=4583 consumed=4584 missing=0 duplicated=0` across 15 broker kills**.
+
+Known open item: [#124](https://github.com/jeremainecheong/j-broker/issues/124) — ISR metadata freezes while a partition leader is not the Raft leader (proposals from non-leaders are dropped). Availability-only: it can make `acks=all` more conservative, never less safe.
 
 ---
 

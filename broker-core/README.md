@@ -52,7 +52,7 @@ Three durability modes via `acks`:
 | `acks` | Semantics | When to use |
 |---|---|---|
 | `0` / `1` (default) | Leader appends locally and returns. Lost on leader failure. | High-throughput, tolerant of occasional loss. |
-| `-1` (all) | Leader holds the reply until HWM has advanced past the produced last-offset — every ISR member has replicated. Rejected with `NOT_ENOUGH_REPLICAS` if the wait times out (default 5s). | Durable producers. |
+| `-1` (all) | Rejected with `NOT_ENOUGH_REPLICAS` **before the append** when the ISR is below `min.insync.replicas` (cluster default 2, per-topic override). Otherwise the leader holds the reply until HWM has advanced past the produced last-offset with the ISR still at or above the floor — every ISR member has replicated, and there are enough of them. Rejected with `NOT_ENOUGH_REPLICAS` on an ISR shrink below the floor mid-wait or on timeout (default 5s). | Durable producers. |
 
 Idempotent retries: `Producer.InitProducerId` returns a `(producer_id, producer_epoch)` pair; the controller persists the next-id counter through Raft so it survives restart. Every `ProduceRequest` carries `(producer_id, producer_epoch, base_sequence)`; `ProducerIdRegistry` rejects out-of-order sequences and silently drops dupes, so retries are safe.
 
@@ -140,12 +140,32 @@ HWM advancement unblocks any `acks=-1` produces waiting on that offset.
 flowchart LR
     Fencer[BrokerFencer<br/>250ms tick] -->|reads| Liveness[BrokerLiveness<br/>last heartbeat]
     Liveness -->|stale &gt; 3s| Fencer
-    Fencer -->|proposes| PartitionChange[PartitionChangeRecord<br/>leader=surviving isr&#91;0&#93;<br/>isr=isr minus dead<br/>leaderEpoch+1]
+    Fencer -->|proposes| PartitionChange[PartitionChangeRecord<br/>leader=surviving isr&#91;0&#93;, else -1<br/>isr=isr minus dead, else preserved<br/>leaderEpoch+1, CAS-guarded]
     PartitionChange -->|Raft commit| Apply[every broker.apply]
     Apply -->|MetadataStateMachine| NewState[PartitionState<br/>new leader, shrunk ISR]
 ```
 
+With no surviving ISR member the partition goes **offline** (`leader = -1`) with its ISR preserved, and the fencer's recovery pass re-elects a preserved-ISR member once it heartbeats again — see the durability model below.
+
 **ISR expand** — when a previously-out-of-sync follower catches up within `replica.lag.time.max.ms` of the leader's LEO, the leader proposes a `PartitionChangeRecord` that adds the broker back. HWM can then advance past any byte range that only the reconnected broker was blocking.
+
+## Durability model (acks=all)
+
+The contract: **a record acked under `acks=all` survives any single broker loss.** Four mechanisms hold it up; each closes a leg of a real loss chain found by the chaos soak ([#115](https://github.com/jeremainecheong/j-broker/issues/115)), where a record was acked by an ISR of one and then erased by a shorter-log promotion.
+
+**1. The `min.insync.replicas` floor.** HWM advance over the current ISR is necessary but not sufficient — an ISR shrunk to just the leader satisfies it with a single copy. The floor (cluster default 2, `--min-insync-replicas`, per-topic `min.insync.replicas` config) is enforced twice in `ProduceHandler`: before the append (`NOT_ENOUGH_REPLICAS`, nothing written, trivially retriable) and inside the HWM wait, where an ISR shrink below the floor fails the produce instead of false-acking — the shrink itself is what makes `computeHwm` jump to the leader's LEO, so HWM advance only counts while the ISR that produced it is floor-sized. Rejections are conservative (a shrink racing the ack can reject a batch that did replicate); the error stays retriable and idempotent producers dedup the retry. Topics with replication factor below the cluster default clamp down (RF=1 dev topics keep working); an explicit per-topic override wins verbatim and is validated against RF at create/update.
+
+**2. ISR-only election, preserved offline ISR.** The ISR is, by construction, the set of replicas guaranteed to hold every committed record — so it is the only set leadership may come from. When the fencer demotes a dead leader with no surviving ISR member, the partition goes offline (`leader = -1`) **with its ISR preserved**: blanking it would erase the one fact recovery needs. The fencer's recovery pass re-elects a preserved-ISR member once it is demonstrably alive (fresh heartbeat, or it is the controller itself); replicas outside the preserved ISR are never considered, however alive. Availability is sacrificed, never consistency.
+
+**3. CAS-guarded metadata.** Every partition-change proposal derived from state (fencer demotions and recoveries, ISR flips, preferred-leader moves) names the `(leader_epoch, partition_epoch)` it was derived from; apply drops the record if the state has moved on, and the proposer re-derives next tick. This closes a race accept-if-newer merging cannot catch: a freshly elected controller whose state-machine apply lags its Raft log fences with an outdated ISR — the stale proposal carries a *higher* epoch than the state it should have been derived from. The check is deterministic across brokers (every apply sees the same prior state in the same order).
+
+**4. Idempotent dedup reflects the log, not the ack.** An acks=all produce that appends and then fails its replication wait leaves the batch on disk — so producer state records it anyway, and a retry dedups to the cached offsets and **re-runs the replication wait on them**. Without this, every retry of an appended-but-unacked batch appends another copy (the verification soak found eight copies of one record at consecutive offsets, seeding replica divergence), and a cached retry would instant-ack a record that was never committed.
+
+**5. Lineage-aware replica fetch.** Every batch carries the leader epoch that wrote it; followers derive offset-accurate leader-epoch checkpoints from replicated batch headers and advertise the epoch owning their last local batch on every fetch. The leader fences (`FENCED_EPOCH`) when that doesn't match its own lineage at the fetch offset — a follower whose tail was written under a rejected leadership must truncate to the epoch intersection before it may take more records. Matching *metadata* epochs prove nothing about the *logs*; without this check a diverged follower glues the leader's records on top of junk and reports a healthy LEO for bytes it doesn't hold.
+
+**6. Leader-epoch fencing.** A deposed leader's appends are rejected with `FENCED_EPOCH`, and a recovering follower truncates to the `OffsetsForLeaderEpoch` boundary before fetching — divergent tails are reconciled toward the elected (ISR-member) leader's log, never the other way.
+
+Against the full #115 chain: replication starves (channels rebuild after consecutive unresolvable-host failures) → ISR shrinks to the leader → **acks=all refuses the write** instead of acking a single copy → retries of the unacked write **dedup instead of re-appending** → the leader dies → the partition goes **offline with ISR preserved** instead of promoting a shorter log → the ISR member returns, is re-elected, and any follower that diverged meanwhile **truncates to the lineage intersection** before rejoining → nothing acked was lost. Deliberately *not* guaranteed: `acks=0/1` records (at-most-once by contract on leader loss), and topics explicitly configured to `min.insync.replicas=1`.
 
 ## Broker heartbeats + fencer
 

@@ -36,14 +36,21 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
 
     public record PeerAddress(int brokerId, String host, int port) {}
 
+    /** Consecutive unresolvable failures that trigger a channel rebuild. */
+    static final int REBUILD_AFTER_UNRESOLVABLE = 3;
+
     private final int selfBrokerId;
     private final java.util.List<PeerAddress> peers;
     private final LongSupplier metadataOffset;
     private final long intervalMs;
     private final BooleanSupplier paused;
     private final ScheduledExecutorService scheduler;
+    private final io.grpc.netty.shaded.io.netty.handler.ssl.SslContext sslCtx;
+    private final java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory;
     private final Map<Integer, ManagedChannel> channels = new HashMap<>();
     private final Map<Integer, ClusterGrpc.ClusterBlockingStub> stubs = new HashMap<>();
+    // Only touched from the single scheduler thread — plain map is safe.
+    private final Map<Integer, Integer> unresolvableStreaks = new HashMap<>();
 
     /**
      * Back-compat 4-arg constructor — no pause gate. Existing tests keep
@@ -106,27 +113,31 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
-        io.grpc.netty.shaded.io.netty.handler.ssl.SslContext sslCtx;
         try {
-            sslCtx = TlsContexts.clientContext(tls == null ? TlsConfig.DISABLED : tls);
+            this.sslCtx = TlsContexts.clientContext(tls == null ? TlsConfig.DISABLED : tls);
         } catch (javax.net.ssl.SSLException e) {
             throw new IllegalStateException("TLS client context build failed", e);
         }
+        this.chaosInterceptorFactory = chaosInterceptorFactory;
         for (var p : this.peers) {
-            var b = NettyChannelBuilder.forAddress(p.host(), p.port());
-            if (sslCtx == null) {
-                b.usePlaintext();
-            } else {
-                b.sslContext(sslCtx);
-            }
-            if (chaosInterceptorFactory != null) {
-                var interceptor = chaosInterceptorFactory.apply(p.brokerId());
-                if (interceptor != null) b.intercept(interceptor);
-            }
-            var ch = b.build();
+            var ch = buildChannel(p);
             channels.put(p.brokerId(), ch);
             stubs.put(p.brokerId(), ClusterGrpc.newBlockingStub(ch));
         }
+    }
+
+    private ManagedChannel buildChannel(PeerAddress p) {
+        var b = NettyChannelBuilder.forAddress(p.host(), p.port());
+        if (sslCtx == null) {
+            b.usePlaintext();
+        } else {
+            b.sslContext(sslCtx);
+        }
+        if (chaosInterceptorFactory != null) {
+            var interceptor = chaosInterceptorFactory.apply(p.brokerId());
+            if (interceptor != null) b.intercept(interceptor);
+        }
+        return b.build();
     }
 
     public void start() {
@@ -150,20 +161,49 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             if (stub == null) continue;
             try {
                 stub.withDeadlineAfter(intervalMs, TimeUnit.MILLISECONDS).brokerHeartbeat(req);
+                unresolvableStreaks.remove(p.brokerId());
             } catch (Exception e) {
                 log.debug(
                         "heartbeat to broker {} at {}:{} failed: {}", p.brokerId(), p.host(), p.port(), e.getMessage());
-                // This tick is the retry policy; don't let the channel's
-                // exponential reconnect backoff stack on top of it. Without
-                // this, a peer that comes up after a few failed connects
-                // (sequential cluster start, broker restart) receives no
-                // heartbeats for seconds — long enough for a broker to live
-                // and die without ever landing in any peer's BrokerLiveness,
-                // which made it unfenceable (MultiBrokerFailoverIT flake).
-                var ch = channels.get(p.brokerId());
-                if (ch != null) ch.resetConnectBackoff();
+                onFailure(p, e);
             }
         }
+    }
+
+    private void onFailure(PeerAddress p, Exception e) {
+        // A wedged resolver (Docker DNS after a peer restart, #115 defect 1)
+        // loops on UnknownHostException long after the peer is back; a
+        // backoff reset alone doesn't always clear it. After
+        // REBUILD_AFTER_UNRESOLVABLE consecutive name-resolution failures,
+        // rebuild the channel outright to force a fresh resolver.
+        if (jbroker.broker.replication.ReplicaPeerClient.nameResolutionFailure(e)) {
+            int streak = unresolvableStreaks.merge(p.brokerId(), 1, Integer::sum);
+            if (streak >= REBUILD_AFTER_UNRESOLVABLE) {
+                unresolvableStreaks.remove(p.brokerId());
+                var old = channels.get(p.brokerId());
+                if (old != null) old.shutdownNow();
+                var fresh = buildChannel(p);
+                channels.put(p.brokerId(), fresh);
+                stubs.put(p.brokerId(), ClusterGrpc.newBlockingStub(fresh));
+                log.info(
+                        "rebuilt heartbeat channel to broker {} at {}:{} after {} consecutive unresolvable failures",
+                        p.brokerId(),
+                        p.host(),
+                        p.port(),
+                        REBUILD_AFTER_UNRESOLVABLE);
+            }
+            return;
+        }
+        unresolvableStreaks.remove(p.brokerId());
+        // This tick is the retry policy; don't let the channel's
+        // exponential reconnect backoff stack on top of it. Without
+        // this, a peer that comes up after a few failed connects
+        // (sequential cluster start, broker restart) receives no
+        // heartbeats for seconds — long enough for a broker to live
+        // and die without ever landing in any peer's BrokerLiveness,
+        // which made it unfenceable (MultiBrokerFailoverIT flake).
+        var ch = channels.get(p.brokerId());
+        if (ch != null) ch.resetConnectBackoff();
     }
 
     @Override

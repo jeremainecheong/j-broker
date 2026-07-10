@@ -1,0 +1,25 @@
+<!--
+  Logging for the shipped broker distribution (and every CLI subcommand
+  that shares the binary).
+
+  Everything goes to STDERR, not STDOUT: `j-broker produce` reads stdin
+  and `j-broker console-consumer` writes records to stdout, so stdout
+  must stay pure data. Docker/Kubernetes capture both streams, so
+  `docker logs` still shows everything.
+
+  ISO-8601 wall-clock timestamps are deliberate — chaos forensics
+  correlate log lines across three broker containers, and relative
+  timestamps make that impossible.
+-->
+<configuration>
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX, UTC} %-5level [%thread] %logger{30} — %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDERR"/>
+    </root>
+</configuration>

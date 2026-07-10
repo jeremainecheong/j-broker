@@ -78,6 +78,41 @@ public final class ReplicaFetchHandler {
                             .build())
                     .build();
         }
+        // Lineage validation: a matching metadata epoch does not prove the
+        // follower's LOG matches. Compare the epoch owning the follower's
+        // last local batch against this leader's lineage at that offset —
+        // a diverged follower (its tail written under a leadership the
+        // committed history rejected) must truncate before it may glue our
+        // records on top and report a healthy LEO for bytes it does not
+        // hold. Skipped for legacy fetchers, empty follower logs, and
+        // offsets our checkpoint cannot attribute.
+        if (req.hasLastFetchedEpoch() && req.getFetchOffset() > 0) {
+            try {
+                var lineage = logManager
+                        .leaderEpochCheckpoint(req.getTopic(), req.getPartition())
+                        .epochFor(req.getFetchOffset() - 1);
+                if (lineage.isPresent() && lineage.get().epoch() != req.getLastFetchedEpoch()) {
+                    return ReplicaFetchResponse.newBuilder()
+                            .setCurrentLeaderEpoch(currentEpoch)
+                            .setError(jbroker.proto.broker.Error.newBuilder()
+                                    .setCode(ErrorCodes.FENCED_EPOCH)
+                                    .setMessage("log lineage divergence at offset " + (req.getFetchOffset() - 1)
+                                            + ": follower's last batch epoch " + req.getLastFetchedEpoch()
+                                            + " != leader lineage epoch "
+                                            + lineage.get().epoch())
+                                    .build())
+                            .build();
+                }
+            } catch (IOException e) {
+                return ReplicaFetchResponse.newBuilder()
+                        .setCurrentLeaderEpoch(currentEpoch)
+                        .setError(jbroker.proto.broker.Error.newBuilder()
+                                .setCode(ErrorCodes.IO_ERROR)
+                                .setMessage(e.toString())
+                                .build())
+                        .build();
+            }
+        }
         // Record the follower's LEO — the fetch_offset is the first offset
         // it still needs, which equals its local LEO. Only recorded for
         // accepted fetches so a fenced / impostor peer can't drag HWM down.

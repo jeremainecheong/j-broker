@@ -19,7 +19,7 @@ import jbroker.tls.TlsConfig;
  * <pre>
  *   j-broker server --data-dir DIR --broker-port P [--raft-port P2] [--id N]
  *                   [--voters ID@HOST:RAFT:BROKER,...] [--chaos-port P]
- *                   [--consumer-offsets-partitions N]
+ *                   [--consumer-offsets-partitions N] [--min-insync-replicas N]
  *   j-broker topics create|list|describe|...  --broker HOST:PORT --topic T ...
  *   j-broker produce --broker HOST:PORT --topic T --partition N   (stdin = one message per line)
  *   j-broker console-consumer --broker HOST:PORT --topic T --partition N [--from-beginning]
@@ -75,6 +75,14 @@ public final class BrokerApp {
         // host/port (the original single-network behavior).
         String advertisedListenersSpec = flag(args, "--advertised-listeners", null);
         int chaosPort = Integer.parseInt(flag(args, "--chaos-port", "-1"));
+        // acks=all durability floor. Default 2: an acks=all produce is
+        // rejected with NOT_ENOUGH_REPLICAS rather than acked by a
+        // single-broker ISR (#115). Topics override per-topic via the
+        // min.insync.replicas config; RF=1 topics clamp down to 1.
+        int minInsyncReplicas = Integer.parseInt(flag(
+                args,
+                "--min-insync-replicas",
+                String.valueOf(jbroker.broker.ProduceHandler.DEFAULT_MIN_INSYNC_REPLICAS)));
         int consumerOffsetsPartitions = Integer.parseInt(flag(
                 args,
                 "--consumer-offsets-partitions",
@@ -115,7 +123,8 @@ public final class BrokerApp {
         var config = new Broker.Config(
                         new NodeId(id), Path.of(dataDir), raftPort, brokerPort, voters, consumerOffsetsPartitions)
                 .withChaosPort(chaosPort)
-                .withTls(tlsConfig);
+                .withTls(tlsConfig)
+                .withMinInsyncReplicas(minInsyncReplicas);
         var broker = Broker.start(config);
         Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
         System.out.println("j-broker listening on " + brokerPort

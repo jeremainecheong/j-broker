@@ -10,8 +10,17 @@ public final class ErrorCodes {
     public static final int IO_ERROR = 6;
     public static final int FENCED_EPOCH = 7;
     public static final int OUT_OF_ORDER_SEQUENCE = 8;
-    /** acks=all: HWM did not reach the produced offset within the timeout. */
+    /**
+     * acks=all could not be satisfied. Three triggers: the ISR was below
+     * {@code min.insync.replicas} before the append (rejected pre-append),
+     * the ISR shrank below the floor while waiting, or the HWM did not
+     * reach the produced offset within the timeout. Always retriable —
+     * pre-append rejections wrote nothing, and after-append cases dedup
+     * under an idempotent producer.
+     */
     public static final int NOT_ENOUGH_REPLICAS = 9;
+    /** Topic config rejected at create/update (e.g. min.insync.replicas above the replication factor). */
+    public static final int INVALID_CONFIG = 10;
 
     // Consumer groups. Numerics match common.proto::ErrorCode.
     /** Coordinator-routed RPC arrived before {@code __consumer_offsets} has a leader. */

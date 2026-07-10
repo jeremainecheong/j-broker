@@ -78,7 +78,14 @@ public final class Broker implements AutoCloseable {
              * TLS configuration for every gRPC server + inter-broker client the broker opens.
              * {@link TlsConfig#DISABLED} keeps the plaintext default (existing tests depend on this).
              */
-            TlsConfig tls) {
+            TlsConfig tls,
+            /**
+             * Cluster default for the acks=all durability floor
+             * ({@code min.insync.replicas}). Per-topic config overrides it;
+             * topics with a smaller replication factor clamp down to RF.
+             * Default {@link jbroker.broker.ProduceHandler#DEFAULT_MIN_INSYNC_REPLICAS}.
+             */
+            int minInsyncReplicas) {
         public Config {
             voters = List.copyOf(voters);
             if (consumerOffsetsPartitions < 1) {
@@ -93,6 +100,35 @@ public final class Broker implements AutoCloseable {
                         "balancerStabilityMillis must be ≥ 0, got " + balancerStabilityMillis);
             }
             if (tls == null) tls = TlsConfig.DISABLED;
+            if (minInsyncReplicas < 1) {
+                throw new IllegalArgumentException("minInsyncReplicas must be ≥ 1, got " + minInsyncReplicas);
+            }
+        }
+
+        /** Pre-min-ISR canonical shape kept callable: floor defaults to 2. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    jbroker.broker.ProduceHandler.DEFAULT_MIN_INSYNC_REPLICAS);
         }
 
         /** Pre-existing-call-sites overload: balancer timings default to 15_000 / 30_000. */
@@ -163,7 +199,8 @@ public final class Broker implements AutoCloseable {
                     port,
                     balancerTickMillis,
                     balancerStabilityMillis,
-                    tls);
+                    tls,
+                    minInsyncReplicas);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -178,7 +215,28 @@ public final class Broker implements AutoCloseable {
                     chaosPort,
                     balancerTickMillis,
                     balancerStabilityMillis,
-                    newTls == null ? TlsConfig.DISABLED : newTls);
+                    newTls == null ? TlsConfig.DISABLED : newTls,
+                    minInsyncReplicas);
+        }
+
+        /**
+         * Override the cluster-default acks=all floor. Integration tests
+         * that exercise NOT_ENOUGH_REPLICAS raise it; the soak scenario
+         * runs the shipped default.
+         */
+        public Config withMinInsyncReplicas(int n) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    n);
         }
 
         /**
@@ -224,7 +282,8 @@ public final class Broker implements AutoCloseable {
                     chaosPort,
                     balancerTickMillis,
                     balancerStabilityMillis,
-                    tls);
+                    tls,
+                    minInsyncReplicas);
         }
 
         /**
@@ -244,7 +303,8 @@ public final class Broker implements AutoCloseable {
                     chaosPort,
                     tickMillis,
                     stabilityMillis,
-                    tls);
+                    tls,
+                    minInsyncReplicas);
         }
     }
 
@@ -452,7 +512,8 @@ public final class Broker implements AutoCloseable {
                 followerTracker,
                 brokerMetrics,
                 jbroker.broker.quota.QuotaEnforcer.NOOP,
-                producerState);
+                producerState,
+                config.minInsyncReplicas());
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(

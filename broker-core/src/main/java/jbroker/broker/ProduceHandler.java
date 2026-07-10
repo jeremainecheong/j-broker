@@ -30,6 +30,16 @@ public final class ProduceHandler {
     private static final long ACKS_ALL_TIMEOUT_MS = 5_000L;
     private static final long ACKS_ALL_POLL_MS = 10L;
 
+    /**
+     * Cluster-wide default for the acks=all durability floor. Two is the
+     * point of the feature: with a floor of one, an ISR shrunk to just the
+     * leader satisfies acks=all with a single copy, and a subsequent
+     * leader loss loses acked records (#115). Topics override per-topic
+     * via {@link TopicDescription#MIN_INSYNC_REPLICAS_CONFIG}; topics with
+     * replication factor 1 are clamped down so dev setups keep working.
+     */
+    public static final int DEFAULT_MIN_INSYNC_REPLICAS = 2;
+
     private final LogManager logManager;
     private final TopicManager topicManager;
     private final int selfBrokerId;
@@ -37,6 +47,7 @@ public final class ProduceHandler {
     private final BrokerMetrics metrics;
     private final jbroker.broker.quota.QuotaEnforcer quotaEnforcer;
     private final ProducerStateManager producerState;
+    private final int minInsyncReplicas;
 
     public ProduceHandler(
             LogManager logManager,
@@ -78,6 +89,31 @@ public final class ProduceHandler {
             BrokerMetrics metrics,
             jbroker.broker.quota.QuotaEnforcer quotaEnforcer,
             ProducerStateManager producerState) {
+        this(
+                logManager,
+                topicManager,
+                selfBrokerId,
+                followerTracker,
+                metrics,
+                quotaEnforcer,
+                producerState,
+                DEFAULT_MIN_INSYNC_REPLICAS);
+    }
+
+    /**
+     * Full constructor — adds the cluster-default {@code
+     * min.insync.replicas} floor for acks=all produces (per-topic config
+     * overrides it; see {@link TopicDescription#effectiveMinInsyncReplicas}).
+     */
+    public ProduceHandler(
+            LogManager logManager,
+            TopicManager topicManager,
+            int selfBrokerId,
+            FollowerStateTracker followerTracker,
+            BrokerMetrics metrics,
+            jbroker.broker.quota.QuotaEnforcer quotaEnforcer,
+            ProducerStateManager producerState,
+            int minInsyncReplicas) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
@@ -85,6 +121,10 @@ public final class ProduceHandler {
         this.metrics = metrics == null ? new BrokerMetrics() : metrics;
         this.quotaEnforcer = quotaEnforcer == null ? jbroker.broker.quota.QuotaEnforcer.NOOP : quotaEnforcer;
         this.producerState = producerState == null ? new ProducerStateManager() : producerState;
+        if (minInsyncReplicas < 1) {
+            throw new IllegalArgumentException("minInsyncReplicas must be ≥ 1, got " + minInsyncReplicas);
+        }
+        this.minInsyncReplicas = minInsyncReplicas;
     }
 
     /** Back-compat overload: omits metrics (tests that don't care). */
@@ -132,6 +172,22 @@ public final class ProduceHandler {
             return err(
                     ErrorCodes.NOT_LEADER,
                     "leader is broker " + state.get().leader() + " for " + req.getTopic() + "-" + req.getPartition());
+        }
+        // acks=all durability floor (#115): refuse the write BEFORE the
+        // append when the ISR is already below min.insync.replicas. An ISR
+        // of one trivially satisfies "all in-sync replicas have it", so
+        // without this floor a produce can be acked with a single copy and
+        // lost when that leader dies. Rejecting pre-append keeps the error
+        // retriable with no divergence risk.
+        if (req.getAcks() == ACKS_ALL) {
+            int floor = topic.get().effectiveMinInsyncReplicas(minInsyncReplicas);
+            int isrSize = state.get().isr().size();
+            if (isrSize < floor) {
+                return err(
+                        ErrorCodes.NOT_ENOUGH_REPLICAS,
+                        "in-sync replicas " + isrSize + " below min.insync.replicas " + floor + " for " + req.getTopic()
+                                + "-" + req.getPartition() + "; rejected before append");
+            }
         }
 
         // Decode once up front so the dedup path can compare record count.
@@ -262,9 +318,20 @@ public final class ProduceHandler {
     }
 
     /**
-     * Poll until the partition's HWM advances past {@code producedLastOffset},
+     * Poll until the partition's HWM advances past {@code producedLastOffset}
+     * with the ISR still at or above the {@code min.insync.replicas} floor,
      * bounded by {@link #ACKS_ALL_TIMEOUT_MS}. Returns {@code null} on
-     * success; on timeout or leadership loss returns an error response.
+     * success; on timeout, leadership loss, or an ISR that drops below the
+     * floor, returns an error response.
+     *
+     * <p>The floor re-check inside the loop is load-bearing: an ISR shrink
+     * to just the leader makes {@code computeHwm} jump to the leader's LEO
+     * (min over a one-element set), which is exactly the false-ack
+     * mechanism behind #115. HWM advance therefore only counts when the
+     * ISR that produced it is still floor-sized. The rejection is
+     * conservative — the batch may in fact sit on enough replicas when the
+     * shrink raced the ack — so the error stays retriable and idempotent
+     * producers dedup the retry.
      */
     private ProduceResponse waitForIsrReplication(String topic, int partition, long producedLastOffset)
             throws IOException {
@@ -276,12 +343,32 @@ public final class ProduceHandler {
                         ErrorCodes.NOT_LEADER,
                         "lost leadership for " + topic + "-" + partition + " while waiting on acks=all");
             }
+            // Recomputed per iteration: a concurrent UpdateTopicConfig can
+            // change the floor mid-wait. Topic deleted mid-wait → floor 1;
+            // the partition-state check above resolves the request first.
+            int floor = topicManager
+                    .describe(topic)
+                    .map(t -> t.effectiveMinInsyncReplicas(minInsyncReplicas))
+                    .orElse(1);
+            int isrSize = state.get().isr().size();
             long leaderLeo = logManager.logFor(topic, partition).nextOffset();
             long hwm = followerTracker.computeHwm(topic, partition, state.get().isr(), selfBrokerId, leaderLeo);
             // HWM convention: the first offset NOT yet durably replicated.
             // producedLastOffset is the highest offset in the produced batch,
             // so acks=all is satisfied when HWM > producedLastOffset.
-            if (hwm > producedLastOffset) return null;
+            if (hwm > producedLastOffset) {
+                if (isrSize >= floor) return null;
+                return err(
+                        ErrorCodes.NOT_ENOUGH_REPLICAS,
+                        "ISR shrank to " + isrSize + " (below min.insync.replicas " + floor + ") after append for "
+                                + topic + "-" + partition + "; not acked — retry the produce");
+            }
+            if (isrSize < floor) {
+                return err(
+                        ErrorCodes.NOT_ENOUGH_REPLICAS,
+                        "in-sync replicas " + isrSize + " below min.insync.replicas " + floor + " after append for "
+                                + topic + "-" + partition + "; not acked — retry the produce");
+            }
             if (System.nanoTime() >= deadline) {
                 return err(
                         ErrorCodes.NOT_ENOUGH_REPLICAS,

@@ -128,6 +128,15 @@ public final class AdminHandler {
             if (b != selfBrokerId) candidates.add(b);
         }
         int rf = Math.min(req.getReplicationFactor(), candidates.size());
+        // Validate against the CLAMPED rf — that is the replica count the
+        // topic actually gets, so it is the bound min.insync.replicas must
+        // respect (a single-broker cluster creating rf=3 really has rf=1).
+        var configError = validateTopicConfig(req.getConfigMap(), rf);
+        if (configError != null) {
+            return CreateTopicResponse.newBuilder()
+                    .setError(buildError(ErrorCodes.INVALID_CONFIG, configError))
+                    .build();
+        }
         var replicas = candidates.subList(0, rf);
         boolean internal = req.getTopic().startsWith("__");
         var topicBuilder = TopicRecord.newBuilder()
@@ -193,6 +202,12 @@ public final class AdminHandler {
                     .setError(buildError(ErrorCodes.UNKNOWN_TOPIC, "unknown topic: " + req.getTopic()))
                     .build();
         }
+        var configError = validateTopicConfig(req.getConfigMap(), existing.get().replicationFactor());
+        if (configError != null) {
+            return UpdateTopicConfigResponse.newBuilder()
+                    .setError(buildError(ErrorCodes.INVALID_CONFIG, configError))
+                    .build();
+        }
         var record = MetadataRecord.newBuilder()
                 .setUpdateTopicConfig(UpdateTopicConfigRecord.newBuilder()
                         .setTopic(req.getTopic())
@@ -217,6 +232,36 @@ public final class AdminHandler {
                 .map(TopicDescription::config)
                 .orElse(java.util.Map.of());
         return UpdateTopicConfigResponse.newBuilder().putAllConfig(merged).build();
+    }
+
+    /**
+     * Validates recognized topic-config keys before they are committed to
+     * the metadata log. Unrecognized keys pass through untouched — the
+     * config map is deliberately open (the admin UI displays arbitrary
+     * entries). Returns an error message, or {@code null} when valid.
+     *
+     * <p>{@code min.insync.replicas} must be an integer in
+     * {@code [1, replicationFactor]}: a floor above the replica count can
+     * never be satisfied and would brick every acks=all produce on the
+     * topic ({@link ProduceHandler} enforces the floor).
+     */
+    private static String validateTopicConfig(java.util.Map<String, String> config, int replicationFactor) {
+        var raw = config.get(TopicDescription.MIN_INSYNC_REPLICAS_CONFIG);
+        if (raw == null) return null;
+        int value;
+        try {
+            value = Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return TopicDescription.MIN_INSYNC_REPLICAS_CONFIG + " must be an integer, got: " + raw;
+        }
+        if (value < 1) {
+            return TopicDescription.MIN_INSYNC_REPLICAS_CONFIG + " must be ≥ 1, got: " + value;
+        }
+        if (value > replicationFactor) {
+            return TopicDescription.MIN_INSYNC_REPLICAS_CONFIG + " (" + value
+                    + ") must not exceed the replication factor (" + replicationFactor + ")";
+        }
+        return null;
     }
 
     public ListTopicsResponse listTopics(ListTopicsRequest req) {

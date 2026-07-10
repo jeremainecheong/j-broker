@@ -253,6 +253,105 @@ class ProduceHandlerAcksAllTest {
         }
     }
 
+    private static ProduceRequest idempotentAcksAll(String value, long pid, int seq) {
+        return ProduceRequest.newBuilder()
+                .setTopic("t")
+                .setPartition(0)
+                .setBatch(ByteString.copyFrom(singleRecordBatch(value.getBytes())))
+                .setAcks(-1)
+                .setProducerId(pid)
+                .setProducerEpoch(0)
+                .setBaseSequence(seq)
+                .build();
+    }
+
+    @Test
+    void retryAfterFailedReplicationWaitDoesNotAppendASecondCopy(@TempDir Path dir) throws Exception {
+        // The soak-v5 duplicate generator: an acks=all produce APPENDS,
+        // then fails its replication wait (here: ISR below the floor after
+        // append). The batch is on disk; dedup state must reflect that, or
+        // every retry of the same (pid, seq) appends another copy — the
+        // soak found eight copies of one record at consecutive offsets,
+        // seeding permanent replica divergence.
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 3, 0L);
+        tm.onPartitionChange("t", 0, 1, List.of(1, 2), List.of(1, 2, 3), 0, 0);
+
+        try (var lmgr = lm(dir)) {
+            var tracker = new FollowerStateTracker();
+            tracker.record("t", 0, 2, 0L, 1_000L);
+            var handler = new ProduceHandler(lmgr, tm, 1, tracker);
+
+            // First attempt: appends, then the ISR shrinks below the floor
+            // mid-wait → NOT_ENOUGH_REPLICAS, but offset 0 is on disk.
+            var attempt = java.util.concurrent.CompletableFuture.supplyAsync(
+                    () -> handler.handle(idempotentAcksAll("v", 7L, 0)));
+            Thread.sleep(50);
+            tm.onPartitionChange("t", 0, 1, List.of(1), List.of(1, 2, 3), 0, 1);
+            assertThat(attempt.get(3, TimeUnit.SECONDS).getError().getCode()).isEqualTo(ErrorCodes.NOT_ENOUGH_REPLICAS);
+            assertThat(lmgr.logFor("t", 0).nextOffset()).isEqualTo(1L);
+
+            // Retry while still degraded: pre-append gate rejects, log untouched.
+            assertThat(handler.handle(idempotentAcksAll("v", 7L, 0)).getError().getCode())
+                    .isEqualTo(ErrorCodes.NOT_ENOUGH_REPLICAS);
+            assertThat(lmgr.logFor("t", 0).nextOffset()).isEqualTo(1L);
+
+            // ISR recovers and the follower catches up: the retry must ack
+            // the ORIGINAL offsets — no second copy, ever.
+            tm.onPartitionChange("t", 0, 1, List.of(1, 2), List.of(1, 2, 3), 0, 2);
+            tracker.record("t", 0, 2, 1L, 2_000L);
+            var resp = handler.handle(idempotentAcksAll("v", 7L, 0));
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getBaseOffset()).isZero();
+            assertThat(resp.getLastOffset()).isZero();
+            assertThat(lmgr.logFor("t", 0).nextOffset()).isEqualTo(1L);
+        }
+    }
+
+    @Test
+    void cachedRetryStillWaitsForReplication(@TempDir Path dir) throws Exception {
+        // "Seen before" must not imply "committed": a cached dedup hit for
+        // an acks=all retry has to run the replication wait on the cached
+        // offsets, not return instant success.
+        var tm = new TopicManager();
+        tm.onTopicCommitted("t", 1, 3, 0L);
+        tm.onPartitionChange("t", 0, 1, List.of(1, 2), List.of(1, 2, 3), 0, 0);
+
+        try (var lmgr = lm(dir)) {
+            var tracker = new FollowerStateTracker();
+            tracker.record("t", 0, 2, 0L, 1_000L);
+            var handler = new ProduceHandler(lmgr, tm, 1, tracker);
+
+            // Seed dedup state via acks=1 (appends + records, no wait).
+            var seeded = handler.handle(ProduceRequest.newBuilder()
+                    .setTopic("t")
+                    .setPartition(0)
+                    .setBatch(ByteString.copyFrom(singleRecordBatch("v".getBytes())))
+                    .setAcks(1)
+                    .setProducerId(7L)
+                    .setProducerEpoch(0)
+                    .setBaseSequence(0)
+                    .build());
+            assertThat(seeded.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+
+            // acks=all retry of the same (pid, seq): follower 2 has not
+            // replicated offset 0, so the cached hit must BLOCK until it
+            // does — not ack instantly.
+            var retry = java.util.concurrent.CompletableFuture.supplyAsync(
+                    () -> handler.handle(idempotentAcksAll("v", 7L, 0)));
+            Thread.sleep(300);
+            assertThat(retry.isDone())
+                    .as("cached acks=all retry must wait for HWM, not short-circuit")
+                    .isFalse();
+
+            tracker.record("t", 0, 2, 1L, 2_000L);
+            var resp = retry.get(3, TimeUnit.SECONDS);
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getLastOffset()).isZero();
+            assertThat(lmgr.logFor("t", 0).nextOffset()).isEqualTo(1L);
+        }
+    }
+
     @Test
     void acksAllRejectsOnLeadershipLoss(@TempDir Path dir) throws Exception {
         var tm = new TopicManager();

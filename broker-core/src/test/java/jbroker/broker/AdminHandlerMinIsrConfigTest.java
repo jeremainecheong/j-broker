@@ -100,6 +100,36 @@ class AdminHandlerMinIsrConfigTest {
     }
 
     @Test
+    void maxMessageBytesValidatedAgainstHardCap() {
+        var proposed = new AtomicBoolean();
+        var h = handler(new TopicManager(), proposed, Set.of(1, 2, 3));
+
+        var base = CreateTopicRequest.newBuilder()
+                .setTopic("orders")
+                .setPartitions(1)
+                .setReplicationFactor(3);
+        assertThat(h.createTopic(base.putConfig(
+                                        TopicDescription.MAX_MESSAGE_BYTES_CONFIG,
+                                        String.valueOf(TopicDescription.MAX_MESSAGE_BYTES_HARD_CAP + 1))
+                                .build())
+                        .getError()
+                        .getCode())
+                .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        assertThat(h.createTopic(base.putConfig(TopicDescription.MAX_MESSAGE_BYTES_CONFIG, "big")
+                                .build())
+                        .getError()
+                        .getCode())
+                .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        assertThat(proposed).isFalse();
+
+        assertThat(h.createTopic(base.putConfig(TopicDescription.MAX_MESSAGE_BYTES_CONFIG, "4194304")
+                                .build())
+                        .hasError())
+                .isFalse();
+        assertThat(proposed).isTrue();
+    }
+
+    @Test
     void updateAcceptsValidFloor() {
         var tm = new TopicManager();
         tm.onTopicCommitted("orders", 1, 3, 0L);

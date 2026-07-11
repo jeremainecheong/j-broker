@@ -24,6 +24,20 @@ public record TopicDescription(
      */
     public static final String MIN_INSYNC_REPLICAS_CONFIG = "min.insync.replicas";
 
+    /**
+     * Per-topic override for the largest serialized batch a produce may
+     * carry. Validated by {@code AdminHandler}: integer, ≥ 1, ≤
+     * {@link #MAX_MESSAGE_BYTES_HARD_CAP}.
+     */
+    public static final String MAX_MESSAGE_BYTES_CONFIG = "max.message.bytes";
+
+    /**
+     * Absolute ceiling for any {@value #MAX_MESSAGE_BYTES_CONFIG} override —
+     * aligned with gRPC's 4 MiB default inbound frame limit doubled; larger
+     * batches would need transport reconfiguration on every hop.
+     */
+    public static final int MAX_MESSAGE_BYTES_HARD_CAP = 8 * 1024 * 1024;
+
     public TopicDescription {
         config = config == null ? Map.of() : Map.copyOf(config);
     }
@@ -49,6 +63,25 @@ public record TopicDescription(
             }
         }
         return Math.max(1, Math.min(clusterDefault, replicationFactor));
+    }
+
+    /**
+     * The produce-batch size limit this topic actually enforces: the
+     * explicit {@value #MAX_MESSAGE_BYTES_CONFIG} override when present
+     * (validated at set time), else the cluster default. A malformed
+     * stored value falls back to the cluster default rather than failing
+     * the produce path.
+     */
+    public int effectiveMaxMessageBytes(int clusterDefault) {
+        var explicit = config.get(MAX_MESSAGE_BYTES_CONFIG);
+        if (explicit != null) {
+            try {
+                return Math.max(1, Integer.parseInt(explicit.trim()));
+            } catch (NumberFormatException e) {
+                // Validated at admin time; fall through.
+            }
+        }
+        return clusterDefault;
     }
 
     /** Back-compat constructor: empty config map. */

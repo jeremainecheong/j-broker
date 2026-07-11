@@ -132,19 +132,19 @@ class IsrOnlyElectionIT {
                         .as("both records survive — including the one only the dead leader held")
                         .containsExactly("baseline", "leader-only");
             }
-            // Followers reconcile their LOGS onto the recovered leader
-            // (replication is Raft-independent). The ISR-metadata flip back
-            // to size 3 is NOT asserted: Raft leadership moved to a
-            // follower during the isolation, and a partition leader that
-            // is a Raft follower cannot commit ISR flips — its proposals
-            // are rejected as non-leader client proposes. Pre-existing
-            // gap, tracked separately; the durability claim (all bytes on
-            // all replicas) is the stronger assertion anyway.
+            // Followers reconcile their LOGS onto the recovered leader.
             for (int f : followers) {
                 try (var client = new BrokerClient("127.0.0.1", brokerPorts[f - 1])) {
                     waitForRecordCount(client, "election", 0, 2, CATCHUP_TIMEOUT_MS);
                 }
             }
+            // And the ISR METADATA re-expands to all three — the recovered
+            // partition leader is a Raft follower here (leadership moved
+            // during the isolation), so this only works because its ISR
+            // flips are forwarded to the Raft leader instead of being
+            // dropped as non-leader proposes. Regression guard for the
+            // propose-forwarding fix: before it, this froze at size 1.
+            waitForIsrSize(brokers, "election", 0, 3, 25_000L);
         }
     }
 

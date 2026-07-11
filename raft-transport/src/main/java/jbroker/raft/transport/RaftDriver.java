@@ -168,8 +168,25 @@ public final class RaftDriver implements AutoCloseable {
         }
     }
 
+    /**
+     * Forward-chain limit for rejected proposes. One hop reaches the
+     * current leader in the steady state; the second absorbs a stale
+     * leader hint during churn. Beyond that the payload is dropped and
+     * the caller's retry cadence takes over.
+     */
+    private static final int MAX_PROPOSE_HOPS = 2;
+
     public void propose(byte[] payload) throws InterruptedException {
-        queue.put(new PendingEvent(new RaftEvent.ClientPropose(payload), null));
+        queue.put(new PendingEvent(new RaftEvent.ClientPropose(payload), null, 0));
+    }
+
+    /**
+     * Propose received over the wire from a peer that was not leader.
+     * Carries the forward-chain depth so a stale-leader ping-pong is
+     * bounded by {@link #MAX_PROPOSE_HOPS}.
+     */
+    public void proposeForwarded(byte[] payload, int hops) throws InterruptedException {
+        queue.put(new PendingEvent(new RaftEvent.ClientPropose(payload), null, hops));
     }
 
     public void transferLeadership(NodeId target) throws InterruptedException {
@@ -318,8 +335,40 @@ public final class RaftDriver implements AutoCloseable {
                 case RaftEffect.TruncateLog ignored -> {
                     /* handled inline by log */
                 }
-                case RaftEffect.RejectClientPropose ignored -> {
-                    /* client wiring not yet implemented */
+                case RaftEffect.RejectClientPropose r -> {
+                    // Not leader: forward the payload to the known leader
+                    // instead of dropping it. Background proposers (ISR
+                    // flips, leadership drains) live on whatever broker
+                    // owns the partition — routinely a Raft follower — and
+                    // dropping froze their metadata until leadership
+                    // happened to coincide again (#124). Fire-and-forget:
+                    // callers own retries, and duplicate commits are safe
+                    // (partition changes are CAS-guarded).
+                    if (pending.event instanceof RaftEvent.ClientPropose cp
+                            && r.knownLeader().isPresent()
+                            && !r.knownLeader().get().equals(selfId)
+                            && pending.hops() < MAX_PROPOSE_HOPS) {
+                        var leader = r.knownLeader().get();
+                        var peer = peers.get(leader);
+                        if (peer != null) {
+                            int nextHops = pending.hops() + 1;
+                            Thread.ofVirtual()
+                                    .name("raft-propose-fwd-" + selfId.value() + "->" + leader.value())
+                                    .start(() -> {
+                                        try {
+                                            peer.propose(cp.payload(), nextHops);
+                                        } catch (Exception e) {
+                                            LOG.debug(
+                                                    "propose forward to {} failed: {}", leader.value(), e.getMessage());
+                                        }
+                                    });
+                        }
+                    } else {
+                        LOG.debug(
+                                "propose dropped: not leader (known leader {}, hops {})",
+                                r.knownLeader().map(NodeId::value).orElse(-1),
+                                pending.hops());
+                    }
                 }
                 case RaftEffect.DuplicateClientPropose ignored -> {
                     /* cached-response path to the client not yet implemented */
@@ -475,5 +524,9 @@ public final class RaftDriver implements AutoCloseable {
                 });
     }
 
-    private record PendingEvent(RaftEvent event, CompletableFuture<?> future) {}
+    private record PendingEvent(RaftEvent event, CompletableFuture<?> future, int hops) {
+        PendingEvent(RaftEvent event, CompletableFuture<?> future) {
+            this(event, future, 0);
+        }
+    }
 }

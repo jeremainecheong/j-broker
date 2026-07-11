@@ -8,6 +8,27 @@ service Raft {
   rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
   rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
   rpc TimeoutNow(TimeoutNowRequest) returns (TimeoutNowResponse);
+  // Client-propose forwarding: a follower that receives a local propose
+  // hands the payload to the node it believes is leader instead of
+  // silently dropping it. Without this, background proposers that live on
+  // whatever broker owns a partition (ISR flips, leadership drains) freeze
+  // whenever that broker is not also the Raft leader.
+  rpc Propose(ProposeRequest) returns (ProposeResponse);
+}
+
+message ProposeRequest {
+  bytes payload = 1;
+  // Forward-chain depth. Incremented per hop; a node that is not leader
+  // re-forwards only while hops stay under the transport's small limit,
+  // bounding ping-pong during leadership churn. Callers own retries —
+  // duplicate commits are tolerated by design (partition changes are
+  // CAS-guarded, producer-id assignment is idempotent under replay).
+  int32 hops = 2;
+}
+
+message ProposeResponse {
+  // The payload was enqueued (or re-forwarded) — NOT a commit guarantee.
+  bool accepted = 1;
 }
 
 enum EntryType {

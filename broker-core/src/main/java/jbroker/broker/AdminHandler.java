@@ -253,13 +253,61 @@ public final class AdminHandler {
                 replicationFactor,
                 "the replication factor (" + replicationFactor + ")");
         if (minIsr != null) return minIsr;
-        return validateIntConfig(
+        var maxMessage = validateIntConfig(
                 config,
                 TopicDescription.MAX_MESSAGE_BYTES_CONFIG,
                 1,
                 TopicDescription.MAX_MESSAGE_BYTES_HARD_CAP,
                 "the hard cap (" + TopicDescription.MAX_MESSAGE_BYTES_HARD_CAP
                         + " bytes — gRPC frame limits bound every hop)");
+        if (maxMessage != null) return maxMessage;
+        var retentionMs = validateRetentionConfig(config, TopicDescription.RETENTION_MS_CONFIG);
+        if (retentionMs != null) return retentionMs;
+        var retentionBytes = validateRetentionConfig(config, TopicDescription.RETENTION_BYTES_CONFIG);
+        if (retentionBytes != null) return retentionBytes;
+        return validateLongConfig(
+                config,
+                TopicDescription.SEGMENT_BYTES_CONFIG,
+                TopicDescription.SEGMENT_BYTES_FLOOR,
+                TopicDescription.SEGMENT_BYTES_HARD_CAP,
+                "the hard cap (" + TopicDescription.SEGMENT_BYTES_HARD_CAP
+                        + " bytes — segment file positions are int-indexed)");
+    }
+
+    /** Retention limits accept -1 (unlimited) or a positive value. */
+    private static String validateRetentionConfig(java.util.Map<String, String> config, String key) {
+        var raw = config.get(key);
+        if (raw == null) return null;
+        long value;
+        try {
+            value = Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return key + " must be an integer, got: " + raw;
+        }
+        if (value != -1 && value < 1) {
+            return key + " must be -1 (unlimited) or ≥ 1, got: " + value;
+        }
+        return null;
+    }
+
+    /** Bounds-check one long config key. Returns an error message, or {@code null} when absent/valid. */
+    private static String validateLongConfig(
+            java.util.Map<String, String> config, String key, long min, long max, String maxDescription) {
+        var raw = config.get(key);
+        if (raw == null) return null;
+        long value;
+        try {
+            value = Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return key + " must be an integer, got: " + raw;
+        }
+        if (value < min) {
+            return key + " must be ≥ " + min + ", got: " + value;
+        }
+        if (value > max) {
+            return key + " (" + value + ") must not exceed " + maxDescription;
+        }
+        return null;
     }
 
     /** Bounds-check one integer config key. Returns an error message, or {@code null} when absent/valid. */

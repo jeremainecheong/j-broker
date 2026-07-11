@@ -19,11 +19,44 @@ import java.util.concurrent.TimeUnit;
  */
 public final class LogManager implements AutoCloseable {
 
-    public record Config(long segmentBytes, long retentionMillis, int indexIntervalBytes, long cleanerIntervalMillis) {
+    /**
+     * Cluster-default storage settings. {@code retentionMillis} and
+     * {@code retentionBytes} accept negative values meaning unlimited.
+     * Per-topic overrides resolve through the {@link TopicLogConfigResolver}.
+     */
+    public record Config(
+            long segmentBytes,
+            long retentionMillis,
+            long retentionBytes,
+            int indexIntervalBytes,
+            long cleanerIntervalMillis) {
+
+        /** Pre-size-retention shape: {@code retentionBytes} defaults to unlimited. */
+        public Config(long segmentBytes, long retentionMillis, int indexIntervalBytes, long cleanerIntervalMillis) {
+            this(segmentBytes, retentionMillis, -1L, indexIntervalBytes, cleanerIntervalMillis);
+        }
+
         public static Config defaults() {
             return new Config(
-                    128L * 1024 * 1024, 7L * 24 * 60 * 60 * 1000, LogSegment.DEFAULT_INDEX_INTERVAL_BYTES, 60_000);
+                    128L * 1024 * 1024, 7L * 24 * 60 * 60 * 1000, -1L, LogSegment.DEFAULT_INDEX_INTERVAL_BYTES, 60_000);
         }
+    }
+
+    /**
+     * A topic's effective storage settings, as resolved by the broker layer
+     * (explicit topic config, else cluster default). Negative retention
+     * values mean unlimited — compacted topics resolve to unlimited so the
+     * cleaner never deletes a key's latest value.
+     */
+    public record TopicLogConfig(long segmentBytes, long retentionMillis, long retentionBytes) {}
+
+    /**
+     * Resolves a topic's effective log config. Empty means the topic is
+     * unknown to the resolver; the cluster-default {@link Config} applies.
+     */
+    @FunctionalInterface
+    public interface TopicLogConfigResolver {
+        java.util.Optional<TopicLogConfig> resolve(String topic);
     }
 
     private final Path rootDir;
@@ -31,6 +64,20 @@ public final class LogManager implements AutoCloseable {
     private final ConcurrentHashMap<String, Log> logs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LeaderEpochCheckpoint> epochCheckpoints = new ConcurrentHashMap<>();
     private final ScheduledExecutorService cleaner;
+
+    private volatile TopicLogConfigResolver topicConfigResolver = topic -> java.util.Optional.empty();
+
+    /** Wire the broker's topic catalogue in. Cleaner ticks + log opens resolve through it. */
+    public void setTopicLogConfigResolver(TopicLogConfigResolver resolver) {
+        this.topicConfigResolver = java.util.Objects.requireNonNull(resolver);
+    }
+
+    private TopicLogConfig effectiveConfig(String topic) {
+        return topicConfigResolver
+                .resolve(topic)
+                .orElseGet(() ->
+                        new TopicLogConfig(config.segmentBytes(), config.retentionMillis(), config.retentionBytes()));
+    }
 
     public LogManager(Path rootDir, Config config) throws IOException {
         this.rootDir = rootDir;
@@ -56,8 +103,9 @@ public final class LogManager implements AutoCloseable {
             existing = logs.get(key);
             if (existing != null) return existing;
             var dir = rootDir.resolve(key);
+            var effective = effectiveConfig(topic);
             var logConfig =
-                    new Log.Config(config.segmentBytes(), config.retentionMillis(), config.indexIntervalBytes());
+                    new Log.Config(effective.segmentBytes(), effective.retentionMillis(), config.indexIntervalBytes());
             var log = Log.open(dir, logConfig);
             logs.put(key, log);
             return log;
@@ -173,18 +221,24 @@ public final class LogManager implements AutoCloseable {
     }
 
     private void runCleaner() {
-        long cutoff = System.currentTimeMillis() - config.retentionMillis();
+        long nowMillis = System.currentTimeMillis();
         for (var entry : logs.entrySet()) {
             var log = entry.getValue();
             try {
-                log.retain(cutoff);
-                // Also compact logs belonging to compact-policy topics.
                 // Key on the topic portion of the "<topic>-<partition>" map key;
                 // the partition suffix follows the last dash on a numeric.
                 String key = entry.getKey();
                 int dash = key.lastIndexOf('-');
                 if (dash <= 0) continue;
                 String topic = key.substring(0, dash);
+                var effective = effectiveConfig(topic);
+                // Push segment.bytes to the live log — an override may have
+                // committed after the log was opened.
+                log.reconfigureSegmentBytes(effective.segmentBytes());
+                long cutoff =
+                        effective.retentionMillis() < 0 ? Long.MIN_VALUE : nowMillis - effective.retentionMillis();
+                log.retain(cutoff, effective.retentionBytes());
+                // Also compact logs belonging to compact-policy topics.
                 if (Boolean.TRUE.equals(compactTopics.get(topic))) {
                     log.compactByKey();
                 }

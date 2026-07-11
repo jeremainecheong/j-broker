@@ -144,6 +144,15 @@ public final class RaftPeerClient implements AutoCloseable {
         return call(() -> stub.withDeadlineAfter(30, TimeUnit.SECONDS).installSnapshot(req));
     }
 
+    /** Forward a client propose to this peer (believed to be the Raft leader). */
+    public jbroker.proto.raft.ProposeResponse propose(byte[] payload, int hops) {
+        var req = jbroker.proto.raft.ProposeRequest.newBuilder()
+                .setPayload(com.google.protobuf.ByteString.copyFrom(payload))
+                .setHops(hops)
+                .build();
+        return call(() -> stub.withDeadlineAfter(2, TimeUnit.SECONDS).propose(req));
+    }
+
     private <T> T call(Supplier<T> rpc) {
         try {
             T resp = rpc.get();

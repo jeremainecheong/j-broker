@@ -62,4 +62,20 @@ public final class RaftGrpcService extends RaftGrpc.RaftImplBase {
             out.onError(e);
         }
     }
+
+    @Override
+    public void propose(jbroker.proto.raft.ProposeRequest req, StreamObserver<jbroker.proto.raft.ProposeResponse> out) {
+        try {
+            // Enqueue on this node. If it turns out not to be leader either
+            // (leadership moved since the sender's view), the reject path
+            // re-forwards, bounded by the request's hop count.
+            driver.proposeForwarded(req.getPayload().toByteArray(), req.getHops());
+            out.onNext(jbroker.proto.raft.ProposeResponse.newBuilder()
+                    .setAccepted(true)
+                    .build());
+            out.onCompleted();
+        } catch (Exception e) {
+            out.onError(e);
+        }
+    }
 }

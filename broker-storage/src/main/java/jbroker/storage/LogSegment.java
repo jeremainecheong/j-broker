@@ -144,12 +144,18 @@ public final class LogSegment implements AutoCloseable {
 
     /**
      * Append a pre-encoded batch byte-for-byte. The batch's {@code baseOffset}
-     * must equal this segment's {@link #nextOffset()} — used by the follower
-     * replication path to preserve the leader's baseSequence,
+     * must be at or beyond this segment's {@link #nextOffset()} — used by the
+     * follower replication path to preserve the leader's baseSequence,
      * producerId, producerEpoch, partitionLeaderEpoch, and timestamps.
      *
-     * <p>Verifies the batch's header matches {@code expectedBaseOffset} and
-     * throws {@link IllegalArgumentException} otherwise.
+     * <p>A base offset AHEAD of {@code nextOffset} is a legal forward gap:
+     * the leader's copy of the range in between was removed by retention or
+     * compaction, so the follower adopts the leader's earliest available
+     * batch and continues from there (offsets in a log are already sparse
+     * after key compaction; readers resolve gaps to the next batch). A base
+     * offset BEHIND {@code nextOffset} would rewrite history and throws
+     * {@link IllegalArgumentException}, as does a batch header that
+     * disagrees with {@code expectedBaseOffset}.
      */
     public int appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
         lock.lock();
@@ -161,9 +167,9 @@ public final class LogSegment implements AutoCloseable {
     }
 
     private int appendRawLocked(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
-        if (expectedBaseOffset != nextOffset) {
+        if (expectedBaseOffset < nextOffset) {
             throw new IllegalArgumentException(
-                    "expectedBaseOffset " + expectedBaseOffset + " != segment nextOffset " + nextOffset);
+                    "expectedBaseOffset " + expectedBaseOffset + " < segment nextOffset " + nextOffset);
         }
         var view = ByteBuffer.wrap(encodedBatch);
         long batchBaseOffset = view.getLong();

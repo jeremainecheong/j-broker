@@ -51,6 +51,71 @@ class LogTest {
     }
 
     @Test
+    void sizeRetentionDeletesOldestSegmentsDownToTheLimit(@TempDir Path dir) throws Exception {
+        try (var log = Log.open(dir, new Log.Config(200, 0, 4096))) {
+            for (int i = 0; i < 20; i++) {
+                log.append(List.of(new Record(0, 0L, null, new byte[80])), 1_000L + i);
+            }
+            long sizeBefore = totalBytes(log);
+            assertThat(log.segments().size()).isGreaterThan(3);
+
+            long limit = sizeBefore / 3;
+            int removed = log.retain(Long.MIN_VALUE, limit);
+
+            assertThat(removed).isGreaterThan(0);
+            long sizeAfter = totalBytes(log);
+            assertThat(sizeAfter).isGreaterThanOrEqualTo(limit);
+            // Deleting one more segment would have dropped below the limit.
+            assertThat(sizeAfter - log.segments().get(0).sizeBytes()).isLessThan(limit);
+            // Reads below the new start resolve to the earliest survivor.
+            var batches = log.read(0L, 64 * 1024);
+            assertThat(batches).isNotEmpty();
+            assertThat(batches.get(0).baseOffset())
+                    .isEqualTo(log.segments().get(0).baseOffset());
+        }
+    }
+
+    @Test
+    void sizeRetentionNeverDeletesTheActiveSegment(@TempDir Path dir) throws Exception {
+        try (var log = Log.open(dir, new Log.Config(200, 0, 4096))) {
+            for (int i = 0; i < 20; i++) {
+                log.append(List.of(new Record(0, 0L, null, new byte[80])), 1_000L + i);
+            }
+            long nextBefore = log.nextOffset();
+
+            // A zero-byte budget deletes every closed segment but must
+            // leave the active one — the log tail stays appendable.
+            log.retain(Long.MIN_VALUE, 0L);
+
+            assertThat(log.segments()).hasSize(1);
+            assertThat(log.nextOffset()).isEqualTo(nextBefore);
+            log.append(List.of(new Record(0, 0L, null, new byte[8])), 2_000L);
+            assertThat(log.nextOffset()).isEqualTo(nextBefore + 1);
+        }
+    }
+
+    @Test
+    void negativeRetentionBytesDisablesTheSizePass(@TempDir Path dir) throws Exception {
+        try (var log = Log.open(dir, new Log.Config(200, 0, 4096))) {
+            for (int i = 0; i < 20; i++) {
+                log.append(List.of(new Record(0, 0L, null, new byte[80])), 1_000L + i);
+            }
+            int segmentsBefore = log.segments().size();
+
+            int removed = log.retain(Long.MIN_VALUE, -1L);
+
+            assertThat(removed).isZero();
+            assertThat(log.segments()).hasSize(segmentsBefore);
+        }
+    }
+
+    private static long totalBytes(Log log) throws Exception {
+        long total = 0;
+        for (var seg : log.segments()) total += seg.sizeBytes();
+        return total;
+    }
+
+    @Test
     void reopensAndContinuesFromLastOffset(@TempDir Path dir) throws Exception {
         try (var log = Log.open(dir, new Log.Config(1_000_000, 0, 4096))) {
             log.append(List.of(new Record(0, 0L, null, new byte[16])), 1L);

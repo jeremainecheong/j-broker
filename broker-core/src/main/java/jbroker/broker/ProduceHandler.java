@@ -46,6 +46,14 @@ public final class ProduceHandler {
      */
     public static final int DEFAULT_MIN_INSYNC_REPLICAS = 2;
 
+    /**
+     * Cluster default for the largest serialized batch a produce may carry
+     * (per-topic {@link TopicDescription#MAX_MESSAGE_BYTES_CONFIG} overrides,
+     * capped at {@link TopicDescription#MAX_MESSAGE_BYTES_HARD_CAP}).
+     * Enforced against the wire size of the whole batch, pre-append.
+     */
+    public static final int DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
+
     private final LogManager logManager;
     private final TopicManager topicManager;
     private final int selfBrokerId;
@@ -164,6 +172,16 @@ public final class ProduceHandler {
         }
         if (req.getPartition() < 0 || req.getPartition() >= topic.get().partitions()) {
             return err(ErrorCodes.INVALID_PARTITION, "invalid partition: " + req.getPartition());
+        }
+        // Size gate, pre-append and FATAL: retrying the same batch can never
+        // succeed, so the client must not treat this as transient. Measured
+        // against the serialized batch (what hits the wire and the disk).
+        int maxMessageBytes = topic.get().effectiveMaxMessageBytes(DEFAULT_MAX_MESSAGE_BYTES);
+        if (req.getBatch().size() > maxMessageBytes) {
+            return err(
+                    ErrorCodes.MESSAGE_TOO_LARGE,
+                    "batch of " + req.getBatch().size() + " bytes exceeds max.message.bytes " + maxMessageBytes
+                            + " for " + req.getTopic());
         }
         // Read (leader, epoch) atomically via partitionState so the two can't
         // straddle a concurrent PartitionChangeRecord apply. Check-then-

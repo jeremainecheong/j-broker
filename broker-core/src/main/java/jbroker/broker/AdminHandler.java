@@ -246,20 +246,38 @@ public final class AdminHandler {
      * topic ({@link ProduceHandler} enforces the floor).
      */
     private static String validateTopicConfig(java.util.Map<String, String> config, int replicationFactor) {
-        var raw = config.get(TopicDescription.MIN_INSYNC_REPLICAS_CONFIG);
+        var minIsr = validateIntConfig(
+                config,
+                TopicDescription.MIN_INSYNC_REPLICAS_CONFIG,
+                1,
+                replicationFactor,
+                "the replication factor (" + replicationFactor + ")");
+        if (minIsr != null) return minIsr;
+        return validateIntConfig(
+                config,
+                TopicDescription.MAX_MESSAGE_BYTES_CONFIG,
+                1,
+                TopicDescription.MAX_MESSAGE_BYTES_HARD_CAP,
+                "the hard cap (" + TopicDescription.MAX_MESSAGE_BYTES_HARD_CAP
+                        + " bytes — gRPC frame limits bound every hop)");
+    }
+
+    /** Bounds-check one integer config key. Returns an error message, or {@code null} when absent/valid. */
+    private static String validateIntConfig(
+            java.util.Map<String, String> config, String key, int min, int max, String maxDescription) {
+        var raw = config.get(key);
         if (raw == null) return null;
         int value;
         try {
             value = Integer.parseInt(raw.trim());
         } catch (NumberFormatException e) {
-            return TopicDescription.MIN_INSYNC_REPLICAS_CONFIG + " must be an integer, got: " + raw;
+            return key + " must be an integer, got: " + raw;
         }
-        if (value < 1) {
-            return TopicDescription.MIN_INSYNC_REPLICAS_CONFIG + " must be ≥ 1, got: " + value;
+        if (value < min) {
+            return key + " must be ≥ " + min + ", got: " + value;
         }
-        if (value > replicationFactor) {
-            return TopicDescription.MIN_INSYNC_REPLICAS_CONFIG + " (" + value
-                    + ") must not exceed the replication factor (" + replicationFactor + ")";
+        if (value > max) {
+            return key + " (" + value + ") must not exceed " + maxDescription;
         }
         return null;
     }

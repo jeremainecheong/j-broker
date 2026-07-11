@@ -21,6 +21,8 @@ public final class ErrorCodes {
     public static final int NOT_ENOUGH_REPLICAS = 9;
     /** Topic config rejected at create/update (e.g. min.insync.replicas above the replication factor). */
     public static final int INVALID_CONFIG = 10;
+    /** Produce batch exceeds max.message.bytes. Fatal — retrying the same batch can never succeed. */
+    public static final int MESSAGE_TOO_LARGE = 11;
 
     // Consumer groups. Numerics match common.proto::ErrorCode.
     /** Coordinator-routed RPC arrived before {@code __consumer_offsets} has a leader. */

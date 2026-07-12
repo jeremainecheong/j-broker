@@ -91,7 +91,13 @@ public final class Broker implements AutoCloseable {
              * Integration tests that need to observe retention within a few
              * seconds compress it.
              */
-            long logCleanerIntervalMillis) {
+            long logCleanerIntervalMillis,
+            /**
+             * Disk-headroom watermark, bytes. While usable space on the data
+             * volume sits below it, client produces are refused with
+             * retriable {@code STORAGE_FULL}. Default 1 GiB.
+             */
+            long storageHeadroomBytes) {
         public Config {
             voters = List.copyOf(voters);
             if (consumerOffsetsPartitions < 1) {
@@ -113,6 +119,39 @@ public final class Broker implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "logCleanerIntervalMillis must be ≥ 1, got " + logCleanerIntervalMillis);
             }
+            if (storageHeadroomBytes < 1L) {
+                throw new IllegalArgumentException("storageHeadroomBytes must be ≥ 1, got " + storageHeadroomBytes);
+            }
+        }
+
+        /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    jbroker.broker.DiskHeadroom.DEFAULT_HEADROOM_BYTES);
         }
 
         /** Pre-cleaner-knob canonical shape kept callable: 5-minute cleaner tick. */
@@ -239,7 +278,8 @@ public final class Broker implements AutoCloseable {
                     balancerStabilityMillis,
                     tls,
                     minInsyncReplicas,
-                    logCleanerIntervalMillis);
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -256,7 +296,8 @@ public final class Broker implements AutoCloseable {
                     balancerStabilityMillis,
                     newTls == null ? TlsConfig.DISABLED : newTls,
                     minInsyncReplicas,
-                    logCleanerIntervalMillis);
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes);
         }
 
         /**
@@ -277,7 +318,8 @@ public final class Broker implements AutoCloseable {
                     balancerStabilityMillis,
                     tls,
                     n,
-                    logCleanerIntervalMillis);
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes);
         }
 
         /**
@@ -325,7 +367,8 @@ public final class Broker implements AutoCloseable {
                     balancerStabilityMillis,
                     tls,
                     minInsyncReplicas,
-                    logCleanerIntervalMillis);
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes);
         }
 
         /**
@@ -347,7 +390,8 @@ public final class Broker implements AutoCloseable {
                     stabilityMillis,
                     tls,
                     minInsyncReplicas,
-                    logCleanerIntervalMillis);
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes);
         }
 
         /**
@@ -368,7 +412,30 @@ public final class Broker implements AutoCloseable {
                     balancerStabilityMillis,
                     tls,
                     minInsyncReplicas,
-                    intervalMillis);
+                    intervalMillis,
+                    storageHeadroomBytes);
+        }
+
+        /**
+         * Override the disk-headroom watermark. Integration tests set it
+         * above the volume's actual free space to observe the degraded
+         * mode; production callers size it to their write rate.
+         */
+        public Config withStorageHeadroomBytes(long headroomBytes) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    headroomBytes);
         }
     }
 
@@ -389,6 +456,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.replication.DefaultFetcherFactory fetcherFactory;
     private final jbroker.broker.BrokerMetrics metrics;
     private final jbroker.broker.chaos.ChaosHttpServer chaosHttp;
+    private final jbroker.broker.DiskHeadroom diskHeadroom;
 
     private Broker(
             TopicManager tm,
@@ -407,7 +475,8 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.replication.ReplicaFetcherManager fetcherManager,
             jbroker.broker.replication.DefaultFetcherFactory fetcherFactory,
             jbroker.broker.BrokerMetrics metrics,
-            jbroker.broker.chaos.ChaosHttpServer chaosHttp) {
+            jbroker.broker.chaos.ChaosHttpServer chaosHttp,
+            jbroker.broker.DiskHeadroom diskHeadroom) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
@@ -425,6 +494,7 @@ public final class Broker implements AutoCloseable {
         this.fetcherFactory = fetcherFactory;
         this.metrics = metrics;
         this.chaosHttp = chaosHttp;
+        this.diskHeadroom = diskHeadroom;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -588,6 +658,9 @@ public final class Broker implements AutoCloseable {
         var fetchSessionCache = new jbroker.broker.FetchSessionCache();
         var fetch = new FetchHandler(logManager, topicManager, fetchSessionCache, brokerMetrics);
         var followerTracker = new FollowerStateTracker();
+        // Probes the volume backing the partition logs; ProduceHandler
+        // refuses client produces while usable space is below the watermark.
+        var diskHeadroom = new jbroker.broker.DiskHeadroom(topicsDir, config.storageHeadroomBytes());
         var produce = new ProduceHandler(
                 logManager,
                 topicManager,
@@ -596,7 +669,8 @@ public final class Broker implements AutoCloseable {
                 brokerMetrics,
                 jbroker.broker.quota.QuotaEnforcer.NOOP,
                 producerState,
-                config.minInsyncReplicas());
+                config.minInsyncReplicas(),
+                diskHeadroom);
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(
@@ -705,6 +779,7 @@ public final class Broker implements AutoCloseable {
                 brokerMetrics,
                 eventPublisher,
                 partitionMetricsProvider);
+        metadataHandler.setDiskHeadroom(diskHeadroom);
         // Cooperative chaos control plane. Only active when the
         // config exposes a chaos port (≥ 0); interceptor is installed on
         // every inbound service so pause + peer-block affect broker-to-
@@ -1071,7 +1146,8 @@ public final class Broker implements AutoCloseable {
                 fetcherManager,
                 fetcherFactory,
                 brokerMetrics,
-                chaosHttp);
+                chaosHttp,
+                diskHeadroom);
     }
 
     /** Exposed for tests + the admin-app chaos proxy probe. */
@@ -1230,6 +1306,7 @@ public final class Broker implements AutoCloseable {
         registrationTicker.shutdownNow();
         fencerTicker.shutdownNow();
         balancerTicker.shutdownNow();
+        diskHeadroom.close();
         brokerServer.shutdownNow();
         raftDriver.close();
         heartbeatSender.close();
@@ -1259,6 +1336,7 @@ public final class Broker implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
         if (chaosHttp != null) chaosHttp.close();
+        diskHeadroom.close();
         // Stop heartbeat sender before its peer channels race against
         // the peer brokers shutting down their gRPC servers.
         heartbeatSender.close();

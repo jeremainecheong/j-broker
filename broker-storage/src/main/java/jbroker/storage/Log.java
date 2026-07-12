@@ -31,6 +31,15 @@ public final class Log implements AutoCloseable {
 
     private final Path dir;
     private final Config config;
+
+    /**
+     * Roll threshold, initially {@link Config#segmentBytes}. Volatile — a
+     * per-topic {@code segment.bytes} override can land after the log is
+     * opened (config updates commit through the metadata log while the log
+     * serves traffic), and the cleaner tick pushes the effective value here.
+     */
+    private volatile long segmentBytes;
+
     private final CopyOnWriteArrayList<LogSegment> segments = new CopyOnWriteArrayList<>();
     /**
      * Mutation lock. Replaces `synchronized (this)` on the hot
@@ -46,6 +55,12 @@ public final class Log implements AutoCloseable {
     private Log(Path dir, Config config) {
         this.dir = dir;
         this.config = config;
+        this.segmentBytes = config.segmentBytes();
+    }
+
+    /** Update the roll threshold on a live log. Non-positive values are ignored. */
+    public void reconfigureSegmentBytes(long newSegmentBytes) {
+        if (newSegmentBytes > 0) this.segmentBytes = newSegmentBytes;
     }
 
     public static Log open(Path dir, Config config) throws IOException {
@@ -79,9 +94,11 @@ public final class Log implements AutoCloseable {
 
     /**
      * Append a pre-encoded batch to the end of the log at
-     * {@code expectedBaseOffset} (= {@link #nextOffset()} at call time).
-     * Used by the follower replication path to preserve every byte of the
-     * leader's batch header.
+     * {@code expectedBaseOffset} (≥ {@link #nextOffset()} at call time; a
+     * forward gap means the leader retained/compacted away the range in
+     * between and the follower adopts the leader's earliest available
+     * batch). Used by the follower replication path to preserve every byte
+     * of the leader's batch header.
      */
     public long appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
         lock.lock();
@@ -89,7 +106,7 @@ public final class Log implements AutoCloseable {
             var active = segments.get(segments.size() - 1);
             active.appendRaw(encodedBatch, expectedBaseOffset);
             long assignedLast = active.nextOffset() - 1;
-            if (active.sizeBytes() >= config.segmentBytes()) {
+            if (active.sizeBytes() >= segmentBytes) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
                 active.force();
                 segments.add(next);
@@ -143,7 +160,7 @@ public final class Log implements AutoCloseable {
                     baseSequence,
                     partitionLeaderEpoch);
             long assignedLast = active.nextOffset() - 1;
-            if (active.sizeBytes() >= config.segmentBytes()) {
+            if (active.sizeBytes() >= segmentBytes) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
                 active.force();
                 segments.add(next);
@@ -261,6 +278,22 @@ public final class Log implements AutoCloseable {
      * number of segments removed.
      */
     public int retain(long cutoffMillis) throws IOException {
+        return retain(cutoffMillis, -1L);
+    }
+
+    /**
+     * Time- and size-based retention in one pass. First deletes closed
+     * segments whose max timestamp is older than {@code cutoffMillis}, then
+     * deletes closed segments from the head while doing so still leaves at
+     * least {@code retentionBytes} in the log — so the log converges to
+     * {@code [retentionBytes, retentionBytes + segmentBytes)} rather than
+     * undershooting the limit by a whole segment. A negative
+     * {@code retentionBytes} disables the size pass (callers express
+     * time-unlimited retention by passing {@link Long#MIN_VALUE} as the
+     * cutoff). The active segment is never deleted. Returns the number of
+     * segments removed.
+     */
+    public int retain(long cutoffMillis, long retentionBytes) throws IOException {
         lock.lock();
         try {
             int removed = 0;
@@ -272,6 +305,20 @@ public final class Log implements AutoCloseable {
                 head.close();
                 head.delete();
                 removed++;
+            }
+            if (retentionBytes >= 0) {
+                long totalBytes = 0;
+                for (var seg : segments) totalBytes += seg.sizeBytes();
+                while (segments.size() > 1) {
+                    var head = segments.get(0);
+                    long headBytes = head.sizeBytes();
+                    if (totalBytes - headBytes < retentionBytes) break;
+                    segments.remove(0);
+                    head.close();
+                    head.delete();
+                    totalBytes -= headBytes;
+                    removed++;
+                }
             }
             return removed;
         } finally {

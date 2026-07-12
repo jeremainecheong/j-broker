@@ -130,6 +130,69 @@ class AdminHandlerMinIsrConfigTest {
     }
 
     @Test
+    void retentionConfigsAcceptMinusOneOrPositiveOnly() {
+        var proposed = new AtomicBoolean();
+        var h = handler(new TopicManager(), proposed, Set.of(1, 2, 3));
+
+        var base = CreateTopicRequest.newBuilder()
+                .setTopic("orders")
+                .setPartitions(1)
+                .setReplicationFactor(3);
+        for (var bad : new String[] {"0", "-2", "1h"}) {
+            assertThat(h.createTopic(base.putConfig(TopicDescription.RETENTION_MS_CONFIG, bad)
+                                    .build())
+                            .getError()
+                            .getCode())
+                    .as("retention.ms=" + bad)
+                    .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        }
+        base.removeConfig(TopicDescription.RETENTION_MS_CONFIG);
+        assertThat(h.createTopic(base.putConfig(TopicDescription.RETENTION_BYTES_CONFIG, "0")
+                                .build())
+                        .getError()
+                        .getCode())
+                .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        assertThat(proposed).isFalse();
+
+        assertThat(h.createTopic(base.putConfig(TopicDescription.RETENTION_BYTES_CONFIG, "-1")
+                                .putConfig(TopicDescription.RETENTION_MS_CONFIG, "60000")
+                                .build())
+                        .hasError())
+                .isFalse();
+        assertThat(proposed).isTrue();
+    }
+
+    @Test
+    void segmentBytesValidatedAgainstFloorAndHardCap() {
+        var proposed = new AtomicBoolean();
+        var h = handler(new TopicManager(), proposed, Set.of(1, 2, 3));
+
+        var base = CreateTopicRequest.newBuilder()
+                .setTopic("orders")
+                .setPartitions(1)
+                .setReplicationFactor(3);
+        assertThat(h.createTopic(base.putConfig(TopicDescription.SEGMENT_BYTES_CONFIG, "512")
+                                .build())
+                        .getError()
+                        .getCode())
+                .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        assertThat(h.createTopic(base.putConfig(
+                                        TopicDescription.SEGMENT_BYTES_CONFIG,
+                                        String.valueOf(TopicDescription.SEGMENT_BYTES_HARD_CAP + 1))
+                                .build())
+                        .getError()
+                        .getCode())
+                .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        assertThat(proposed).isFalse();
+
+        assertThat(h.createTopic(base.putConfig(TopicDescription.SEGMENT_BYTES_CONFIG, "1048576")
+                                .build())
+                        .hasError())
+                .isFalse();
+        assertThat(proposed).isTrue();
+    }
+
+    @Test
     void updateAcceptsValidFloor() {
         var tm = new TopicManager();
         tm.onTopicCommitted("orders", 1, 3, 0L);

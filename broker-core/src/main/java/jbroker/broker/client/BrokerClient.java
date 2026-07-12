@@ -381,15 +381,22 @@ public final class BrokerClient implements AutoCloseable {
     /** Offset + key + value tuple from {@link #fetchRecords}. */
     public record FetchedRecord(long offset, byte[] key, byte[] value) {}
 
-    /** Fetch everything starting from offset 0 until no new records arrive. */
+    /**
+     * Fetch everything starting from offset 0 until no new records arrive.
+     * Pages by the last record's actual offset — retention and sparse
+     * compaction leave gaps, so counting records would re-request (and
+     * re-receive) the same page forever once the log no longer starts at 0.
+     */
     public List<byte[]> fetchAll(String topic, int partition, int maxBytes) {
         var all = new java.util.ArrayList<byte[]>();
         long offset = 0;
         while (true) {
-            var batch = fetch(topic, partition, offset, maxBytes);
+            var batch = fetchRecords(topic, partition, offset, maxBytes);
             if (batch.isEmpty()) break;
-            all.addAll(batch);
-            offset += batch.size();
+            for (var rec : batch) {
+                all.add(rec.value());
+            }
+            offset = batch.get(batch.size() - 1).offset() + 1;
         }
         return all;
     }

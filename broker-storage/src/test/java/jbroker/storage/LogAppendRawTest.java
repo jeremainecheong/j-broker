@@ -52,7 +52,7 @@ class LogAppendRawTest {
     }
 
     @Test
-    void appendRawRejectsBatchWithWrongBaseOffset(@TempDir Path dir) throws Exception {
+    void appendRawRejectsBatchWhoseHeaderDisagreesWithClaimedOffset(@TempDir Path dir) throws Exception {
         try (var lm = lm(dir)) {
             var log = lm.logFor("t", 0);
             // Leader batch with baseOffset = 0.
@@ -63,13 +63,59 @@ class LogAppendRawTest {
             byte[] bytes = new byte[buf.remaining()];
             buf.get(bytes);
 
-            // Follower's local log is empty (nextOffset = 0). It expects the
-            // leader's batch to start there — claiming expectedBaseOffset=5
-            // should fail because that's a gap the follower isn't allowed
-            // to create.
+            // The claimed append offset must match what the batch header
+            // says — offsets are the leader's to assign, byte-identically.
             assertThatThrownBy(() -> log.appendRaw(bytes, 5L))
                     .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContainingAll("batch baseOffset", "expectedBaseOffset");
+        }
+    }
+
+    @Test
+    void appendRawRejectsRewindBelowNextOffset(@TempDir Path dir) throws Exception {
+        try (var lm = lm(dir)) {
+            var log = lm.logFor("t", 0);
+            var records = List.of(new Record(0, 0L, null, new byte[] {1}));
+            var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+            RecordBatch.encode(buf, 0L, 0, 1L, 1L, -1L, (short) -1, -1, records);
+            buf.flip();
+            byte[] bytes = new byte[buf.remaining()];
+            buf.get(bytes);
+            log.appendRaw(bytes, 0L);
+
+            // Re-appending the same batch would rewrite offset 0.
+            assertThatThrownBy(() -> log.appendRaw(bytes, 0L))
+                    .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContainingAll("expectedBaseOffset", "nextOffset");
+        }
+    }
+
+    @Test
+    void appendRawAdoptsForwardGapWhenLeaderRetainedPastFollower(@TempDir Path dir) throws Exception {
+        try (var lm = lm(dir)) {
+            var log = lm.logFor("t", 0);
+            // The leader's log starts at offset 5 — everything before was
+            // deleted by retention. A follower at LEO 0 receives the
+            // earliest available batch and must adopt it as-is.
+            var records = List.of(new Record(0, 0L, null, new byte[] {7}), new Record(1, 0L, null, new byte[] {8}));
+            var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+            RecordBatch.encode(buf, 5L, 0, 1_000L, 1_000L, -1L, (short) -1, -1, records);
+            buf.flip();
+            byte[] bytes = new byte[buf.remaining()];
+            buf.get(bytes);
+
+            log.appendRaw(bytes, 5L);
+
+            assertThat(log.nextOffset()).isEqualTo(7L);
+            // A fetch below the gap resolves to the earliest batch, same as
+            // reading a compacted log below its first surviving offset.
+            var batches = log.read(0L, 1024);
+            assertThat(batches).hasSize(1);
+            assertThat(batches.get(0).baseOffset()).isEqualTo(5L);
+        }
+        // The gap survives reopen: nextOffset recomputes from the batch header.
+        try (var lm = lm(dir)) {
+            assertThat(lm.logFor("t", 0).nextOffset()).isEqualTo(7L);
         }
     }
 

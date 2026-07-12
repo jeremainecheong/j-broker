@@ -85,7 +85,13 @@ public final class Broker implements AutoCloseable {
              * topics with a smaller replication factor clamp down to RF.
              * Default {@link jbroker.broker.ProduceHandler#DEFAULT_MIN_INSYNC_REPLICAS}.
              */
-            int minInsyncReplicas) {
+            int minInsyncReplicas,
+            /**
+             * Retention-cleaner tick interval, ms. Default 300_000 (5 min).
+             * Integration tests that need to observe retention within a few
+             * seconds compress it.
+             */
+            long logCleanerIntervalMillis) {
         public Config {
             voters = List.copyOf(voters);
             if (consumerOffsetsPartitions < 1) {
@@ -103,6 +109,38 @@ public final class Broker implements AutoCloseable {
             if (minInsyncReplicas < 1) {
                 throw new IllegalArgumentException("minInsyncReplicas must be ≥ 1, got " + minInsyncReplicas);
             }
+            if (logCleanerIntervalMillis < 1L) {
+                throw new IllegalArgumentException(
+                        "logCleanerIntervalMillis must be ≥ 1, got " + logCleanerIntervalMillis);
+            }
+        }
+
+        /** Pre-cleaner-knob canonical shape kept callable: 5-minute cleaner tick. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    300_000L);
         }
 
         /** Pre-min-ISR canonical shape kept callable: floor defaults to 2. */
@@ -200,7 +238,8 @@ public final class Broker implements AutoCloseable {
                     balancerTickMillis,
                     balancerStabilityMillis,
                     tls,
-                    minInsyncReplicas);
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -216,7 +255,8 @@ public final class Broker implements AutoCloseable {
                     balancerTickMillis,
                     balancerStabilityMillis,
                     newTls == null ? TlsConfig.DISABLED : newTls,
-                    minInsyncReplicas);
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis);
         }
 
         /**
@@ -236,7 +276,8 @@ public final class Broker implements AutoCloseable {
                     balancerTickMillis,
                     balancerStabilityMillis,
                     tls,
-                    n);
+                    n,
+                    logCleanerIntervalMillis);
         }
 
         /**
@@ -283,7 +324,8 @@ public final class Broker implements AutoCloseable {
                     balancerTickMillis,
                     balancerStabilityMillis,
                     tls,
-                    minInsyncReplicas);
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis);
         }
 
         /**
@@ -304,7 +346,29 @@ public final class Broker implements AutoCloseable {
                     tickMillis,
                     stabilityMillis,
                     tls,
-                    minInsyncReplicas);
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis);
+        }
+
+        /**
+         * Compress the retention-cleaner tick. Integration tests that need
+         * to observe segment deletion within a few seconds use this;
+         * production callers should leave the 5-minute default alone.
+         */
+        public Config withLogCleanerIntervalMillis(long intervalMillis) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    intervalMillis);
         }
     }
 
@@ -387,13 +451,32 @@ public final class Broker implements AutoCloseable {
         var producerIdRegistry = new ProducerIdRegistry();
 
         // --- LogManager (partition data logs) ---
+        // Cluster defaults match Kafka's: 7-day time retention, no size
+        // limit, 128 MiB segments. Per-topic retention.ms / retention.bytes /
+        // segment.bytes overrides resolve through the topic catalogue below.
+        long defaultSegmentBytes = 128L * 1024 * 1024;
+        long defaultRetentionMillis = TimeUnit.DAYS.toMillis(7);
+        long defaultRetentionBytes = -1L;
         var logManager = new LogManager(
                 topicsDir,
                 new LogManager.Config(
-                        128L * 1024 * 1024,
-                        Long.MAX_VALUE /* no auto-retention yet */,
+                        defaultSegmentBytes,
+                        defaultRetentionMillis,
+                        defaultRetentionBytes,
                         jbroker.storage.LogSegment.DEFAULT_INDEX_INTERVAL_BYTES,
-                        TimeUnit.MINUTES.toMillis(5)));
+                        config.logCleanerIntervalMillis()));
+        logManager.setTopicLogConfigResolver(topic -> topicManager
+                .describe(topic)
+                .map(d -> d.compact()
+                        // Compacted topics keep every key's latest value forever —
+                        // the retention passes must never delete their segments.
+                        // (__consumer_offsets is compacted; time-deleting it would
+                        // silently reset idle groups' committed positions.)
+                        ? new LogManager.TopicLogConfig(d.effectiveSegmentBytes(defaultSegmentBytes), -1L, -1L)
+                        : new LogManager.TopicLogConfig(
+                                d.effectiveSegmentBytes(defaultSegmentBytes),
+                                d.effectiveRetentionMillis(defaultRetentionMillis),
+                                d.effectiveRetentionBytes(defaultRetentionBytes))));
 
         // Per-broker event publisher for the admin-facing SSE stream.
         // Declared here so the leader-epoch listener (next block) can

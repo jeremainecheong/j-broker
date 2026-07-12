@@ -38,6 +38,39 @@ public record TopicDescription(
      */
     public static final int MAX_MESSAGE_BYTES_HARD_CAP = 8 * 1024 * 1024;
 
+    /**
+     * Per-topic time-retention override, in milliseconds. Validated by
+     * {@code AdminHandler}: {@code -1} (unlimited) or ≥ 1. Ignored on
+     * compacted topics — deleting a key's latest value would break the
+     * compaction contract.
+     */
+    public static final String RETENTION_MS_CONFIG = "retention.ms";
+
+    /**
+     * Per-topic size-retention override: the byte budget the partition log
+     * converges to. Validated by {@code AdminHandler}: {@code -1}
+     * (unlimited) or ≥ 1. Ignored on compacted topics.
+     */
+    public static final String RETENTION_BYTES_CONFIG = "retention.bytes";
+
+    /**
+     * Per-topic segment roll threshold, in bytes. Validated by
+     * {@code AdminHandler}: within
+     * [{@link #SEGMENT_BYTES_FLOOR}, {@link #SEGMENT_BYTES_HARD_CAP}].
+     */
+    public static final String SEGMENT_BYTES_CONFIG = "segment.bytes";
+
+    /** Smallest sane roll threshold — below this every batch rolls a segment. */
+    public static final long SEGMENT_BYTES_FLOOR = 1024;
+
+    /**
+     * Ceiling for any {@value #SEGMENT_BYTES_CONFIG} override. Segment file
+     * positions are tracked as ints, and the roll check runs after the
+     * append, so a segment can exceed the threshold by one max-size batch —
+     * 1 GiB leaves that arithmetic far from the 2 GiB int limit.
+     */
+    public static final long SEGMENT_BYTES_HARD_CAP = 1024L * 1024 * 1024;
+
     public TopicDescription {
         config = config == null ? Map.of() : Map.copyOf(config);
     }
@@ -77,6 +110,49 @@ public record TopicDescription(
         if (explicit != null) {
             try {
                 return Math.max(1, Integer.parseInt(explicit.trim()));
+            } catch (NumberFormatException e) {
+                // Validated at admin time; fall through.
+            }
+        }
+        return clusterDefault;
+    }
+
+    /**
+     * The time-retention window this topic actually enforces, in
+     * milliseconds: the explicit {@value #RETENTION_MS_CONFIG} override when
+     * present (validated at set time; {@code -1} means unlimited), else the
+     * cluster default. A malformed stored value falls back to the cluster
+     * default rather than failing the cleaner.
+     */
+    public long effectiveRetentionMillis(long clusterDefault) {
+        return effectiveLongConfig(RETENTION_MS_CONFIG, clusterDefault);
+    }
+
+    /**
+     * The size-retention budget this topic actually enforces, in bytes:
+     * the explicit {@value #RETENTION_BYTES_CONFIG} override when present
+     * ({@code -1} means unlimited), else the cluster default.
+     */
+    public long effectiveRetentionBytes(long clusterDefault) {
+        return effectiveLongConfig(RETENTION_BYTES_CONFIG, clusterDefault);
+    }
+
+    /**
+     * The segment roll threshold this topic actually uses, in bytes: the
+     * explicit {@value #SEGMENT_BYTES_CONFIG} override when present
+     * (clamped to {@link #SEGMENT_BYTES_FLOOR} against malformed stored
+     * values), else the cluster default.
+     */
+    public long effectiveSegmentBytes(long clusterDefault) {
+        long value = effectiveLongConfig(SEGMENT_BYTES_CONFIG, clusterDefault);
+        return Math.max(SEGMENT_BYTES_FLOOR, value);
+    }
+
+    private long effectiveLongConfig(String key, long clusterDefault) {
+        var explicit = config.get(key);
+        if (explicit != null) {
+            try {
+                return Long.parseLong(explicit.trim());
             } catch (NumberFormatException e) {
                 // Validated at admin time; fall through.
             }

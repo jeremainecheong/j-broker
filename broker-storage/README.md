@@ -58,10 +58,13 @@ Force-compact lets operators trigger compaction synchronously instead of waiting
 
 ## Retention
 
-`LogManager.Config.retentionMillis` (default 7 days) is enforced by the same background cleaner that handles compaction. On each tick (60s by default):
+The background cleaner (the broker ticks it every 5 minutes) resolves each topic's effective config through a `TopicLogConfigResolver` the broker wires to its topic catalogue — per-topic `retention.ms`, `retention.bytes`, and `segment.bytes` overrides win over the cluster defaults (7 days, unlimited, 128 MiB). On each tick, per log:
 
-1. `log.retain(cutoff = now - retentionMillis)` — closes and deletes any segment whose last timestamp is older than the cutoff. The active segment is never eligible.
-2. For compact-policy topics, also call `log.compactByKey()` — merges segments, sparse-offset preserving.
+1. Push the effective `segment.bytes` to the live log, so an override committed after the log opened changes the roll threshold without a restart.
+2. `log.retain(cutoff, retentionBytes)` — the time pass deletes closed segments whose last timestamp is older than `now - retention.ms`; the size pass then deletes closed head segments while doing so still leaves at least `retention.bytes` behind, so the log converges to `[retention.bytes, retention.bytes + segment.bytes)`. `-1` disables either pass; the active segment is never eligible.
+3. For compact-policy topics, also call `log.compactByKey()` — merges segments, sparse-offset preserving. Compacted topics resolve to unlimited retention: deleting a key's latest value would break the compaction contract (`__consumer_offsets` in particular must not lose idle groups' commits).
+
+Retention interacts with replication: a follower that resumes below the leader's earliest retained offset receives the leader's earliest batch, and `appendRaw` adopts it as a forward gap (base offset ahead of local LEO) — the same sparse-offset shape compaction already produces. Rewinds below the LEO are still rejected.
 
 ## Fetch with sparse-index resolution
 

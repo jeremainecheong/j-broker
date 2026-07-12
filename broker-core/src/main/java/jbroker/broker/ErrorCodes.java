@@ -23,6 +23,13 @@ public final class ErrorCodes {
     public static final int INVALID_CONFIG = 10;
     /** Produce batch exceeds max.message.bytes. Fatal — retrying the same batch can never succeed. */
     public static final int MESSAGE_TOO_LARGE = 11;
+    /**
+     * Data volume is below the configured headroom watermark; client
+     * produces are refused pre-append while fetch, replication, and admin
+     * keep serving. Retriable — the broker recovers on its own once space
+     * frees (retention tick, topic deletion, operator action).
+     */
+    public static final int STORAGE_FULL = 12;
 
     // Consumer groups. Numerics match common.proto::ErrorCode.
     /** Coordinator-routed RPC arrived before {@code __consumer_offsets} has a leader. */

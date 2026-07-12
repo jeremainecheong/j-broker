@@ -62,6 +62,7 @@ public final class ProduceHandler {
     private final jbroker.broker.quota.QuotaEnforcer quotaEnforcer;
     private final ProducerStateManager producerState;
     private final int minInsyncReplicas;
+    private final DiskHeadroom diskHeadroom;
 
     public ProduceHandler(
             LogManager logManager,
@@ -115,9 +116,10 @@ public final class ProduceHandler {
     }
 
     /**
-     * Full constructor — adds the cluster-default {@code
+     * Constructor adding the cluster-default {@code
      * min.insync.replicas} floor for acks=all produces (per-topic config
      * overrides it; see {@link TopicDescription#effectiveMinInsyncReplicas}).
+     * Disk-headroom gating disabled.
      */
     public ProduceHandler(
             LogManager logManager,
@@ -128,6 +130,34 @@ public final class ProduceHandler {
             jbroker.broker.quota.QuotaEnforcer quotaEnforcer,
             ProducerStateManager producerState,
             int minInsyncReplicas) {
+        this(
+                logManager,
+                topicManager,
+                selfBrokerId,
+                followerTracker,
+                metrics,
+                quotaEnforcer,
+                producerState,
+                minInsyncReplicas,
+                DiskHeadroom.disabled());
+    }
+
+    /**
+     * Full constructor — additionally gates client produces on the data
+     * volume's {@link DiskHeadroom} (R2.3): while usable space sits below
+     * the watermark, produces fail fast with retriable {@code STORAGE_FULL}
+     * instead of running the disk to zero.
+     */
+    public ProduceHandler(
+            LogManager logManager,
+            TopicManager topicManager,
+            int selfBrokerId,
+            FollowerStateTracker followerTracker,
+            BrokerMetrics metrics,
+            jbroker.broker.quota.QuotaEnforcer quotaEnforcer,
+            ProducerStateManager producerState,
+            int minInsyncReplicas,
+            DiskHeadroom diskHeadroom) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
@@ -139,6 +169,7 @@ public final class ProduceHandler {
             throw new IllegalArgumentException("minInsyncReplicas must be ≥ 1, got " + minInsyncReplicas);
         }
         this.minInsyncReplicas = minInsyncReplicas;
+        this.diskHeadroom = diskHeadroom == null ? DiskHeadroom.disabled() : diskHeadroom;
     }
 
     /** Back-compat overload: omits metrics (tests that don't care). */
@@ -182,6 +213,16 @@ public final class ProduceHandler {
                     ErrorCodes.MESSAGE_TOO_LARGE,
                     "batch of " + req.getBatch().size() + " bytes exceeds max.message.bytes " + maxMessageBytes
                             + " for " + req.getTopic());
+        }
+        // Disk gate, pre-append and RETRIABLE: the request is well-formed,
+        // the broker just can't take bytes right now. Fetch, replication,
+        // and offset commits stay open — the headroom exists so followers
+        // and metadata keep writing while producers back off.
+        if (diskHeadroom.low()) {
+            return err(
+                    ErrorCodes.STORAGE_FULL,
+                    "data volume below headroom: " + diskHeadroom.lastUsableBytes() + " usable < "
+                            + diskHeadroom.headroomBytes() + " watermark; retry after space frees");
         }
         // Read (leader, epoch) atomically via partitionState so the two can't
         // straddle a concurrent PartitionChangeRecord apply. Check-then-

@@ -652,6 +652,11 @@ message DescribeMetricsResponse {
   // leader is the only broker with complete ISR + HWM info. Follower
   // brokers omit partitions they don't lead.
   repeated PartitionMetrics partition_metrics = 21;
+  // Storage headroom (R2.3): usable bytes on the data volume at the last
+  // probe, and whether the broker is currently refusing client produces
+  // with STORAGE_FULL.
+  int64 disk_usable_bytes = 22;
+  bool disk_headroom_low = 23;
 }
 
 message PartitionMetrics {

@@ -261,10 +261,14 @@ public final class AdminHandler {
                 "the hard cap (" + TopicDescription.MAX_MESSAGE_BYTES_HARD_CAP
                         + " bytes — gRPC frame limits bound every hop)");
         if (maxMessage != null) return maxMessage;
-        var retentionMs = validateRetentionConfig(config, TopicDescription.RETENTION_MS_CONFIG);
+        var retentionMs = validateMinusOneOrPositive(config, TopicDescription.RETENTION_MS_CONFIG);
         if (retentionMs != null) return retentionMs;
-        var retentionBytes = validateRetentionConfig(config, TopicDescription.RETENTION_BYTES_CONFIG);
+        var retentionBytes = validateMinusOneOrPositive(config, TopicDescription.RETENTION_BYTES_CONFIG);
         if (retentionBytes != null) return retentionBytes;
+        var flushMessages = validateMinusOneOrPositive(config, TopicDescription.FLUSH_MESSAGES_CONFIG);
+        if (flushMessages != null) return flushMessages;
+        var flushMs = validateMinusOneOrPositive(config, TopicDescription.FLUSH_MS_CONFIG);
+        if (flushMs != null) return flushMs;
         return validateLongConfig(
                 config,
                 TopicDescription.SEGMENT_BYTES_CONFIG,
@@ -274,8 +278,8 @@ public final class AdminHandler {
                         + " bytes — segment file positions are int-indexed)");
     }
 
-    /** Retention limits accept -1 (unlimited) or a positive value. */
-    private static String validateRetentionConfig(java.util.Map<String, String> config, String key) {
+    /** Retention limits and flush triggers accept -1 (unlimited / off) or a positive value. */
+    private static String validateMinusOneOrPositive(java.util.Map<String, String> config, String key) {
         var raw = config.get(key);
         if (raw == null) return null;
         long value;

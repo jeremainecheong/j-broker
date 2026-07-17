@@ -163,6 +163,36 @@ class AdminHandlerMinIsrConfigTest {
     }
 
     @Test
+    void flushConfigsAcceptMinusOneOrPositiveOnly() {
+        var proposed = new AtomicBoolean();
+        var h = handler(new TopicManager(), proposed, Set.of(1, 2, 3));
+
+        var base = CreateTopicRequest.newBuilder()
+                .setTopic("orders")
+                .setPartitions(1)
+                .setReplicationFactor(3);
+        assertThat(h.createTopic(base.putConfig(TopicDescription.FLUSH_MESSAGES_CONFIG, "0")
+                                .build())
+                        .getError()
+                        .getCode())
+                .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        base.removeConfig(TopicDescription.FLUSH_MESSAGES_CONFIG);
+        assertThat(h.createTopic(base.putConfig(TopicDescription.FLUSH_MS_CONFIG, "fast")
+                                .build())
+                        .getError()
+                        .getCode())
+                .isEqualTo(ErrorCodes.INVALID_CONFIG);
+        assertThat(proposed).isFalse();
+
+        assertThat(h.createTopic(base.putConfig(TopicDescription.FLUSH_MS_CONFIG, "1000")
+                                .putConfig(TopicDescription.FLUSH_MESSAGES_CONFIG, "-1")
+                                .build())
+                        .hasError())
+                .isFalse();
+        assertThat(proposed).isTrue();
+    }
+
+    @Test
     void segmentBytesValidatedAgainstFloorAndHardCap() {
         var proposed = new AtomicBoolean();
         var h = handler(new TopicManager(), proposed, Set.of(1, 2, 3));

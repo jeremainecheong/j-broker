@@ -47,6 +47,18 @@ class TopicDescriptionConfigTest {
     }
 
     @Test
+    void flushTriggersDefaultOffAndOverridesWin() {
+        assertThat(topic(Map.of()).effectiveFlushMessages(-1L)).isEqualTo(-1L);
+        assertThat(topic(Map.of()).effectiveFlushMillis(-1L)).isEqualTo(-1L);
+
+        var t = topic(Map.of(
+                TopicDescription.FLUSH_MESSAGES_CONFIG, "500",
+                TopicDescription.FLUSH_MS_CONFIG, "2000"));
+        assertThat(t.effectiveFlushMessages(-1L)).isEqualTo(500L);
+        assertThat(t.effectiveFlushMillis(-1L)).isEqualTo(2000L);
+    }
+
+    @Test
     void segmentBytesClampsToTheFloor() {
         var t = topic(Map.of(TopicDescription.SEGMENT_BYTES_CONFIG, "1"));
 

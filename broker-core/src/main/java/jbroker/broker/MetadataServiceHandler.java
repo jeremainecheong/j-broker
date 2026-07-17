@@ -556,6 +556,13 @@ public final class MetadataServiceHandler {
         return eventPublisher;
     }
 
+    private volatile DiskHeadroom diskHeadroom = DiskHeadroom.disabled();
+
+    /** Wire the data volume's headroom monitor so {@code DescribeMetrics} exports it. */
+    public void setDiskHeadroom(DiskHeadroom diskHeadroom) {
+        this.diskHeadroom = diskHeadroom == null ? DiskHeadroom.disabled() : diskHeadroom;
+    }
+
     public DescribeMetricsResponse describeMetrics(DescribeMetricsRequest req) {
         if (brokerMetrics == null) {
             return DescribeMetricsResponse.newBuilder()
@@ -582,7 +589,9 @@ public final class MetadataServiceHandler {
                 .setFetchP50Nanos(fl.p50Nanos())
                 .setFetchP99Nanos(fl.p99Nanos())
                 .setFetchP999Nanos(fl.p999Nanos())
-                .setIncrementalFetchHits(brokerMetrics.incrementalFetchHits());
+                .setIncrementalFetchHits(brokerMetrics.incrementalFetchHits())
+                .setDiskUsableBytes(diskHeadroom.lastUsableBytes())
+                .setDiskHeadroomLow(diskHeadroom.low());
         // Raft observability (null when no voter; values defaulted to 0).
         if (raftObservability != null) {
             var obs = raftObservability.get();

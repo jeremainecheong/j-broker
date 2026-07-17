@@ -36,6 +36,7 @@ public final class BrokerClient implements AutoCloseable {
     private final ProducerGrpc.ProducerBlockingStub producer;
     private final ConsumerGrpc.ConsumerBlockingStub consumer;
     private final AdminGrpc.AdminBlockingStub admin;
+    private final jbroker.proto.broker.MetadataGrpc.MetadataBlockingStub metadata;
 
     public BrokerClient(String host, int port) {
         this(host, port, TlsConfig.DISABLED);
@@ -58,6 +59,13 @@ public final class BrokerClient implements AutoCloseable {
         this.producer = ProducerGrpc.newBlockingStub(channel);
         this.consumer = ConsumerGrpc.newBlockingStub(channel);
         this.admin = AdminGrpc.newBlockingStub(channel);
+        this.metadata = jbroker.proto.broker.MetadataGrpc.newBlockingStub(channel);
+    }
+
+    /** This broker's observability snapshot ({@code Metadata.DescribeMetrics}). */
+    public jbroker.proto.broker.DescribeMetricsResponse describeMetrics() {
+        return metadata.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .describeMetrics(jbroker.proto.broker.DescribeMetricsRequest.getDefaultInstance());
     }
 
     // ---- Admin ----

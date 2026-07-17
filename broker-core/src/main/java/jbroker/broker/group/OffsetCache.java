@@ -48,6 +48,34 @@ public final class OffsetCache {
         return entries.size();
     }
 
+    /** Remove one cached offset. Used when a tombstone replays or expiry fires. */
+    public void remove(String group, String topic, int partition) {
+        entries.remove(new Key(group, topic, partition));
+    }
+
+    /** Every group that currently has at least one cached offset. */
+    public java.util.Set<String> groupsWithOffsets() {
+        var out = new java.util.HashSet<String>();
+        for (var k : entries.keySet()) {
+            out.add(k.group());
+        }
+        return out;
+    }
+
+    /**
+     * The newest commit timestamp across {@code group}'s cached offsets,
+     * or -1 when the group has none. Offset expiry keys off this: a group
+     * whose newest commit predates the retention window is idle.
+     */
+    public long newestCommitTimestamp(String group) {
+        long newest = -1;
+        for (var e : entries.entrySet()) {
+            if (!e.getKey().group().equals(group)) continue;
+            newest = Math.max(newest, e.getValue().commitTimestamp());
+        }
+        return newest;
+    }
+
     /**
      * Remove every cached offset for {@code group}. Called as part
      * of admin-initiated group deletion so a subsequent FetchOffsets

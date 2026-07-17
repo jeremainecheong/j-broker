@@ -97,7 +97,48 @@ public final class Broker implements AutoCloseable {
              * volume sits below it, client produces are refused with
              * retriable {@code STORAGE_FULL}. Default 1 GiB.
              */
-            long storageHeadroomBytes) {
+            long storageHeadroomBytes,
+            /**
+             * Cluster-wide defaults for per-topic storage/produce settings.
+             * Per-topic config overrides each individually.
+             */
+            TopicDefaults topicDefaults) {
+
+        /**
+         * Cluster defaults behind the per-topic keys: {@code
+         * max.message.bytes}, {@code segment.bytes}, {@code retention.ms},
+         * {@code retention.bytes}, {@code flush.messages}, {@code flush.ms}.
+         * Negative retention/flush values mean unlimited / off.
+         */
+        public record TopicDefaults(
+                int maxMessageBytes,
+                long segmentBytes,
+                long retentionMillis,
+                long retentionBytes,
+                long flushMessages,
+                long flushMillis) {
+
+            /** Kafka-shaped defaults: 1 MiB batches, 128 MiB segments, 7-day retention, flush off. */
+            public static TopicDefaults standard() {
+                return new TopicDefaults(
+                        jbroker.broker.ProduceHandler.DEFAULT_MAX_MESSAGE_BYTES,
+                        128L * 1024 * 1024,
+                        TimeUnit.DAYS.toMillis(7),
+                        -1L,
+                        -1L,
+                        -1L);
+            }
+
+            public TopicDefaults {
+                if (maxMessageBytes < 1) {
+                    throw new IllegalArgumentException("maxMessageBytes must be ≥ 1, got " + maxMessageBytes);
+                }
+                if (segmentBytes < 1) {
+                    throw new IllegalArgumentException("segmentBytes must be ≥ 1, got " + segmentBytes);
+                }
+            }
+        }
+
         public Config {
             voters = List.copyOf(voters);
             if (consumerOffsetsPartitions < 1) {
@@ -122,6 +163,58 @@ public final class Broker implements AutoCloseable {
             if (storageHeadroomBytes < 1L) {
                 throw new IllegalArgumentException("storageHeadroomBytes must be ≥ 1, got " + storageHeadroomBytes);
             }
+            if (topicDefaults == null) topicDefaults = TopicDefaults.standard();
+        }
+
+        /** Pre-topic-defaults canonical shape kept callable: standard defaults. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis,
+                long storageHeadroomBytes) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    TopicDefaults.standard());
+        }
+
+        /** Replace the cluster-wide per-topic defaults. */
+        public Config withTopicDefaults(TopicDefaults defaults) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    defaults);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -279,7 +372,8 @@ public final class Broker implements AutoCloseable {
                     tls,
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
-                    storageHeadroomBytes);
+                    storageHeadroomBytes,
+                    topicDefaults);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -297,7 +391,8 @@ public final class Broker implements AutoCloseable {
                     newTls == null ? TlsConfig.DISABLED : newTls,
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
-                    storageHeadroomBytes);
+                    storageHeadroomBytes,
+                    topicDefaults);
         }
 
         /**
@@ -319,7 +414,8 @@ public final class Broker implements AutoCloseable {
                     tls,
                     n,
                     logCleanerIntervalMillis,
-                    storageHeadroomBytes);
+                    storageHeadroomBytes,
+                    topicDefaults);
         }
 
         /**
@@ -368,7 +464,8 @@ public final class Broker implements AutoCloseable {
                     tls,
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
-                    storageHeadroomBytes);
+                    storageHeadroomBytes,
+                    topicDefaults);
         }
 
         /**
@@ -391,7 +488,8 @@ public final class Broker implements AutoCloseable {
                     tls,
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
-                    storageHeadroomBytes);
+                    storageHeadroomBytes,
+                    topicDefaults);
         }
 
         /**
@@ -413,7 +511,8 @@ public final class Broker implements AutoCloseable {
                     tls,
                     minInsyncReplicas,
                     intervalMillis,
-                    storageHeadroomBytes);
+                    storageHeadroomBytes,
+                    topicDefaults);
         }
 
         /**
@@ -435,7 +534,8 @@ public final class Broker implements AutoCloseable {
                     tls,
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
-                    headroomBytes);
+                    headroomBytes,
+                    topicDefaults);
         }
     }
 
@@ -521,25 +621,20 @@ public final class Broker implements AutoCloseable {
         var producerIdRegistry = new ProducerIdRegistry();
 
         // --- LogManager (partition data logs) ---
-        // Cluster defaults match Kafka's: 7-day time retention, no size
-        // limit, 128 MiB segments. Per-topic retention.ms / retention.bytes /
-        // segment.bytes overrides resolve through the topic catalogue below.
-        long defaultSegmentBytes = 128L * 1024 * 1024;
-        long defaultRetentionMillis = TimeUnit.DAYS.toMillis(7);
-        long defaultRetentionBytes = -1L;
+        // Cluster defaults come from Config.topicDefaults (standard():
+        // Kafka-shaped 7-day retention, no size limit, 128 MiB segments,
+        // flush off). Per-topic retention.ms / retention.bytes /
+        // segment.bytes / flush.* overrides resolve through the topic
+        // catalogue below.
+        var defaults = config.topicDefaults();
         var logManager = new LogManager(
                 topicsDir,
                 new LogManager.Config(
-                        defaultSegmentBytes,
-                        defaultRetentionMillis,
-                        defaultRetentionBytes,
+                        defaults.segmentBytes(),
+                        defaults.retentionMillis(),
+                        defaults.retentionBytes(),
                         jbroker.storage.LogSegment.DEFAULT_INDEX_INTERVAL_BYTES,
                         config.logCleanerIntervalMillis()));
-        // Flush triggers default off (-1): fsync on segment roll plus
-        // replication is the durability model; per-topic flush.messages /
-        // flush.ms bound the unflushed window where a deployment wants it.
-        long defaultFlushMessages = -1L;
-        long defaultFlushMillis = -1L;
         logManager.setTopicLogConfigResolver(topic -> topicManager
                 .describe(topic)
                 .map(d -> d.compact()
@@ -548,17 +643,17 @@ public final class Broker implements AutoCloseable {
                         // (__consumer_offsets is compacted; time-deleting it would
                         // silently reset idle groups' committed positions.)
                         ? new LogManager.TopicLogConfig(
-                                d.effectiveSegmentBytes(defaultSegmentBytes),
+                                d.effectiveSegmentBytes(defaults.segmentBytes()),
                                 -1L,
                                 -1L,
-                                d.effectiveFlushMessages(defaultFlushMessages),
-                                d.effectiveFlushMillis(defaultFlushMillis))
+                                d.effectiveFlushMessages(defaults.flushMessages()),
+                                d.effectiveFlushMillis(defaults.flushMillis()))
                         : new LogManager.TopicLogConfig(
-                                d.effectiveSegmentBytes(defaultSegmentBytes),
-                                d.effectiveRetentionMillis(defaultRetentionMillis),
-                                d.effectiveRetentionBytes(defaultRetentionBytes),
-                                d.effectiveFlushMessages(defaultFlushMessages),
-                                d.effectiveFlushMillis(defaultFlushMillis))));
+                                d.effectiveSegmentBytes(defaults.segmentBytes()),
+                                d.effectiveRetentionMillis(defaults.retentionMillis()),
+                                d.effectiveRetentionBytes(defaults.retentionBytes()),
+                                d.effectiveFlushMessages(defaults.flushMessages()),
+                                d.effectiveFlushMillis(defaults.flushMillis()))));
 
         // Per-broker event publisher for the admin-facing SSE stream.
         // Declared here so the leader-epoch listener (next block) can
@@ -682,7 +777,8 @@ public final class Broker implements AutoCloseable {
                 jbroker.broker.quota.QuotaEnforcer.NOOP,
                 producerState,
                 config.minInsyncReplicas(),
-                diskHeadroom);
+                diskHeadroom,
+                defaults.maxMessageBytes());
         var replicaFetch = new ReplicaFetchHandler(
                 logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
         var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(

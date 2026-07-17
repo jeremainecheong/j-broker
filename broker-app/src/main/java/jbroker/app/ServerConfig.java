@@ -60,6 +60,40 @@ final class ServerConfig {
                     String.valueOf(jbroker.broker.ProduceHandler.DEFAULT_MIN_INSYNC_REPLICAS),
                     "Cluster default acks=all durability floor. Per-topic config overrides; RF-1 "
                             + "topics clamp down."),
+            new Key(
+                    "max.message.bytes",
+                    null,
+                    String.valueOf(jbroker.broker.ProduceHandler.DEFAULT_MAX_MESSAGE_BYTES),
+                    "Cluster default for the largest serialized produce batch. Per-topic config "
+                            + "overrides; hard cap 8 MiB (gRPC frame limits bound every hop)."),
+            new Key(
+                    "log.segment.bytes",
+                    null,
+                    "134217728",
+                    "Cluster default segment roll threshold. Per-topic `segment.bytes` overrides."),
+            new Key(
+                    "log.retention.ms",
+                    null,
+                    "604800000",
+                    "Cluster default time retention (7 days). -1 = unlimited. Per-topic "
+                            + "`retention.ms` overrides."),
+            new Key(
+                    "log.retention.bytes",
+                    null,
+                    "-1",
+                    "Cluster default size-retention budget per partition. -1 = unlimited. "
+                            + "Per-topic `retention.bytes` overrides."),
+            new Key(
+                    "log.flush.messages",
+                    null,
+                    "-1",
+                    "Cluster default flush count trigger. -1 = off (fsync on segment roll + "
+                            + "replication). Per-topic `flush.messages` overrides."),
+            new Key(
+                    "log.flush.ms",
+                    null,
+                    "-1",
+                    "Cluster default flush age trigger, ms. -1 = off. Per-topic `flush.ms` overrides."),
             new Key("log.cleaner.interval.ms", null, "300000", "Retention/compaction cleaner tick interval, ms."),
             new Key(
                     "storage.headroom.bytes",
@@ -229,6 +263,16 @@ final class ServerConfig {
         checkInt(errors, "chaos.port", -1, 65535);
         checkInt(errors, "consumer.offsets.partitions", 1, Integer.MAX_VALUE);
         checkInt(errors, "min.insync.replicas", 1, Integer.MAX_VALUE);
+        checkInt(errors, "max.message.bytes", 1, jbroker.broker.TopicDescription.MAX_MESSAGE_BYTES_HARD_CAP);
+        checkLong(
+                errors,
+                "log.segment.bytes",
+                jbroker.broker.TopicDescription.SEGMENT_BYTES_FLOOR,
+                jbroker.broker.TopicDescription.SEGMENT_BYTES_HARD_CAP);
+        checkMinusOneOrPositive(errors, "log.retention.ms");
+        checkMinusOneOrPositive(errors, "log.retention.bytes");
+        checkMinusOneOrPositive(errors, "log.flush.messages");
+        checkMinusOneOrPositive(errors, "log.flush.ms");
         checkLong(errors, "log.cleaner.interval.ms", 1, Long.MAX_VALUE);
         checkLong(errors, "storage.headroom.bytes", 1, Long.MAX_VALUE);
         if (raw("data.dir").isBlank()) {
@@ -271,6 +315,18 @@ final class ServerConfig {
             int v = intValue(key);
             if (v < min || v > max) {
                 errors.add(key + " must be in [" + min + ", " + max + "], got: " + v);
+            }
+        } catch (IllegalArgumentException e) {
+            errors.add(e.getMessage());
+        }
+    }
+
+    /** Retention/flush shape: -1 (unlimited / off) or a positive value. */
+    private void checkMinusOneOrPositive(List<String> errors, String key) {
+        try {
+            long v = longValue(key);
+            if (v != -1 && v < 1) {
+                errors.add(key + " must be -1 or ≥ 1, got: " + v);
             }
         } catch (IllegalArgumentException e) {
             errors.add(e.getMessage());

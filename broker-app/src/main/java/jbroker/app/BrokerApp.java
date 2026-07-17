@@ -92,11 +92,28 @@ public final class BrokerApp {
             return;
         }
 
+        var brokerConfig = toBrokerConfig(config);
+        var broker = Broker.start(brokerConfig);
+        Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
+        System.out.println("j-broker listening on " + brokerConfig.brokerPort()
+                + " (id=" + brokerConfig.selfId().value() + ", raft=" + brokerConfig.raftPort()
+                + ", data=" + brokerConfig.dataDir()
+                + ", voters=" + brokerConfig.voters().size()
+                + (brokerConfig.chaosPort() >= 0 ? ", chaos=" + brokerConfig.chaosPort() : "")
+                + (brokerConfig.tls().enabled() ? ", tls=mTLS" : "")
+                + ")");
+        Thread.currentThread().join();
+    }
+
+    /**
+     * Turn a validated {@link ServerConfig} into a {@link Broker.Config}.
+     * Static so tests can assert the file/env/flag layers actually reach
+     * the broker without booting one.
+     */
+    static Broker.Config toBrokerConfig(ServerConfig config) {
         int id = config.intValue("node.id");
         int brokerPort = config.intValue("broker.port");
         int raftPort = config.intValue("raft.port");
-        String dataDir = config.raw("data.dir");
-        int chaosPort = config.intValue("chaos.port");
 
         TlsConfig tlsConfig = TlsConfig.DISABLED;
         if (config.boolValue("tls.enabled")) {
@@ -117,26 +134,25 @@ public final class BrokerApp {
             voters = overlayAdvertisedListeners(voters, config.raw("advertised.listeners"));
         }
 
-        var brokerConfig = new Broker.Config(
+        return new Broker.Config(
                         new NodeId(id),
-                        Path.of(dataDir),
+                        Path.of(config.raw("data.dir")),
                         raftPort,
                         brokerPort,
                         voters,
                         config.intValue("consumer.offsets.partitions"))
-                .withChaosPort(chaosPort)
+                .withChaosPort(config.intValue("chaos.port"))
                 .withTls(tlsConfig)
                 .withMinInsyncReplicas(config.intValue("min.insync.replicas"))
                 .withLogCleanerIntervalMillis(config.longValue("log.cleaner.interval.ms"))
-                .withStorageHeadroomBytes(config.longValue("storage.headroom.bytes"));
-        var broker = Broker.start(brokerConfig);
-        Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
-        System.out.println("j-broker listening on " + brokerPort
-                + " (id=" + id + ", raft=" + raftPort + ", data=" + dataDir
-                + ", voters=" + voters.size() + (chaosPort >= 0 ? ", chaos=" + chaosPort : "")
-                + (tlsConfig.enabled() ? ", tls=mTLS" : "")
-                + ")");
-        Thread.currentThread().join();
+                .withStorageHeadroomBytes(config.longValue("storage.headroom.bytes"))
+                .withTopicDefaults(new Broker.Config.TopicDefaults(
+                        config.intValue("max.message.bytes"),
+                        config.longValue("log.segment.bytes"),
+                        config.longValue("log.retention.ms"),
+                        config.longValue("log.retention.bytes"),
+                        config.longValue("log.flush.messages"),
+                        config.longValue("log.flush.ms")));
     }
 
     /**

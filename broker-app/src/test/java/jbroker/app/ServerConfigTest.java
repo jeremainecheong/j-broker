@@ -118,6 +118,54 @@ class ServerConfigTest {
     }
 
     @Test
+    void clusterTopicDefaultsReachTheBrokerConfig(@TempDir Path dir) throws Exception {
+        var file = dir.resolve("j-broker.yaml");
+        Files.writeString(
+                file,
+                """
+                max.message.bytes: 2048
+                log.segment.bytes: 4096
+                log.retention.ms: 60000
+                log.retention.bytes: 1000000
+                log.flush.messages: 100
+                log.flush.ms: 250
+                """);
+
+        var config = ServerConfig.resolve(file, Map.of(), NO_FLAGS);
+        assertThat(config.validate()).isEmpty();
+        var brokerConfig = BrokerApp.toBrokerConfig(config);
+
+        var defaults = brokerConfig.topicDefaults();
+        assertThat(defaults.maxMessageBytes()).isEqualTo(2048);
+        assertThat(defaults.segmentBytes()).isEqualTo(4096L);
+        assertThat(defaults.retentionMillis()).isEqualTo(60_000L);
+        assertThat(defaults.retentionBytes()).isEqualTo(1_000_000L);
+        assertThat(defaults.flushMessages()).isEqualTo(100L);
+        assertThat(defaults.flushMillis()).isEqualTo(250L);
+    }
+
+    @Test
+    void topicDefaultKeysValidateAgainstTheirBounds(@TempDir Path dir) throws Exception {
+        var file = dir.resolve("j-broker.yaml");
+        Files.writeString(
+                file,
+                """
+                max.message.bytes: 999999999
+                log.segment.bytes: 512
+                log.retention.ms: -2
+                log.flush.messages: 0
+                """);
+
+        var config = ServerConfig.resolve(file, Map.of(), NO_FLAGS);
+
+        assertThat(config.validate())
+                .anySatisfy(p -> assertThat(p).contains("max.message.bytes"))
+                .anySatisfy(p -> assertThat(p).contains("log.segment.bytes"))
+                .anySatisfy(p -> assertThat(p).contains("log.retention.ms"))
+                .anySatisfy(p -> assertThat(p).contains("log.flush.messages"));
+    }
+
+    @Test
     void referenceCoversEveryDeclaredKey() {
         var reference = ServerConfig.renderReference();
         for (var key : ServerConfig.KEYS) {

@@ -159,6 +159,51 @@ class LogTest {
     }
 
     @Test
+    void recoversFromBitLevelCorruptionByCrc(@TempDir Path dir) throws Exception {
+        // A flipped byte INSIDE a batch body leaves the framing intact —
+        // lengths still parse, the file walks cleanly — so only the CRC
+        // re-verification in the recovery scan can catch it. Everything
+        // from the corrupt batch onward is untrustworthy and dropped.
+        try (var log = Log.open(dir, new Log.Config(1_000_000, 0, 4096))) {
+            log.append(List.of(new Record(0, 0L, null, "first".getBytes())), 1L);
+            log.append(List.of(new Record(0, 0L, null, "second".getBytes())), 2L);
+            log.append(List.of(new Record(0, 0L, null, "third".getBytes())), 3L);
+            log.force();
+        }
+        Path logFile;
+        try (var stream = Files.list(dir)) {
+            logFile = stream.filter(p -> p.getFileName().toString().endsWith(".log"))
+                    .findFirst()
+                    .orElseThrow();
+        }
+        // Batch layout starts with baseOffset(8) + batchLength(4); the full
+        // frame is 12 + batchLength bytes. Flip one CRC-covered byte in the
+        // SECOND batch's body.
+        try (var ch = FileChannel.open(logFile, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            var header = ByteBuffer.allocate(12);
+            ch.read(header, 0);
+            header.flip();
+            header.getLong(); // baseOffset
+            long secondBatchStart = 12 + header.getInt();
+            long target = secondBatchStart + 30; // inside the CRC-covered region
+            var one = ByteBuffer.allocate(1);
+            ch.read(one, target);
+            one.flip();
+            byte flipped = (byte) (one.get() ^ 0x40);
+            ch.write(ByteBuffer.wrap(new byte[] {flipped}), target);
+        }
+        try (var reopened = Log.open(dir, new Log.Config(1_000_000, 0, 4096))) {
+            var batches = reopened.read(0L, 64 * 1024);
+            assertThat(batches).hasSize(1);
+            assertThat(new String(batches.get(0).records().get(0).value())).isEqualTo("first");
+            // The log stays appendable at the truncated offset.
+            assertThat(reopened.nextOffset()).isEqualTo(1L);
+            reopened.append(List.of(new Record(0, 0L, null, "fourth".getBytes())), 4L);
+            assertThat(reopened.read(0L, 64 * 1024)).hasSize(2);
+        }
+    }
+
+    @Test
     void transferToWritesRawBytesToOutputStream(@TempDir Path dir) throws Exception {
         try (var log = Log.open(dir, new Log.Config(1_000_000, 0, 4096))) {
             log.append(List.of(new Record(0, 0L, null, "zero-copy".getBytes())), 1L);

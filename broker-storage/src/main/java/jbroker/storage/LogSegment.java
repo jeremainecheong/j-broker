@@ -21,6 +21,8 @@ import java.util.List;
  */
 public final class LogSegment implements AutoCloseable {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(LogSegment.class);
+
     public static final int DEFAULT_INDEX_INTERVAL_BYTES = 4 * 1024;
 
     /**
@@ -79,7 +81,10 @@ public final class LogSegment implements AutoCloseable {
 
         // Compute nextOffset and maxTimestamp by scanning forward — cheap for
         // the active segment (only called on restart); closed segments are
-        // treated as immutable after one scan.
+        // treated as immutable after one scan. Every batch re-verifies its
+        // CRC-32C inside RecordBatch.decode, so the scan catches torn
+        // frames AND bit-level corruption, truncating at the last batch
+        // that survived intact.
         long nextOff = baseOffset;
         long maxTs = -1L;
         long size = logChannel.size();
@@ -95,7 +100,16 @@ public final class LogSegment implements AutoCloseable {
                     if (parsed.maxTimestamp() > maxTs) maxTs = parsed.maxTimestamp();
                 } catch (IllegalArgumentException e) {
                     // Torn / corrupt tail — truncate here.
-                    logChannel.truncate(pos + markPos);
+                    long keep = pos + markPos;
+                    log.warn(
+                            "recovery scan of {} found an invalid batch at position {} ({}); "
+                                    + "truncating — {} bytes dropped, log continues from offset {}",
+                            logPath,
+                            keep,
+                            e.getMessage(),
+                            size - keep,
+                            nextOff);
+                    logChannel.truncate(keep);
                     mapped.limit(markPos);
                     break;
                 }
@@ -103,6 +117,13 @@ public final class LogSegment implements AutoCloseable {
             pos += mapped.position();
             if (mapped.remaining() < RecordBatch.BATCH_OVERHEAD && pos < size) {
                 // Trailing partial frame — truncate.
+                log.warn(
+                        "recovery scan of {} found a partial trailing frame at position {}; "
+                                + "truncating — {} bytes dropped, log continues from offset {}",
+                        logPath,
+                        pos,
+                        size - pos,
+                        nextOff);
                 logChannel.truncate(pos);
                 break;
             }

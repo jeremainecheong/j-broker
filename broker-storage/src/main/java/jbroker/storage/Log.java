@@ -63,6 +63,77 @@ public final class Log implements AutoCloseable {
         if (newSegmentBytes > 0) this.segmentBytes = newSegmentBytes;
     }
 
+    // ---- Flush policy ----
+    //
+    // Default (-1/-1): fsync happens on segment roll and on explicit
+    // force(); durability between fsyncs comes from replication, not the
+    // local disk. The optional knobs bound the unflushed window for
+    // single-copy-sensitive deployments: flushMessages forces after N
+    // appended records, flushMillis is enforced by LogManager's flush tick
+    // calling flushIfDue.
+
+    private volatile long flushMessages = -1;
+    private volatile long flushMillis = -1;
+    /** Records appended to the active segment since its last fsync. Guarded by {@link #lock}. */
+    private long recordsSinceForce;
+    /** Wall-clock of the first unflushed append; -1 when everything is flushed. */
+    private volatile long firstUnforcedMillis = -1;
+    /** Times the flush policy forced the active segment. Observability + tests. */
+    private final java.util.concurrent.atomic.AtomicLong policyFlushCount =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** Update the flush policy on a live log. Non-positive values disable the respective trigger. */
+    public void reconfigureFlushPolicy(long newFlushMessages, long newFlushMillis) {
+        this.flushMessages = newFlushMessages;
+        this.flushMillis = newFlushMillis;
+    }
+
+    /** Times the flush policy (count or age trigger) forced the active segment. */
+    public long policyFlushCount() {
+        return policyFlushCount.get();
+    }
+
+    /**
+     * Force the active segment if the age trigger is due. Called by
+     * LogManager's flush tick; cheap no-op when the policy is off or
+     * nothing is unflushed.
+     */
+    public void flushIfDue(long nowMillis) throws IOException {
+        long millis = flushMillis;
+        long first = firstUnforcedMillis;
+        if (millis <= 0 || first < 0 || nowMillis - first < millis) return;
+        lock.lock();
+        try {
+            if (firstUnforcedMillis < 0) return; // raced a roll/force
+            forceActiveLocked();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Track an append and apply the count trigger. Callers hold {@link #lock}. */
+    private void onAppendedLocked(int recordCount, long nowMillis) throws IOException {
+        recordsSinceForce += recordCount;
+        if (firstUnforcedMillis < 0) firstUnforcedMillis = nowMillis;
+        long messages = flushMessages;
+        if (messages > 0 && recordsSinceForce >= messages) {
+            forceActiveLocked();
+        }
+    }
+
+    private void forceActiveLocked() throws IOException {
+        segments.get(segments.size() - 1).force();
+        recordsSinceForce = 0;
+        firstUnforcedMillis = -1;
+        policyFlushCount.incrementAndGet();
+    }
+
+    /** A roll or full force fsynced everything appended so far. Callers hold {@link #lock}. */
+    private void markFlushedLocked() {
+        recordsSinceForce = 0;
+        firstUnforcedMillis = -1;
+    }
+
     public static Log open(Path dir, Config config) throws IOException {
         Files.createDirectories(dir);
         var log = new Log(dir, config);
@@ -110,6 +181,9 @@ public final class Log implements AutoCloseable {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
                 active.force();
                 segments.add(next);
+                markFlushedLocked();
+            } else {
+                onAppendedLocked((int) (active.nextOffset() - expectedBaseOffset), System.currentTimeMillis());
             }
             return assignedLast;
         } finally {
@@ -164,6 +238,11 @@ public final class Log implements AutoCloseable {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
                 active.force();
                 segments.add(next);
+                markFlushedLocked();
+            } else {
+                // Wall clock, not the caller's record timestamp — the age
+                // trigger bounds real elapsed time since the append.
+                onAppendedLocked(records.size(), System.currentTimeMillis());
             }
             return assignedLast;
         } finally {
@@ -334,6 +413,7 @@ public final class Log implements AutoCloseable {
         lock.lock();
         try {
             for (var seg : segments) seg.force();
+            markFlushedLocked();
         } finally {
             lock.unlock();
         }

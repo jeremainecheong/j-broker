@@ -64,6 +64,21 @@ public record TopicDescription(
     public static final long SEGMENT_BYTES_FLOOR = 1024;
 
     /**
+     * Per-topic flush count trigger: fsync the active segment every N
+     * appended records. Validated by {@code AdminHandler}: {@code -1}
+     * (off, the default durability model — fsync on roll + replication)
+     * or ≥ 1.
+     */
+    public static final String FLUSH_MESSAGES_CONFIG = "flush.messages";
+
+    /**
+     * Per-topic flush age trigger, in milliseconds: fsync the active
+     * segment once unflushed data is older than this. Validated by
+     * {@code AdminHandler}: {@code -1} (off) or ≥ 1.
+     */
+    public static final String FLUSH_MS_CONFIG = "flush.ms";
+
+    /**
      * Ceiling for any {@value #SEGMENT_BYTES_CONFIG} override. Segment file
      * positions are tracked as ints, and the roll check runs after the
      * append, so a segment can exceed the threshold by one max-size batch —
@@ -146,6 +161,16 @@ public record TopicDescription(
     public long effectiveSegmentBytes(long clusterDefault) {
         long value = effectiveLongConfig(SEGMENT_BYTES_CONFIG, clusterDefault);
         return Math.max(SEGMENT_BYTES_FLOOR, value);
+    }
+
+    /** The flush count trigger ({@code -1} = off): explicit override, else the cluster default. */
+    public long effectiveFlushMessages(long clusterDefault) {
+        return effectiveLongConfig(FLUSH_MESSAGES_CONFIG, clusterDefault);
+    }
+
+    /** The flush age trigger in ms ({@code -1} = off): explicit override, else the cluster default. */
+    public long effectiveFlushMillis(long clusterDefault) {
+        return effectiveLongConfig(FLUSH_MS_CONFIG, clusterDefault);
     }
 
     private long effectiveLongConfig(String key, long clusterDefault) {

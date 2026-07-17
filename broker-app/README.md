@@ -90,6 +90,7 @@ The table below is generated from the same key table that drives validation (`Se
 | `log.flush.messages` | `-1` | `JBROKER_LOG_FLUSH_MESSAGES` | — | Cluster default flush count trigger. -1 = off (fsync on segment roll + replication). Per-topic `flush.messages` overrides. |
 | `log.flush.ms` | `-1` | `JBROKER_LOG_FLUSH_MS` | — | Cluster default flush age trigger, ms. -1 = off. Per-topic `flush.ms` overrides. |
 | `log.cleaner.interval.ms` | `300000` | `JBROKER_LOG_CLEANER_INTERVAL_MS` | — | Retention/compaction cleaner tick interval, ms. |
+| `offsets.retention.ms` | `604800000` | `JBROKER_OFFSETS_RETENTION_MS` | — | Committed offsets of groups with no live members expire once their newest commit is older than this (7 days). -1 disables expiry. |
 | `shutdown.timeout.ms` | `30000` | `JBROKER_SHUTDOWN_TIMEOUT_MS` | — | SIGTERM drain budget: how long the broker spends handing led partitions to other ISR members before closing. 0 skips the drain. |
 | `storage.headroom.bytes` | `1073741824` | `JBROKER_STORAGE_HEADROOM_BYTES` | — | Disk-headroom watermark. Below it, client produces get retriable STORAGE_FULL while fetch/replication/admin keep serving. |
 | `tls.enabled` | `false` | `JBROKER_TLS_ENABLED` | — | Enable mTLS on every gRPC listener and inter-broker client. |

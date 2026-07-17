@@ -156,7 +156,8 @@ public final class BrokerApp {
                         config.longValue("log.retention.ms"),
                         config.longValue("log.retention.bytes"),
                         config.longValue("log.flush.messages"),
-                        config.longValue("log.flush.ms")));
+                        config.longValue("log.flush.ms")))
+                .withOffsetsRetentionMillis(config.longValue("offsets.retention.ms"));
     }
 
     /**

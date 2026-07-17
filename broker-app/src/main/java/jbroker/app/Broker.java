@@ -102,7 +102,13 @@ public final class Broker implements AutoCloseable {
              * Cluster-wide defaults for per-topic storage/produce settings.
              * Per-topic config overrides each individually.
              */
-            TopicDefaults topicDefaults) {
+            TopicDefaults topicDefaults,
+            /**
+             * Committed offsets of groups with no live members expire once
+             * their newest commit is older than this, ms. Default 7 days;
+             * non-positive disables expiry.
+             */
+            long offsetsRetentionMillis) {
 
         /**
          * Cluster defaults behind the per-topic keys: {@code
@@ -166,6 +172,43 @@ public final class Broker implements AutoCloseable {
             if (topicDefaults == null) topicDefaults = TopicDefaults.standard();
         }
 
+        /** Default idle-group offset retention: 7 days, matching Kafka. */
+        public static final long DEFAULT_OFFSETS_RETENTION_MILLIS = 7L * 24 * 60 * 60 * 1000;
+
+        /** Pre-offsets-expiry canonical shape kept callable: 7-day retention. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis,
+                long storageHeadroomBytes,
+                TopicDefaults topicDefaults) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    DEFAULT_OFFSETS_RETENTION_MILLIS);
+        }
+
         /** Pre-topic-defaults canonical shape kept callable: standard defaults. */
         public Config(
                 NodeId selfId,
@@ -214,7 +257,28 @@ public final class Broker implements AutoCloseable {
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
-                    defaults);
+                    defaults,
+                    offsetsRetentionMillis);
+        }
+
+        /** Override the idle-group offset retention window. Non-positive disables expiry. */
+        public Config withOffsetsRetentionMillis(long retentionMillis) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    retentionMillis);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -373,7 +437,8 @@ public final class Broker implements AutoCloseable {
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
-                    topicDefaults);
+                    topicDefaults,
+                    offsetsRetentionMillis);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -392,7 +457,8 @@ public final class Broker implements AutoCloseable {
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
-                    topicDefaults);
+                    topicDefaults,
+                    offsetsRetentionMillis);
         }
 
         /**
@@ -415,7 +481,8 @@ public final class Broker implements AutoCloseable {
                     n,
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
-                    topicDefaults);
+                    topicDefaults,
+                    offsetsRetentionMillis);
         }
 
         /**
@@ -465,7 +532,8 @@ public final class Broker implements AutoCloseable {
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
-                    topicDefaults);
+                    topicDefaults,
+                    offsetsRetentionMillis);
         }
 
         /**
@@ -489,7 +557,8 @@ public final class Broker implements AutoCloseable {
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
-                    topicDefaults);
+                    topicDefaults,
+                    offsetsRetentionMillis);
         }
 
         /**
@@ -512,7 +581,8 @@ public final class Broker implements AutoCloseable {
                     minInsyncReplicas,
                     intervalMillis,
                     storageHeadroomBytes,
-                    topicDefaults);
+                    topicDefaults,
+                    offsetsRetentionMillis);
         }
 
         /**
@@ -535,7 +605,8 @@ public final class Broker implements AutoCloseable {
                     minInsyncReplicas,
                     logCleanerIntervalMillis,
                     headroomBytes,
-                    topicDefaults);
+                    topicDefaults,
+                    offsetsRetentionMillis);
         }
     }
 
@@ -985,6 +1056,21 @@ public final class Broker implements AutoCloseable {
                 ConsumerOffsetsCreator.fromMetadataProposer(proposer),
                 () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
                 config.consumerOffsetsPartitions());
+        // Offset expiry (R2.7): each coordinator drops idle groups' commits
+        // once their newest commit outlives the retention window. Runs
+        // every minute; the pass itself is a no-op unless a group
+        // qualifies, and a non-positive retention disables it entirely.
+        registrationTicker.scheduleWithFixedDelay(
+                () -> {
+                    try {
+                        consumerHandler.expireStaleOffsets(config.offsetsRetentionMillis());
+                    } catch (RuntimeException e) {
+                        log.warn("offset-expiry tick failed; will retry", e);
+                    }
+                },
+                60_000L,
+                60_000L,
+                TimeUnit.MILLISECONDS);
         registrationTicker.scheduleWithFixedDelay(
                 () -> {
                     // Raft-leader-only work: propose BrokerRegistration

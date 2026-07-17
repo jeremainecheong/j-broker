@@ -96,6 +96,12 @@ final class ServerConfig {
                     "Cluster default flush age trigger, ms. -1 = off. Per-topic `flush.ms` overrides."),
             new Key("log.cleaner.interval.ms", null, "300000", "Retention/compaction cleaner tick interval, ms."),
             new Key(
+                    "shutdown.timeout.ms",
+                    null,
+                    "30000",
+                    "SIGTERM drain budget: how long the broker spends handing led partitions to "
+                            + "other ISR members before closing. 0 skips the drain."),
+            new Key(
                     "storage.headroom.bytes",
                     null,
                     String.valueOf(jbroker.broker.DiskHeadroom.DEFAULT_HEADROOM_BYTES),
@@ -274,6 +280,7 @@ final class ServerConfig {
         checkMinusOneOrPositive(errors, "log.flush.messages");
         checkMinusOneOrPositive(errors, "log.flush.ms");
         checkLong(errors, "log.cleaner.interval.ms", 1, Long.MAX_VALUE);
+        checkLong(errors, "shutdown.timeout.ms", 0, Long.MAX_VALUE);
         checkLong(errors, "storage.headroom.bytes", 1, Long.MAX_VALUE);
         if (raw("data.dir").isBlank()) {
             errors.add("data.dir must be non-blank");

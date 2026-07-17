@@ -94,7 +94,11 @@ public final class BrokerApp {
 
         var brokerConfig = toBrokerConfig(config);
         var broker = Broker.start(brokerConfig);
-        Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
+        // SIGTERM takes the controlled path: drain led partitions to other
+        // ISR members within the budget, then close.
+        long shutdownTimeoutMillis = config.longValue("shutdown.timeout.ms");
+        Runtime.getRuntime()
+                .addShutdownHook(new Thread(() -> broker.closeGracefully(shutdownTimeoutMillis), "broker-shutdown"));
         System.out.println("j-broker listening on " + brokerConfig.brokerPort()
                 + " (id=" + brokerConfig.selfId().value() + ", raft=" + brokerConfig.raftPort()
                 + ", data=" + brokerConfig.dataDir()

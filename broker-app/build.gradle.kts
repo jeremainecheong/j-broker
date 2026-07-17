@@ -28,6 +28,9 @@ dependencies {
     // via applicationDefaultJvmArgs below; tests and consumers never
     // load it.
     runtimeOnly("ch.qos.logback:logback-classic:1.5.18")
+    // j-broker.yaml server-config parsing. SafeConstructor only — the
+    // loader never instantiates arbitrary classes from config input.
+    implementation("org.yaml:snakeyaml:2.3")
     // jbroker.app.testkit — bind-retry cluster starters shared with
     // integration-tests (freePort()->bind TOCTOU hardening, see #97).
     testFixturesApi(project(":raft-core"))

@@ -17,7 +17,8 @@ import jbroker.tls.TlsConfig;
  * {@code j-broker} top-level entry point. Two modes:
  *
  * <pre>
- *   j-broker server --data-dir DIR --broker-port P [--raft-port P2] [--id N]
+ *   j-broker server [--config j-broker.yaml] [--validate-config]
+ *                   [--data-dir DIR] [--broker-port P] [--raft-port P2] [--id N]
  *                   [--voters ID@HOST:RAFT:BROKER,...] [--chaos-port P]
  *                   [--consumer-offsets-partitions N] [--min-insync-replicas N]
  *   j-broker topics create|list|describe|...  --broker HOST:PORT --topic T ...
@@ -61,71 +62,74 @@ public final class BrokerApp {
     }
 
     private static void runServer(String[] args) throws Exception {
-        String dataDir = flag(args, "--data-dir", "./var/broker");
-        int brokerPort = Integer.parseInt(flag(args, "--broker-port", "9092"));
-        int raftPort = Integer.parseInt(flag(args, "--raft-port", "9192"));
-        int id = Integer.parseInt(flag(args, "--id", "1"));
-        String votersSpec = flag(args, "--voters", null);
-        // Advertised listeners. Format: "id=host:port,id=host:port,..."
-        // Applies per broker id on top of the voter list. Only the advertised
-        // entry for THIS broker gets used in our own BrokerRegistrationRecord,
-        // but the leader's propose path reads every voter's advertised slot
-        // to register the whole cluster in one tick; pass a matching spec on
-        // each broker for consistent behavior. Absent → fall back to voter
-        // host/port (the original single-network behavior).
-        String advertisedListenersSpec = flag(args, "--advertised-listeners", null);
-        int chaosPort = Integer.parseInt(flag(args, "--chaos-port", "-1"));
-        // acks=all durability floor. Default 2: an acks=all produce is
-        // rejected with NOT_ENOUGH_REPLICAS rather than acked by a
-        // single-broker ISR (#115). Topics override per-topic via the
-        // min.insync.replicas config; RF=1 topics clamp down to 1.
-        int minInsyncReplicas = Integer.parseInt(flag(
-                args,
-                "--min-insync-replicas",
-                String.valueOf(jbroker.broker.ProduceHandler.DEFAULT_MIN_INSYNC_REPLICAS)));
-        int consumerOffsetsPartitions = Integer.parseInt(flag(
-                args,
-                "--consumer-offsets-partitions",
-                String.valueOf(jbroker.broker.ConsumerOffsetsTopic.PARTITION_COUNT)));
-        // MTLS opt-in. Enabled only when --tls-enabled is set AND the
-        // required --tls-cert / --tls-key / --tls-trust all point at PEM
-        // files. Absent → plaintext (the original default).
-        boolean tlsEnabled = switchFlag(args, "--tls-enabled");
-        String tlsCert = flag(args, "--tls-cert", null);
-        String tlsKey = flag(args, "--tls-key", null);
-        String tlsTrust = flag(args, "--tls-trust", null);
-        TlsConfig tlsConfig = TlsConfig.DISABLED;
-        if (tlsEnabled) {
-            if (tlsCert == null || tlsKey == null || tlsTrust == null) {
-                throw new IllegalArgumentException(
-                        "--tls-enabled requires --tls-cert, --tls-key, --tls-trust (all PEM paths)");
+        // Layered configuration: defaults ← --config j-broker.yaml ←
+        // JBROKER_* env ← flags. ServerConfig owns the key table; this
+        // method only turns the resolved values into a Broker.Config.
+        String configPath = flag(args, "--config", null);
+        ServerConfig config;
+        try {
+            config = ServerConfig.resolve(configPath == null ? null : Path.of(configPath), System.getenv(), args);
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
+            System.exit(2);
+            return;
+        }
+        boolean validateOnly = switchFlag(args, "--validate-config");
+        var problems = config.validate();
+        if (validateOnly) {
+            System.out.print(config.describe());
+            if (problems.isEmpty()) {
+                System.out.println("configuration OK");
+                return;
             }
+            for (var p : problems) System.err.println("error: " + p);
+            System.exit(2);
+            return;
+        }
+        if (!problems.isEmpty()) {
+            for (var p : problems) System.err.println("error: " + p);
+            System.exit(2);
+            return;
+        }
+
+        int id = config.intValue("node.id");
+        int brokerPort = config.intValue("broker.port");
+        int raftPort = config.intValue("raft.port");
+        String dataDir = config.raw("data.dir");
+        int chaosPort = config.intValue("chaos.port");
+
+        TlsConfig tlsConfig = TlsConfig.DISABLED;
+        if (config.boolValue("tls.enabled")) {
             tlsConfig = TlsConfig.mtlsServer(
-                    java.nio.file.Path.of(tlsCert), java.nio.file.Path.of(tlsKey), java.nio.file.Path.of(tlsTrust));
+                    Path.of(config.raw("tls.cert")), Path.of(config.raw("tls.key")), Path.of(config.raw("tls.trust")));
         }
 
         List<VoterAddress> voters;
-        if (votersSpec == null || votersSpec.isBlank()) {
+        if (config.raw("voters").isBlank()) {
             // Single-broker dev server: self is the sole voter. Preserves the
             // pre-v1.1 default so existing ./gradlew :broker-app:run flows
             // keep working.
             voters = List.of(new VoterAddress(new NodeId(id), "127.0.0.1", raftPort, brokerPort));
         } else {
-            voters = parseVoters(votersSpec);
-            if (voters.stream().noneMatch(v -> v.id().value() == id)) {
-                throw new IllegalArgumentException("--voters must include self (id=" + id + "), got: " + votersSpec);
-            }
+            voters = parseVoters(config.raw("voters"));
         }
-        if (advertisedListenersSpec != null && !advertisedListenersSpec.isBlank()) {
-            voters = overlayAdvertisedListeners(voters, advertisedListenersSpec);
+        if (!config.raw("advertised.listeners").isBlank()) {
+            voters = overlayAdvertisedListeners(voters, config.raw("advertised.listeners"));
         }
 
-        var config = new Broker.Config(
-                        new NodeId(id), Path.of(dataDir), raftPort, brokerPort, voters, consumerOffsetsPartitions)
+        var brokerConfig = new Broker.Config(
+                        new NodeId(id),
+                        Path.of(dataDir),
+                        raftPort,
+                        brokerPort,
+                        voters,
+                        config.intValue("consumer.offsets.partitions"))
                 .withChaosPort(chaosPort)
                 .withTls(tlsConfig)
-                .withMinInsyncReplicas(minInsyncReplicas);
-        var broker = Broker.start(config);
+                .withMinInsyncReplicas(config.intValue("min.insync.replicas"))
+                .withLogCleanerIntervalMillis(config.longValue("log.cleaner.interval.ms"))
+                .withStorageHeadroomBytes(config.longValue("storage.headroom.bytes"));
+        var broker = Broker.start(brokerConfig);
         Runtime.getRuntime().addShutdownHook(new Thread(broker::close, "broker-shutdown"));
         System.out.println("j-broker listening on " + brokerPort
                 + " (id=" + id + ", raft=" + raftPort + ", data=" + dataDir

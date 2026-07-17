@@ -46,9 +46,18 @@ public final class LogManager implements AutoCloseable {
      * A topic's effective storage settings, as resolved by the broker layer
      * (explicit topic config, else cluster default). Negative retention
      * values mean unlimited — compacted topics resolve to unlimited so the
-     * cleaner never deletes a key's latest value.
+     * cleaner never deletes a key's latest value. Negative flush values
+     * disable the respective trigger (the default durability model: fsync
+     * on segment roll, replication in between).
      */
-    public record TopicLogConfig(long segmentBytes, long retentionMillis, long retentionBytes) {}
+    public record TopicLogConfig(
+            long segmentBytes, long retentionMillis, long retentionBytes, long flushMessages, long flushMillis) {
+
+        /** Pre-flush-policy shape: both flush triggers off. */
+        public TopicLogConfig(long segmentBytes, long retentionMillis, long retentionBytes) {
+            this(segmentBytes, retentionMillis, retentionBytes, -1L, -1L);
+        }
+    }
 
     /**
      * Resolves a topic's effective log config. Empty means the topic is
@@ -79,6 +88,37 @@ public final class LogManager implements AutoCloseable {
                         new TopicLogConfig(config.segmentBytes(), config.retentionMillis(), config.retentionBytes()));
     }
 
+    /**
+     * Flush-tick cadence. Also the freshness bound for pushing per-topic
+     * config to open logs — much tighter than the cleaner interval so
+     * flush.ms values in the low seconds actually mean what they say.
+     */
+    static final long FLUSH_TICK_MILLIS = 1_000L;
+
+    /**
+     * Push each open log's effective config and apply the flush age
+     * trigger. Runs every {@link #FLUSH_TICK_MILLIS}; iterating the open
+     * logs with volatile reads is cheap, and no fsync happens unless a
+     * policy is set and due.
+     */
+    private void runFlushTick() {
+        long nowMillis = System.currentTimeMillis();
+        for (var entry : logs.entrySet()) {
+            String key = entry.getKey();
+            int dash = key.lastIndexOf('-');
+            if (dash <= 0) continue;
+            var log = entry.getValue();
+            var effective = effectiveConfig(key.substring(0, dash));
+            log.reconfigureSegmentBytes(effective.segmentBytes());
+            log.reconfigureFlushPolicy(effective.flushMessages(), effective.flushMillis());
+            try {
+                log.flushIfDue(nowMillis);
+            } catch (IOException ignored) {
+                /* log line in a later observability pass */
+            }
+        }
+    }
+
     public LogManager(Path rootDir, Config config) throws IOException {
         this.rootDir = rootDir;
         this.config = config;
@@ -93,6 +133,8 @@ public final class LogManager implements AutoCloseable {
                 config.cleanerIntervalMillis(),
                 config.cleanerIntervalMillis(),
                 TimeUnit.MILLISECONDS);
+        long flushTick = Math.min(FLUSH_TICK_MILLIS, config.cleanerIntervalMillis());
+        this.cleaner.scheduleAtFixedRate(this::runFlushTick, flushTick, flushTick, TimeUnit.MILLISECONDS);
     }
 
     public Log logFor(String topic, int partition) throws IOException {
@@ -232,9 +274,7 @@ public final class LogManager implements AutoCloseable {
                 if (dash <= 0) continue;
                 String topic = key.substring(0, dash);
                 var effective = effectiveConfig(topic);
-                // Push segment.bytes to the live log — an override may have
-                // committed after the log was opened.
-                log.reconfigureSegmentBytes(effective.segmentBytes());
+                // (Config pushes to live logs ride the faster flush tick.)
                 long cutoff =
                         effective.retentionMillis() < 0 ? Long.MIN_VALUE : nowMillis - effective.retentionMillis();
                 log.retain(cutoff, effective.retentionBytes());

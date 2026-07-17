@@ -535,6 +535,11 @@ public final class Broker implements AutoCloseable {
                         defaultRetentionBytes,
                         jbroker.storage.LogSegment.DEFAULT_INDEX_INTERVAL_BYTES,
                         config.logCleanerIntervalMillis()));
+        // Flush triggers default off (-1): fsync on segment roll plus
+        // replication is the durability model; per-topic flush.messages /
+        // flush.ms bound the unflushed window where a deployment wants it.
+        long defaultFlushMessages = -1L;
+        long defaultFlushMillis = -1L;
         logManager.setTopicLogConfigResolver(topic -> topicManager
                 .describe(topic)
                 .map(d -> d.compact()
@@ -542,11 +547,18 @@ public final class Broker implements AutoCloseable {
                         // the retention passes must never delete their segments.
                         // (__consumer_offsets is compacted; time-deleting it would
                         // silently reset idle groups' committed positions.)
-                        ? new LogManager.TopicLogConfig(d.effectiveSegmentBytes(defaultSegmentBytes), -1L, -1L)
+                        ? new LogManager.TopicLogConfig(
+                                d.effectiveSegmentBytes(defaultSegmentBytes),
+                                -1L,
+                                -1L,
+                                d.effectiveFlushMessages(defaultFlushMessages),
+                                d.effectiveFlushMillis(defaultFlushMillis))
                         : new LogManager.TopicLogConfig(
                                 d.effectiveSegmentBytes(defaultSegmentBytes),
                                 d.effectiveRetentionMillis(defaultRetentionMillis),
-                                d.effectiveRetentionBytes(defaultRetentionBytes))));
+                                d.effectiveRetentionBytes(defaultRetentionBytes),
+                                d.effectiveFlushMessages(defaultFlushMessages),
+                                d.effectiveFlushMillis(defaultFlushMillis))));
 
         // Per-broker event publisher for the admin-facing SSE stream.
         // Declared here so the leader-epoch listener (next block) can

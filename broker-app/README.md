@@ -52,10 +52,11 @@ No Spring, no DI container — just constructor wiring inside `Broker.start()`. 
 `broker-app/build/install/broker-app/bin/broker-app` (alias this to `j-broker` for your shell):
 
 ```text
-j-broker server   --data-dir DIR --broker-port P [--raft-port P] [--id N]
+j-broker server   [--config j-broker.yaml] [--validate-config]
+                  [--data-dir DIR] [--broker-port P] [--raft-port P] [--id N]
                   [--voters ID@HOST:RAFT:BROKER,...] [--chaos-port P]
                   [--consumer-offsets-partitions N]
-                  [--advertised-host HOST] [--advertised-port N]
+                  [--advertised-listeners ID=HOST:PORT,...]
                   [--tls-cert PATH --tls-key PATH --tls-trust PATH]
 
 j-broker topics   create|list|describe --broker HOST:PORT [...]
@@ -64,6 +65,38 @@ j-broker console-consumer --broker HOST:PORT --topic T --partition N [--from-beg
 j-broker consume  --broker HOST:PORT --group G --topic T [--topic T2 ...]   (coordinator-aware)
 j-broker admin    cluster-info | topics ... | groups ... | raft  [--admin URL]
 ```
+
+## Configuration
+
+Server settings resolve in layers: built-in defaults ← `--config j-broker.yaml` ← `JBROKER_*` environment variables ← flags. The YAML file is a flat map of dotted keys; unknown keys in the file are startup errors (they are almost always typos), unrecognized `JBROKER_*` variables only warn. `j-broker server --validate-config` prints every resolved key with its value and source, reports all validation problems at once, and exits 0/2 without binding a port.
+
+The table below is generated from the same key table that drives validation (`ServerConfig.renderReference()`), so it cannot drift from the code:
+
+| Key | Default | Env | Flag | Description |
+|---|---|---|---|---|
+| `node.id` | `1` | `JBROKER_NODE_ID` | `--id` | Broker id. Must appear in the voter list. |
+| `data.dir` | `./var/broker` | `JBROKER_DATA_DIR` | `--data-dir` | Data directory (Raft log + partition logs). |
+| `broker.port` | `9092` | `JBROKER_BROKER_PORT` | `--broker-port` | Client and inter-broker gRPC port. |
+| `raft.port` | `9192` | `JBROKER_RAFT_PORT` | `--raft-port` | Raft peer RPC port. |
+| `voters` | `(empty)` | `JBROKER_VOTERS` | `--voters` | Cluster voter list, `ID@HOST:RAFT:BROKER,...`. Empty runs a single-broker cluster with self as the only voter. |
+| `advertised.listeners` | `(empty)` | `JBROKER_ADVERTISED_LISTENERS` | `--advertised-listeners` | Client-facing address overlay, `ID=HOST:PORT,...`. Ids absent from the overlay advertise their bind address. |
+| `chaos.port` | `-1` | `JBROKER_CHAOS_PORT` | `--chaos-port` | Cooperative chaos HTTP port. -1 disables. |
+| `consumer.offsets.partitions` | `50` | `JBROKER_CONSUMER_OFFSETS_PARTITIONS` | `--consumer-offsets-partitions` | Partition count for the internal `__consumer_offsets` topic. Fixed at first boot. |
+| `min.insync.replicas` | `2` | `JBROKER_MIN_INSYNC_REPLICAS` | `--min-insync-replicas` | Cluster default acks=all durability floor. Per-topic config overrides; RF-1 topics clamp down. |
+| `max.message.bytes` | `1048576` | `JBROKER_MAX_MESSAGE_BYTES` | — | Cluster default for the largest serialized produce batch. Per-topic config overrides; hard cap 8 MiB (gRPC frame limits bound every hop). |
+| `log.segment.bytes` | `134217728` | `JBROKER_LOG_SEGMENT_BYTES` | — | Cluster default segment roll threshold. Per-topic `segment.bytes` overrides. |
+| `log.retention.ms` | `604800000` | `JBROKER_LOG_RETENTION_MS` | — | Cluster default time retention (7 days). -1 = unlimited. Per-topic `retention.ms` overrides. |
+| `log.retention.bytes` | `-1` | `JBROKER_LOG_RETENTION_BYTES` | — | Cluster default size-retention budget per partition. -1 = unlimited. Per-topic `retention.bytes` overrides. |
+| `log.flush.messages` | `-1` | `JBROKER_LOG_FLUSH_MESSAGES` | — | Cluster default flush count trigger. -1 = off (fsync on segment roll + replication). Per-topic `flush.messages` overrides. |
+| `log.flush.ms` | `-1` | `JBROKER_LOG_FLUSH_MS` | — | Cluster default flush age trigger, ms. -1 = off. Per-topic `flush.ms` overrides. |
+| `log.cleaner.interval.ms` | `300000` | `JBROKER_LOG_CLEANER_INTERVAL_MS` | — | Retention/compaction cleaner tick interval, ms. |
+| `storage.headroom.bytes` | `1073741824` | `JBROKER_STORAGE_HEADROOM_BYTES` | — | Disk-headroom watermark. Below it, client produces get retriable STORAGE_FULL while fetch/replication/admin keep serving. |
+| `tls.enabled` | `false` | `JBROKER_TLS_ENABLED` | — | Enable mTLS on every gRPC listener and inter-broker client. |
+| `tls.cert` | `(empty)` | `JBROKER_TLS_CERT` | `--tls-cert` | PEM certificate chain. Required when tls.enabled. |
+| `tls.key` | `(empty)` | `JBROKER_TLS_KEY` | `--tls-key` | PEM private key. Required when tls.enabled. |
+| `tls.trust` | `(empty)` | `JBROKER_TLS_TRUST` | `--tls-trust` | PEM trust bundle peers are verified against. Required when tls.enabled. |
+
+Per-topic keys (`min.insync.replicas`, `max.message.bytes`, `retention.ms`, `retention.bytes`, `segment.bytes`, `flush.messages`, `flush.ms`) are set at topic create/update through the admin API and override the cluster default for that topic.
 
 ## Chaos HTTP endpoints
 

@@ -63,6 +63,7 @@ public final class ProduceHandler {
     private final ProducerStateManager producerState;
     private final int minInsyncReplicas;
     private final DiskHeadroom diskHeadroom;
+    private final int maxMessageBytes;
 
     public ProduceHandler(
             LogManager logManager,
@@ -143,10 +144,11 @@ public final class ProduceHandler {
     }
 
     /**
-     * Full constructor — additionally gates client produces on the data
+     * Constructor additionally gating client produces on the data
      * volume's {@link DiskHeadroom} (R2.3): while usable space sits below
      * the watermark, produces fail fast with retriable {@code STORAGE_FULL}
-     * instead of running the disk to zero.
+     * instead of running the disk to zero. Cluster max-message default
+     * stays {@link #DEFAULT_MAX_MESSAGE_BYTES}.
      */
     public ProduceHandler(
             LogManager logManager,
@@ -158,6 +160,37 @@ public final class ProduceHandler {
             ProducerStateManager producerState,
             int minInsyncReplicas,
             DiskHeadroom diskHeadroom) {
+        this(
+                logManager,
+                topicManager,
+                selfBrokerId,
+                followerTracker,
+                metrics,
+                quotaEnforcer,
+                producerState,
+                minInsyncReplicas,
+                diskHeadroom,
+                DEFAULT_MAX_MESSAGE_BYTES);
+    }
+
+    /**
+     * Full constructor — also takes the cluster default for
+     * {@code max.message.bytes} (per-topic config overrides it; see
+     * {@link TopicDescription#effectiveMaxMessageBytes}). The operator
+     * configures it at the server level; validation against the hard cap
+     * happens where the value enters (server config / admin RPC).
+     */
+    public ProduceHandler(
+            LogManager logManager,
+            TopicManager topicManager,
+            int selfBrokerId,
+            FollowerStateTracker followerTracker,
+            BrokerMetrics metrics,
+            jbroker.broker.quota.QuotaEnforcer quotaEnforcer,
+            ProducerStateManager producerState,
+            int minInsyncReplicas,
+            DiskHeadroom diskHeadroom,
+            int maxMessageBytes) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.selfBrokerId = selfBrokerId;
@@ -170,6 +203,10 @@ public final class ProduceHandler {
         }
         this.minInsyncReplicas = minInsyncReplicas;
         this.diskHeadroom = diskHeadroom == null ? DiskHeadroom.disabled() : diskHeadroom;
+        if (maxMessageBytes < 1) {
+            throw new IllegalArgumentException("maxMessageBytes must be ≥ 1, got " + maxMessageBytes);
+        }
+        this.maxMessageBytes = maxMessageBytes;
     }
 
     /** Back-compat overload: omits metrics (tests that don't care). */
@@ -207,11 +244,11 @@ public final class ProduceHandler {
         // Size gate, pre-append and FATAL: retrying the same batch can never
         // succeed, so the client must not treat this as transient. Measured
         // against the serialized batch (what hits the wire and the disk).
-        int maxMessageBytes = topic.get().effectiveMaxMessageBytes(DEFAULT_MAX_MESSAGE_BYTES);
-        if (req.getBatch().size() > maxMessageBytes) {
+        int effectiveMaxMessage = topic.get().effectiveMaxMessageBytes(maxMessageBytes);
+        if (req.getBatch().size() > effectiveMaxMessage) {
             return err(
                     ErrorCodes.MESSAGE_TOO_LARGE,
-                    "batch of " + req.getBatch().size() + " bytes exceeds max.message.bytes " + maxMessageBytes
+                    "batch of " + req.getBatch().size() + " bytes exceeds max.message.bytes " + effectiveMaxMessage
                             + " for " + req.getTopic());
         }
         // Disk gate, pre-append and RETRIABLE: the request is well-formed,

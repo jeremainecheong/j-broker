@@ -557,6 +557,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.BrokerMetrics metrics;
     private final jbroker.broker.chaos.ChaosHttpServer chaosHttp;
     private final jbroker.broker.DiskHeadroom diskHeadroom;
+    private final int selfBrokerId;
 
     private Broker(
             TopicManager tm,
@@ -576,7 +577,8 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.replication.DefaultFetcherFactory fetcherFactory,
             jbroker.broker.BrokerMetrics metrics,
             jbroker.broker.chaos.ChaosHttpServer chaosHttp,
-            jbroker.broker.DiskHeadroom diskHeadroom) {
+            jbroker.broker.DiskHeadroom diskHeadroom,
+            int selfBrokerId) {
         this.topicManager = tm;
         this.logManager = lm;
         this.waitingSm = wsm;
@@ -595,6 +597,7 @@ public final class Broker implements AutoCloseable {
         this.metrics = metrics;
         this.chaosHttp = chaosHttp;
         this.diskHeadroom = diskHeadroom;
+        this.selfBrokerId = selfBrokerId;
     }
 
     public static Broker start(Config config) throws IOException {
@@ -1255,7 +1258,8 @@ public final class Broker implements AutoCloseable {
                 fetcherFactory,
                 brokerMetrics,
                 chaosHttp,
-                diskHeadroom);
+                diskHeadroom,
+                selfId);
     }
 
     /** Exposed for tests + the admin-app chaos proxy probe. */
@@ -1409,6 +1413,105 @@ public final class Broker implements AutoCloseable {
      * {@code shutdownNow()} and skips the graceful drain. Tests use this
      * to prove failover from an abruptly-gone partition leader.
      */
+    /**
+     * Controlled shutdown (R7.2): stop the preferred-leader balancer so it
+     * cannot fight the handoff, drain every led partition to another ISR
+     * member, then run the normal {@link #close()}. The drain is bounded
+     * by {@code drainTimeoutMillis}; whatever could not hand off by then
+     * (sole-ISR partitions, proposals lost to races at the deadline)
+     * closes anyway — those partitions go offline and recover onto this
+     * broker per ISR-only election when it returns. SIGTERM routes here
+     * through the BrokerApp shutdown hook; plain {@code close()} stays
+     * the fast path for tests.
+     */
+    public void closeGracefully(long drainTimeoutMillis) {
+        balancerTicker.shutdownNow();
+        try {
+            drainLeadership(drainTimeoutMillis);
+        } catch (RuntimeException e) {
+            log.warn("leadership drain failed; closing anyway", e);
+        }
+        close();
+    }
+
+    /**
+     * Propose-and-await handoff rounds until no partition led by this
+     * broker has another ISR member to take over, or the deadline passes.
+     * Each round recomputes proposals from fresh state and stamps CAS
+     * priors, so a proposal dropped at apply (state moved underneath it)
+     * simply gets re-derived next round. Proposals go through
+     * {@code raftDriver.propose}, which forwards to the Raft leader when
+     * this broker is a follower.
+     */
+    private void drainLeadership(long timeoutMillis) {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        int rounds = 0;
+        while (System.currentTimeMillis() < deadline) {
+            var proposals = jbroker.broker.controller.LeadershipDrainer.proposeDrain(topicManager, selfBrokerId);
+            if (proposals.isEmpty()) {
+                log.info("leadership drain complete after {} round(s)", rounds);
+                return;
+            }
+            rounds++;
+            for (var proposal : proposals) {
+                var ps = topicManager
+                        .partitionState(proposal.topic(), proposal.partition())
+                        .orElse(null);
+                if (ps == null || ps.leader() != selfBrokerId) continue;
+                var record = jbroker.proto.raft.PartitionChangeRecord.newBuilder()
+                        .setTopic(proposal.topic())
+                        .setPartition(proposal.partition())
+                        .setLeader(proposal.newLeader())
+                        .addAllIsr(ps.isr())
+                        .addAllReplicas(ps.replicas())
+                        .setLeaderEpoch(proposal.newLeaderEpoch())
+                        .setPartitionEpoch(0)
+                        // CAS guard: dropped at apply if the partition state
+                        // moved since ps was read.
+                        .setPriorLeaderEpoch(ps.leaderEpoch())
+                        .setPriorPartitionEpoch(ps.partitionEpoch())
+                        .build();
+                var payload = jbroker.proto.raft.MetadataRecord.newBuilder()
+                        .setPartitionChange(record)
+                        .build()
+                        .toByteArray();
+                try {
+                    raftDriver.propose(payload);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                log.info(
+                        "drain: {}-{} → broker {} (epoch {})",
+                        proposal.topic(),
+                        proposal.partition(),
+                        proposal.newLeader(),
+                        proposal.newLeaderEpoch());
+            }
+            // Await this round's applies before re-deriving.
+            long roundDeadline = Math.min(deadline, System.currentTimeMillis() + 2_000);
+            while (System.currentTimeMillis() < roundDeadline) {
+                if (jbroker.broker.controller.LeadershipDrainer.proposeDrain(topicManager, selfBrokerId)
+                        .isEmpty()) {
+                    break;
+                }
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+        int remaining = jbroker.broker.controller.LeadershipDrainer.proposeDrain(topicManager, selfBrokerId)
+                .size();
+        if (remaining > 0) {
+            log.warn("leadership drain timed out with {} partition(s) still led locally", remaining);
+        } else {
+            log.info("leadership drain complete after {} round(s)", rounds);
+        }
+    }
+
     public void closeAbruptly() {
         isrTicker.shutdownNow();
         registrationTicker.shutdownNow();

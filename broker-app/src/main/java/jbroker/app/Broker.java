@@ -24,6 +24,8 @@ import jbroker.broker.ProducerIdRegistry;
 import jbroker.broker.ReplicaFetchHandler;
 import jbroker.broker.TopicManager;
 import jbroker.broker.WaitingStateMachine;
+import jbroker.broker.auth.AuthMode;
+import jbroker.broker.auth.MtlsAuthInterceptor;
 import jbroker.broker.group.GroupCoordinator;
 import jbroker.broker.group.OffsetCache;
 import jbroker.broker.group.RangeAssignor;
@@ -108,7 +110,14 @@ public final class Broker implements AutoCloseable {
              * their newest commit is older than this, ms. Default 7 days;
              * non-positive disables expiry.
              */
-            long offsetsRetentionMillis) {
+            long offsetsRetentionMillis,
+            /**
+             * Client authentication mode. {@link AuthMode#MTLS} derives the
+             * principal from the client certificate CN and rejects
+             * principal-less RPCs; requires {@code tls} to be enabled.
+             * Default {@link AuthMode#NONE} (startup logs a warning).
+             */
+            AuthMode authMode) {
 
         /**
          * Cluster defaults behind the per-topic keys: {@code
@@ -170,6 +179,67 @@ public final class Broker implements AutoCloseable {
                 throw new IllegalArgumentException("storageHeadroomBytes must be ≥ 1, got " + storageHeadroomBytes);
             }
             if (topicDefaults == null) topicDefaults = TopicDefaults.standard();
+            if (authMode == null) authMode = AuthMode.NONE;
+            if (authMode == AuthMode.MTLS && !tls.enabled()) {
+                throw new IllegalArgumentException("auth.mode=mtls requires TLS on the broker listener");
+            }
+        }
+
+        /** Pre-auth-mode canonical shape kept callable: auth.mode=none. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis,
+                long storageHeadroomBytes,
+                TopicDefaults topicDefaults,
+                long offsetsRetentionMillis) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    AuthMode.NONE);
+        }
+
+        /** Set the client authentication mode. Call after {@link #withTls} — mtls requires it. */
+        public Config withAuthMode(AuthMode mode) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    mode);
         }
 
         /** Default idle-group offset retention: 7 days, matching Kafka. */
@@ -206,7 +276,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    DEFAULT_OFFSETS_RETENTION_MILLIS);
+                    DEFAULT_OFFSETS_RETENTION_MILLIS,
+                    AuthMode.NONE);
         }
 
         /** Pre-topic-defaults canonical shape kept callable: standard defaults. */
@@ -258,7 +329,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     defaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
 
         /** Override the idle-group offset retention window. Non-positive disables expiry. */
@@ -278,7 +350,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    retentionMillis);
+                    retentionMillis,
+                    authMode);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -438,7 +511,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -458,7 +532,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
 
         /**
@@ -482,7 +557,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
 
         /**
@@ -533,7 +609,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
 
         /**
@@ -558,7 +635,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
 
         /**
@@ -582,7 +660,8 @@ public final class Broker implements AutoCloseable {
                     intervalMillis,
                     storageHeadroomBytes,
                     topicDefaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
 
         /**
@@ -606,7 +685,8 @@ public final class Broker implements AutoCloseable {
                     logCleanerIntervalMillis,
                     headroomBytes,
                     topicDefaults,
-                    offsetsRetentionMillis);
+                    offsetsRetentionMillis,
+                    authMode);
         }
     }
 
@@ -970,8 +1050,15 @@ public final class Broker implements AutoCloseable {
         // outbound factory can reuse it; here we only need the inbound
         // interceptor.
         var chaosInterceptor = new jbroker.broker.chaos.ChaosServerInterceptor(chaosState);
+        if (config.authMode() == AuthMode.NONE) {
+            log.warn("auth.mode=none — every client is anonymous and nothing is rejected; "
+                    + "set auth.mode=mtls before exposing this broker to a real network");
+        }
+        // Auth is added after chaos so it intercepts first: unauthenticated
+        // calls are rejected before any chaos gate or handler runs.
         var brokerServerBuilder = NettyServerBuilder.forPort(config.brokerPort())
                 .intercept(chaosInterceptor)
+                .intercept(new MtlsAuthInterceptor(config.authMode()))
                 .addService(BrokerGrpcServices.producer(produce, initProducerId))
                 .addService(BrokerGrpcServices.consumer(fetch, consumerHandler))
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))

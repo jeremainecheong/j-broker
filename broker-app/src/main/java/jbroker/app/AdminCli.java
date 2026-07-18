@@ -43,7 +43,45 @@ public final class AdminCli {
             case "topics" -> topics(adminUrl, Arrays.copyOfRange(rest, 1, rest.length));
             case "groups" -> groups(adminUrl, Arrays.copyOfRange(rest, 1, rest.length));
             case "raft" -> get(adminUrl + "/api/v1/raft");
+            case "verify-log" -> verifyLog(Arrays.copyOfRange(rest, 1, rest.length));
             default -> usage(System.err);
+        }
+    }
+
+    /**
+     * Offline backup integrity check: {@code j-broker admin verify-log DIR}
+     * where DIR is a broker data dir (or its {@code topics/} subdirectory).
+     * CRC-verifies every batch of every partition without touching the
+     * files; exits 1 if anything fails to decode, so restore scripts can
+     * gate on it.
+     */
+    private static void verifyLog(String[] args) {
+        if (args.length == 0) {
+            System.err.println("Usage: j-broker admin verify-log DIR");
+            System.exit(2);
+            return;
+        }
+        var dir = java.nio.file.Path.of(args[0]);
+        // Accept the data dir itself for convenience; the logs live under topics/.
+        var topicsDir = java.nio.file.Files.isDirectory(dir.resolve("topics")) ? dir.resolve("topics") : dir;
+        try {
+            var reports = jbroker.storage.LogVerifier.verify(topicsDir);
+            for (var r : reports) {
+                if (r.problem() == null) {
+                    System.out.printf(
+                            "OK      %s  segments=%d batches=%d records=%d nextOffset=%d%n",
+                            r.partitionDir(), r.segments(), r.batches(), r.records(), r.nextOffset());
+                } else {
+                    System.out.printf("CORRUPT %s  %s%n", r.partitionDir(), r.problem());
+                }
+            }
+            if (!jbroker.storage.LogVerifier.allClean(reports)) {
+                System.exit(1);
+            }
+            System.out.println(reports.size() + " partition(s) verified clean");
+        } catch (java.io.IOException e) {
+            System.err.println("verify-log failed: " + e.getMessage());
+            System.exit(2);
         }
     }
 

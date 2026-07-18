@@ -48,6 +48,8 @@ import jbroker.storage.RecordBatch;
  */
 public final class ConsumerHandler {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ConsumerHandler.class);
+
     private final TopicManager topicManager;
     private final LogManager logManager;
     private final BrokerRegistry brokerRegistry;
@@ -439,6 +441,54 @@ public final class ConsumerHandler {
     private int coordinatorPartitionFor(String groupId) {
         var topicDesc = topicManager.describe(ConsumerOffsetsTopic.NAME).orElseThrow();
         return Math.floorMod(groupId.hashCode(), topicDesc.partitions());
+    }
+
+    /**
+     * Offset expiry (R2.7): drop every commit belonging to a group that
+     * has no live members and whose newest commit is older than
+     * {@code retentionMillis}. Only groups this broker coordinates are
+     * considered — each coordinator expires its own partitions' groups.
+     * Expiry is durable: a tombstone per {@code (group, topic, partition)}
+     * is appended to {@code __consumer_offsets} before the cache entries
+     * drop, so the commits stay gone across restarts (the recovery walk
+     * applies tombstones) and compaction eventually purges the keys.
+     * A non-positive retention disables the pass. Returns the number of
+     * offsets expired.
+     */
+    public int expireStaleOffsets(long retentionMillis) {
+        if (retentionMillis <= 0 || groupCoordinator == null || offsetCache == null) return 0;
+        long now = wallClockMillis.getAsLong();
+        int expired = 0;
+        for (String group : offsetCache.groupsWithOffsets()) {
+            if (coordinatorRoutingFor(group) != ErrorCode.OK) continue;
+            if (groupCoordinator.memberCountOf(group) > 0) continue;
+            long newest = offsetCache.newestCommitTimestamp(group);
+            if (newest < 0 || now - newest < retentionMillis) continue;
+            var offsets = offsetCache.snapshotForGroup(group);
+            if (offsets.isEmpty()) continue;
+            var records = new java.util.ArrayList<Record>(offsets.size());
+            int i = 0;
+            for (var tp : offsets.keySet()) {
+                byte[] key = ConsumerOffsetsTopic.keyForOffset(group, tp.getTopic(), tp.getPartition());
+                records.add(new Record(/*offsetDelta*/ i++, /*timestampDelta*/ 0L, key, /*tombstone*/ null));
+            }
+            try {
+                appendOffsetBatch(coordinatorPartitionFor(group), records, now);
+            } catch (IOException e) {
+                // Tombstones didn't land; keep the cache intact and let the
+                // next tick retry — dropping the cache first would resurrect
+                // the offsets on restart.
+                continue;
+            }
+            offsetCache.dropGroup(group);
+            expired += records.size();
+            log.info(
+                    "expired {} committed offset(s) of idle group '{}' (newest commit {} ms past retention)",
+                    records.size(),
+                    group,
+                    now - newest - retentionMillis);
+        }
+        return expired;
     }
 
     private void appendOffsetBatch(int partition, List<Record> records, long nowMillis) throws IOException {

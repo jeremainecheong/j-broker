@@ -62,11 +62,18 @@ public final class OffsetCacheRecovery {
                 for (var rec : parsed.records()) {
                     var keyOpt = ConsumerOffsetsTopic.decodeOffsetKey(rec.key());
                     if (keyOpt.isEmpty()) continue; // not an offset record (type-2 group metadata, etc.)
+                    var key = keyOpt.get();
+                    if (rec.value() == null) {
+                        // Tombstone from offset expiry — the commit is gone,
+                        // and must stay gone across restarts.
+                        cache.remove(key.group(), key.topic(), key.partition());
+                        continue;
+                    }
                     var value = ConsumerOffsetsTopic.decodeOffsetValue(rec.value());
                     cache.put(
-                            keyOpt.get().group(),
-                            keyOpt.get().topic(),
-                            keyOpt.get().partition(),
+                            key.group(),
+                            key.topic(),
+                            key.partition(),
                             new OffsetCache.OffsetAndMetadata(
                                     value.offset(), value.leaderEpoch(), value.metadata(), value.commitTimestamp()));
                     applied++;

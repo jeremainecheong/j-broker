@@ -113,6 +113,12 @@ final class ServerConfig {
                     String.valueOf(jbroker.broker.DiskHeadroom.DEFAULT_HEADROOM_BYTES),
                     "Disk-headroom watermark. Below it, client produces get retriable STORAGE_FULL "
                             + "while fetch/replication/admin keep serving."),
+            new Key(
+                    "auth.mode",
+                    "--auth-mode",
+                    "none",
+                    "Client authentication: none or mtls. mtls derives the principal from the "
+                            + "client certificate CN, rejects principal-less RPCs, and requires tls.enabled."),
             new Key("tls.enabled", null, "false", "Enable mTLS on every gRPC listener and inter-broker client."),
             new Key("tls.cert", "--tls-cert", "", "PEM certificate chain. Required when tls.enabled."),
             new Key("tls.key", "--tls-key", "", "PEM private key. Required when tls.enabled."),
@@ -317,6 +323,15 @@ final class ServerConfig {
                         errors.add(k + " does not exist: " + raw(k));
                     }
                 }
+            }
+        } catch (IllegalArgumentException e) {
+            errors.add(e.getMessage());
+        }
+
+        try {
+            var mode = jbroker.broker.auth.AuthMode.parse(raw("auth.mode"));
+            if (mode == jbroker.broker.auth.AuthMode.MTLS && !boolValue("tls.enabled")) {
+                errors.add("auth.mode=mtls requires tls.enabled=true");
             }
         } catch (IllegalArgumentException e) {
             errors.add(e.getMessage());

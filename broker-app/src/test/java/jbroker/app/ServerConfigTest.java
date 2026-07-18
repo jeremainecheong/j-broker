@@ -166,6 +166,48 @@ class ServerConfigTest {
     }
 
     @Test
+    void mtlsAuthModeRequiresTls(@TempDir Path dir) throws Exception {
+        var file = dir.resolve("j-broker.yaml");
+        Files.writeString(file, "auth.mode: mtls\n");
+
+        var config = ServerConfig.resolve(file, Map.of(), NO_FLAGS);
+
+        assertThat(config.validate()).anySatisfy(p -> assertThat(p).contains("auth.mode=mtls requires tls.enabled"));
+    }
+
+    @Test
+    void unknownAuthModeIsAValidationError(@TempDir Path dir) throws Exception {
+        var file = dir.resolve("j-broker.yaml");
+        Files.writeString(file, "auth.mode: kerberos\n");
+
+        var config = ServerConfig.resolve(file, Map.of(), NO_FLAGS);
+
+        assertThat(config.validate()).anySatisfy(p -> assertThat(p).contains("kerberos"));
+    }
+
+    @Test
+    void mtlsAuthModeWithTlsValidates(@TempDir Path dir) throws Exception {
+        var cert = Files.writeString(dir.resolve("b.crt"), "pem");
+        var key = Files.writeString(dir.resolve("b.key"), "pem");
+        var trust = Files.writeString(dir.resolve("ca.crt"), "pem");
+        var file = dir.resolve("j-broker.yaml");
+        Files.writeString(
+                file,
+                """
+                auth.mode: mtls
+                tls.enabled: true
+                tls.cert: %s
+                tls.key: %s
+                tls.trust: %s
+                """
+                        .formatted(cert, key, trust));
+
+        var config = ServerConfig.resolve(file, Map.of(), NO_FLAGS);
+
+        assertThat(config.validate()).isEmpty();
+    }
+
+    @Test
     void referenceCoversEveryDeclaredKey() {
         var reference = ServerConfig.renderReference();
         for (var key : ServerConfig.KEYS) {

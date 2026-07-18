@@ -221,11 +221,11 @@ public final class ProduceHandler {
     }
 
     public ProduceResponse handle(ProduceRequest req) {
-        // Admission check. Uses "anonymous" until a later pass adds
-        // authenticated principal extraction from gRPC metadata. Byte budget
-        // is the serialized batch size so the budget matches the wire cost.
+        // Admission check, accounted to the authenticated principal
+        // (anonymous outside mTLS). Byte budget is the serialized batch
+        // size so the budget matches the wire cost.
         var decision = quotaEnforcer.check(
-                "anonymous",
+                jbroker.broker.auth.AuthContext.principalOrAnonymous(),
                 jbroker.broker.quota.QuotaEnforcer.Op.PRODUCE,
                 req.getBatch().size());
         if (!decision.allow()) {

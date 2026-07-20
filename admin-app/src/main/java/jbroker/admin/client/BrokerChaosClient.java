@@ -31,24 +31,37 @@ public final class BrokerChaosClient {
     }
 
     private final Map<Integer, String> brokerUrls;
+    private final String bearerToken;
     private final HttpClient http =
             HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
 
     public BrokerChaosClient(String mapping) {
+        this(mapping, "");
+    }
+
+    /** Token-carrying form: brokers with a chaos auth token demand it on every request. */
+    public BrokerChaosClient(String mapping, String bearerToken) {
         this.brokerUrls = parseMapping(mapping);
+        this.bearerToken = bearerToken == null ? "" : bearerToken;
     }
 
     /** Visible for tests that want to wire chaos URLs dynamically (random ports). */
     public BrokerChaosClient(Map<Integer, String> brokerUrls) {
         this.brokerUrls = Map.copyOf(brokerUrls);
+        this.bearerToken = "";
+    }
+
+    private HttpRequest.Builder request(String uri) {
+        var b = HttpRequest.newBuilder().uri(URI.create(uri));
+        if (!bearerToken.isBlank()) b.header("Authorization", "Bearer " + bearerToken);
+        return b;
     }
 
     public String post(int brokerId, String path, String query) throws Exception {
         String base = brokerUrls.get(brokerId);
         if (base == null) throw new BrokerUnknown("no chaos URL configured for broker " + brokerId);
         String uri = base + path + (query == null || query.isEmpty() ? "" : "?" + query);
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(uri))
+        HttpRequest req = request(uri)
                 .timeout(Duration.ofSeconds(3))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
@@ -73,8 +86,7 @@ public final class BrokerChaosClient {
     public String getState(int brokerId) throws Exception {
         String base = brokerUrls.get(brokerId);
         if (base == null) throw new BrokerUnknown("no chaos URL configured for broker " + brokerId);
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(base + "/debug/chaos/state"))
+        HttpRequest req = request(base + "/debug/chaos/state")
                 .timeout(Duration.ofSeconds(2))
                 .GET()
                 .build();

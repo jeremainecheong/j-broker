@@ -232,6 +232,31 @@ message UpdateTopicConfigRecord {
   map<string, string> config = 2;
 }
 
+// One access-control entry, keyed by its first four fields (a later
+// record with the same key overwrites the earlier one's allow flag).
+// resource_type: "topic" | "group" | "cluster". resource_name is exact
+// unless prefix is set, in which case it matches every resource whose
+// name starts with it; "*" as an exact name matches everything.
+// operation: "produce" | "consume" | "admin" | "*".
+message AclRecord {
+  string principal = 1;
+  string resource_type = 2;
+  string resource_name = 3;
+  bool prefix = 4;
+  string operation = 5;
+  bool allow = 6;
+}
+
+// Deletes the ACL entry with the same four-field key. Unknown keys
+// apply as no-ops so delete is idempotent under replay.
+message RemoveAclRecord {
+  string principal = 1;
+  string resource_type = 2;
+  string resource_name = 3;
+  bool prefix = 4;
+  string operation = 5;
+}
+
 // Tagged union of metadata records; the Raft state machine tags payloads
 // with this wrapper so it can dispatch.
 message MetadataRecord {
@@ -244,5 +269,7 @@ message MetadataRecord {
     ProducerIdAssignmentRecord producer_id_assignment = 6;
     DeleteTopicRecord delete_topic = 7;
     UpdateTopicConfigRecord update_topic_config = 8;
+    AclRecord acl = 9;
+    RemoveAclRecord remove_acl = 10;
   }
 }

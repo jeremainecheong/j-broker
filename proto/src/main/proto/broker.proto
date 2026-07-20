@@ -51,6 +51,13 @@ service Admin {
   // doesn't host a replica. Admin-app fans out to every broker so all
   // replicas converge to the compacted view.
   rpc ForceCompactPartition(ForceCompactPartitionRequest) returns (ForceCompactPartitionResponse);
+  // ACL management. Create/Delete propose a metadata record through
+  // Raft on the controller (non-leaders answer NOT_LEADER with the usual
+  // suggested_leader_* hints, like every admin mutation); ListAcls
+  // answers from the responding broker's replicated cache.
+  rpc CreateAcl(CreateAclRequest) returns (CreateAclResponse);
+  rpc DeleteAcl(DeleteAclRequest) returns (DeleteAclResponse);
+  rpc ListAcls(ListAclsRequest) returns (ListAclsResponse);
 }
 
 // Read-only admin observability surface. All RPCs answer from
@@ -252,6 +259,44 @@ message UpdateTopicConfigRequest {
 message UpdateTopicConfigResponse {
   Error error = 1;
   map<string, string> config = 2; // merged effective config after apply
+}
+
+// One ACL entry on the wire. Field meanings match the stored form:
+// resource_type is "topic" | "group" | "cluster"; resource_name is exact
+// unless prefix is set ("*" matches everything); operation is
+// "produce" | "consume" | "admin" | "*".
+message AclEntry {
+  string principal = 1;
+  string resource_type = 2;
+  string resource_name = 3;
+  bool prefix = 4;
+  string operation = 5;
+  bool allow = 6;
+}
+
+message CreateAclRequest {
+  AclEntry entry = 1;
+}
+
+message CreateAclResponse {
+  Error error = 1;
+}
+
+// Deletes by identity key (allow flag is not part of the key).
+message DeleteAclRequest {
+  AclEntry entry = 1;
+}
+
+message DeleteAclResponse {
+  Error error = 1;
+}
+
+message ListAclsRequest {
+}
+
+message ListAclsResponse {
+  Error error = 1;
+  repeated AclEntry entries = 2;
 }
 
 // Consumer-group mutations.

@@ -35,8 +35,10 @@ public final class ChaosHttpServer implements AutoCloseable {
     private final BrokerEventPublisher eventPublisher;
     private final Runnable forceElection;
     private final Runnable kill;
+    private final String authToken;
     private final HttpServer http;
 
+    /** Back-compat: no auth token — every request passes (test harnesses). */
     public ChaosHttpServer(
             ChaosState state,
             int selfBrokerId,
@@ -45,11 +47,30 @@ public final class ChaosHttpServer implements AutoCloseable {
             Runnable forceElection,
             Runnable kill)
             throws IOException {
+        this(state, selfBrokerId, port, eventPublisher, forceElection, kill, "");
+    }
+
+    /**
+     * With a non-blank {@code authToken}, every endpoint demands
+     * {@code Authorization: Bearer <token>} and answers 401 otherwise —
+     * chaos actions must come from an authenticated operator, not anyone
+     * who can reach the port.
+     */
+    public ChaosHttpServer(
+            ChaosState state,
+            int selfBrokerId,
+            int port,
+            BrokerEventPublisher eventPublisher,
+            Runnable forceElection,
+            Runnable kill,
+            String authToken)
+            throws IOException {
         this.state = state;
         this.selfBrokerId = selfBrokerId;
         this.eventPublisher = eventPublisher;
         this.forceElection = forceElection;
         this.kill = kill;
+        this.authToken = authToken == null ? "" : authToken;
         this.http = HttpServer.create(new InetSocketAddress(port), 0);
         http.createContext("/debug/chaos/kill", wrap(this::handleKill));
         http.createContext("/debug/chaos/pause", wrap(this::handlePause));
@@ -76,12 +97,22 @@ public final class ChaosHttpServer implements AutoCloseable {
     private HttpHandler wrap(HttpHandler inner) {
         return ex -> {
             try {
+                if (!authorized(ex)) {
+                    respond(ex, 401, "{\"error\":\"bearer token required\"}");
+                    return;
+                }
                 inner.handle(ex);
             } catch (Exception e) {
                 log.warn("chaos handler failed: {}", ex.getRequestURI(), e);
                 respond(ex, 500, "{\"error\":\"" + escape(e.toString()) + "\"}");
             }
         };
+    }
+
+    private boolean authorized(HttpExchange ex) {
+        if (authToken.isBlank()) return true;
+        var header = ex.getRequestHeaders().getFirst("Authorization");
+        return header != null && header.equals("Bearer " + authToken);
     }
 
     private void handleKill(HttpExchange ex) throws IOException {

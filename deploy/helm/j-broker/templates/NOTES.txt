@@ -17,9 +17,34 @@ Admin UI:
 
 TLS is enabled — the broker gRPC surface demands mutual-TLS. Clients must
 present a cert signed by the CA in secret "{{ .Values.tls.secretName }}".
-Generate a bundle via scripts/tls/bootstrap-ca.sh, then:
+Generate a bundle whose server cert carries the pod-DNS wildcard SANs
+(the Compose-oriented bootstrap-ca.sh certs will NOT verify between pods):
+  scripts/tls/bootstrap-k8s.sh .tls-k8s {{ include "jbroker.broker.headless" . }} {{ .Release.Namespace }}
   kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.tls.secretName }} \
-      --from-file=tls.crt=broker1.crt \
-      --from-file=tls.key=broker1.key \
-      --from-file=ca.crt=ca.crt
+      --from-file=tls.crt=.tls-k8s/server.crt \
+      --from-file=tls.key=.tls-k8s/server.key \
+      --from-file=ca.crt=.tls-k8s/ca.crt
+
+Certificate rotation (same CA — the common case; expiring server certs):
+  1. Re-run bootstrap-k8s.sh — it keeps ca.key/ca.crt and mints a fresh
+     server cert under the same CA.
+  2. Replace the secret in place:
+       kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.tls.secretName }} \
+           --from-file=tls.crt=.tls-k8s/server.crt \
+           --from-file=tls.key=.tls-k8s/server.key \
+           --from-file=ca.crt=.tls-k8s/ca.crt \
+           --dry-run=client -o yaml | kubectl apply -f -
+  3. Roll the brokers; SIGTERM drains leadership before each pod exits,
+     so acks=all clients ride through with retriable errors only:
+       kubectl -n {{ .Release.Namespace }} rollout restart statefulset/{{ include "jbroker.broker.fullname" . }}
+       kubectl -n {{ .Release.Namespace }} rollout status  statefulset/{{ include "jbroker.broker.fullname" . }}
+  4. Restart the admin deployment the same way.
+  Rotating the CA itself needs the two-step trust dance: first ship a
+  ca.crt bundle containing old+new CAs (roll), then switch server certs
+  to the new CA (roll again), then drop the old CA from the bundle.
+
+{{- if eq .Values.broker.auth.mode "mtls" }}
+auth.mode=mtls — ACLs enforce default-deny. Seed operator grants through
+the admin API with a super-user identity ({{ .Values.broker.auth.superUsers }}).
+{{- end }}
 {{- end }}

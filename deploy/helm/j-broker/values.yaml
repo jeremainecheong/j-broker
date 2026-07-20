@@ -47,9 +47,25 @@ broker:
   advertisedPort: 0  # 0 → falls back to ports.grpc
   # Extra CLI flags appended to the broker startup command.
   extraArgs: []
+  # Client authentication + authorization on the broker gRPC surface.
+  auth:
+    # none | mtls. mtls derives the principal from the client cert CN,
+    # rejects principal-less RPCs, and enforces ACLs default-deny.
+    # Requires tls.enabled.
+    mode: none
+    # Principals that bypass ACL checks. With the shared k8s server cert
+    # from scripts/tls/bootstrap-k8s.sh, inter-broker traffic presents
+    # CN=broker and the admin-app presents CN=admin — both must be here
+    # before flipping mode to mtls.
+    superUsers: "broker,admin"
   # Runtime chaos HTTP control plane. -1 disables; >= 0 binds that port
-  # inside the pod. Not exposed via Service by default.
+  # inside the pod. Not exposed via Service by default. Binding also
+  # requires chaosTokenSecret — the broker refuses a chaos port without
+  # a bearer token.
   chaosPort: -1
+  # Name of a Secret (key "token") whose value every chaos HTTP request
+  # must present as Authorization: Bearer.
+  chaosTokenSecret: ""
   podAnnotations: {}
 
 # Admin UI — Deployment serving the Thymeleaf + htmx dashboard on
@@ -84,6 +100,14 @@ admin:
   # jbroker.admin.brokers). Empty → auto-derived from broker.replicaCount
   # + the headless broker service.
   brokersOverride: ""
+  # Operator login for the admin UI/API. Name of a Secret whose "users"
+  # key holds comma-separated name:bcrypt-hash pairs. Empty leaves the
+  # admin app OPEN (it logs a startup warning) — set it before exposing
+  # the UI beyond the cluster:
+  #   kubectl create secret generic jbroker-admin-users \
+  #       --from-literal=users="op:$(htpasswd -bnBC 10 '' 's3cret' | tr -d ':\n')"
+  auth:
+    existingSecret: ""
   podAnnotations: {}
 
 # Cluster-wide TLS bundle. Apply via `--set tls.enabled=true`

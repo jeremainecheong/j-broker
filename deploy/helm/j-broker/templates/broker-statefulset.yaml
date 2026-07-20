@@ -60,8 +60,12 @@ spec:
                 --tls-key /etc/jbroker/tls/tls.key \
                 --tls-trust /etc/jbroker/tls/ca.crt \
                 {{- end }}
+                {{- if ne .Values.broker.auth.mode "none" }}
+                --auth-mode {{ .Values.broker.auth.mode }} \
+                {{- end }}
                 {{- if ge (int .Values.broker.chaosPort) 0 }}
                 --chaos-port {{ .Values.broker.chaosPort }} \
+                --enable-chaos true \
                 {{- end }}
                 {{- range .Values.broker.extraArgs }}
                 {{ . | quote }} \
@@ -76,6 +80,17 @@ spec:
             {{- if include "jbroker.advertisedListeners" . }}
             - name: JBROKER_ADVERTISED_LISTENERS
               value: {{ include "jbroker.advertisedListeners" . | quote }}
+            {{- end }}
+            {{- if .Values.broker.auth.superUsers }}
+            - name: JBROKER_SUPER_USERS
+              value: {{ .Values.broker.auth.superUsers | quote }}
+            {{- end }}
+            {{- if ge (int .Values.broker.chaosPort) 0 }}
+            - name: JBROKER_CHAOS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "broker.chaosTokenSecret is required when broker.chaosPort >= 0" .Values.broker.chaosTokenSecret | quote }}
+                  key: token
             {{- end }}
           ports:
             - name: grpc

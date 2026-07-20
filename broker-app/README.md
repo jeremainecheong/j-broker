@@ -93,6 +93,7 @@ The table below is generated from the same key table that drives validation (`Se
 | `offsets.retention.ms` | `604800000` | `JBROKER_OFFSETS_RETENTION_MS` | — | Committed offsets of groups with no live members expire once their newest commit is older than this (7 days). -1 disables expiry. |
 | `shutdown.timeout.ms` | `30000` | `JBROKER_SHUTDOWN_TIMEOUT_MS` | — | SIGTERM drain budget: how long the broker spends handing led partitions to other ISR members before closing. 0 skips the drain. |
 | `storage.headroom.bytes` | `1073741824` | `JBROKER_STORAGE_HEADROOM_BYTES` | — | Disk-headroom watermark. Below it, client produces get retriable STORAGE_FULL while fetch/replication/admin keep serving. |
+| `auth.mode` | `none` | `JBROKER_AUTH_MODE` | `--auth-mode` | Client authentication: none or mtls. mtls derives the principal from the client certificate CN, rejects principal-less RPCs, and requires tls.enabled. |
 | `tls.enabled` | `false` | `JBROKER_TLS_ENABLED` | — | Enable mTLS on every gRPC listener and inter-broker client. |
 | `tls.cert` | `(empty)` | `JBROKER_TLS_CERT` | `--tls-cert` | PEM certificate chain. Required when tls.enabled. |
 | `tls.key` | `(empty)` | `JBROKER_TLS_KEY` | `--tls-key` | PEM private key. Required when tls.enabled. |

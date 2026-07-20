@@ -12,11 +12,14 @@ import javax.net.ssl.SSLException;
  * passes through the same path; keeps the plaintext fallback obvious
  * ({@code null} return when {@link TlsConfig#enabled()} is false).
  *
- * <p>Server contexts default to {@code ClientAuth.REQUIRE} when
- * {@link TlsConfig#clientAuthRequired()} is set — that's the mTLS knob.
- * Clients with a cert + key supply a client cert for mutual auth; clients
- * without one still verify the server cert against the trust store
- * (server-only TLS).
+ * <p>Server contexts use {@code ClientAuth.REQUIRE} when
+ * {@link TlsConfig#clientAuthRequired()} is set — that's the mTLS knob —
+ * and {@code ClientAuth.OPTIONAL} otherwise, so a client certificate is
+ * always <em>requested</em>: peers that have one hand over an identity
+ * (principal extraction feeds on it) while certless peers still complete
+ * the handshake. Clients with a cert + key supply a client cert for
+ * mutual auth; clients without one still verify the server cert against
+ * the trust store (server-only TLS).
  *
  * <p>Returning {@code null} from both factories when TLS is disabled lets
  * call sites feed the result straight into their builders via a nullable
@@ -37,7 +40,7 @@ public final class TlsContexts {
         var b = SslContextBuilder.forServer(
                         tls.certChain().toFile(), tls.privateKey().toFile())
                 .trustManager(tls.trustStore().toFile())
-                .clientAuth(tls.clientAuthRequired() ? ClientAuth.REQUIRE : ClientAuth.NONE);
+                .clientAuth(tls.clientAuthRequired() ? ClientAuth.REQUIRE : ClientAuth.OPTIONAL);
         return GrpcSslContexts.configure(b).build();
     }
 

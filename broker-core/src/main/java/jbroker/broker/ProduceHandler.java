@@ -60,6 +60,14 @@ public final class ProduceHandler {
     private final FollowerStateTracker followerTracker;
     private final BrokerMetrics metrics;
     private final jbroker.broker.quota.QuotaEnforcer quotaEnforcer;
+
+    /** ACL gate, wired by the broker; {@link jbroker.broker.auth.Authorizer#OPEN} keeps test harnesses open. */
+    private jbroker.broker.auth.Authorizer authorizer = jbroker.broker.auth.Authorizer.OPEN;
+
+    public void setAuthorizer(jbroker.broker.auth.Authorizer authorizer) {
+        this.authorizer = authorizer;
+    }
+
     private final ProducerStateManager producerState;
     private final int minInsyncReplicas;
     private final DiskHeadroom diskHeadroom;
@@ -221,6 +229,14 @@ public final class ProduceHandler {
     }
 
     public ProduceResponse handle(ProduceRequest req) {
+        // Authorization precedes everything — an unauthorized principal
+        // learns nothing about the topic, not even whether it exists.
+        if (!authorizer.allowsCurrent("topic", req.getTopic(), "produce")) {
+            return err(
+                    ErrorCodes.UNAUTHORIZED,
+                    "principal " + jbroker.broker.auth.AuthContext.principalOrAnonymous()
+                            + " is not authorized to produce to topic " + req.getTopic());
+        }
         // Admission check, accounted to the authenticated principal
         // (anonymous outside mTLS). Byte budget is the serialized batch
         // size so the budget matches the wire cost.

@@ -28,6 +28,13 @@ public final class FetchHandler {
     private final FetchSessionCache sessionCache;
     private final BrokerMetrics metrics;
 
+    /** ACL gate, wired by the broker; {@link jbroker.broker.auth.Authorizer#OPEN} keeps test harnesses open. */
+    private jbroker.broker.auth.Authorizer authorizer = jbroker.broker.auth.Authorizer.OPEN;
+
+    public void setAuthorizer(jbroker.broker.auth.Authorizer authorizer) {
+        this.authorizer = authorizer;
+    }
+
     public FetchHandler(LogManager logManager, TopicManager topicManager) {
         this(logManager, topicManager, new FetchSessionCache(), new BrokerMetrics());
     }
@@ -42,6 +49,17 @@ public final class FetchHandler {
 
     public FetchResponse handle(FetchRequest req) {
         long startNs = System.nanoTime();
+        // Authorization precedes everything — an unauthorized principal
+        // learns nothing about the topic, not even whether it exists.
+        if (!authorizer.allowsCurrent("topic", req.getTopic(), "consume")) {
+            return FetchResponse.newBuilder()
+                    .setError(jbroker.proto.broker.Error.newBuilder()
+                            .setCode(ErrorCodes.UNAUTHORIZED)
+                            .setMessage("principal " + jbroker.broker.auth.AuthContext.principalOrAnonymous()
+                                    + " is not authorized to consume from topic " + req.getTopic())
+                            .build())
+                    .build();
+        }
         var topic = topicManager.describe(req.getTopic());
         if (topic.isEmpty()) {
             return FetchResponse.newBuilder()

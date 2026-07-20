@@ -117,7 +117,14 @@ public final class Broker implements AutoCloseable {
              * principal-less RPCs; requires {@code tls} to be enabled.
              * Default {@link AuthMode#NONE} (startup logs a warning).
              */
-            AuthMode authMode) {
+            AuthMode authMode,
+            /**
+             * Principals that bypass ACL checks entirely. Inter-broker
+             * certificate CNs belong here so replication and admin tooling
+             * keep working the moment {@code auth.mode=mtls} turns on,
+             * before any ACL exists. Empty by default.
+             */
+            java.util.Set<String> superUsers) {
 
         /**
          * Cluster defaults behind the per-topic keys: {@code
@@ -183,6 +190,67 @@ public final class Broker implements AutoCloseable {
             if (authMode == AuthMode.MTLS && !tls.enabled()) {
                 throw new IllegalArgumentException("auth.mode=mtls requires TLS on the broker listener");
             }
+            superUsers = superUsers == null ? java.util.Set.of() : java.util.Set.copyOf(superUsers);
+        }
+
+        /** Pre-super-users canonical shape kept callable: empty super-user set. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis,
+                long storageHeadroomBytes,
+                TopicDefaults topicDefaults,
+                long offsetsRetentionMillis,
+                AuthMode authMode) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    java.util.Set.of());
+        }
+
+        /** Replace the super-user set (principals that bypass ACL checks). */
+        public Config withSuperUsers(java.util.Set<String> users) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    users);
         }
 
         /** Pre-auth-mode canonical shape kept callable: auth.mode=none. */
@@ -239,7 +307,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    mode);
+                    mode,
+                    superUsers);
         }
 
         /** Default idle-group offset retention: 7 days, matching Kafka. */
@@ -330,7 +399,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     defaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /** Override the idle-group offset retention window. Non-positive disables expiry. */
@@ -351,7 +421,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     retentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -512,7 +583,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -533,7 +605,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /**
@@ -558,7 +631,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /**
@@ -610,7 +684,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /**
@@ -636,7 +711,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /**
@@ -661,7 +737,8 @@ public final class Broker implements AutoCloseable {
                     storageHeadroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
 
         /**
@@ -686,7 +763,8 @@ public final class Broker implements AutoCloseable {
                     headroomBytes,
                     topicDefaults,
                     offsetsRetentionMillis,
-                    authMode);
+                    authMode,
+                    superUsers);
         }
     }
 
@@ -1004,6 +1082,14 @@ public final class Broker implements AutoCloseable {
                 config.selfId().value(),
                 System::nanoTime,
                 System::currentTimeMillis);
+        // One authorizer for every enforcement point. Under
+        // auth.mode=none it is a constant-true gate.
+        var authorizer =
+                new jbroker.broker.auth.Authorizer(config.authMode(), metadataSm.aclStore(), config.superUsers());
+        produce.setAuthorizer(authorizer);
+        fetch.setAuthorizer(authorizer);
+        consumerHandler.setAuthorizer(authorizer);
+        admin.setAuthorizer(authorizer);
         // Metadata service: DescribeCluster now wired to live
         // BrokerRegistry + BrokerLiveness + Raft state. Remaining RPCs
         // return UNIMPLEMENTED until they are implemented.

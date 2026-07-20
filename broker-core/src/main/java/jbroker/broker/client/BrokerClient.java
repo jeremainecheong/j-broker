@@ -83,9 +83,12 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     public List<TopicDescription> listTopics() {
-        return admin.withDeadlineAfter(5, TimeUnit.SECONDS)
-                .listTopics(ListTopicsRequest.newBuilder().build())
-                .getTopicsList();
+        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .listTopics(ListTopicsRequest.newBuilder().build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("listTopics failed: " + resp.getError().getMessage());
+        }
+        return resp.getTopicsList();
     }
 
     public TopicDescription describeTopic(String topic) {
@@ -169,9 +172,12 @@ public final class BrokerClient implements AutoCloseable {
 
     /** Every ACL entry in the responding broker's replicated cache. */
     public List<jbroker.proto.broker.AclEntry> listAcls() {
-        return admin.withDeadlineAfter(5, TimeUnit.SECONDS)
-                .listAcls(jbroker.proto.broker.ListAclsRequest.getDefaultInstance())
-                .getEntriesList();
+        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .listAcls(jbroker.proto.broker.ListAclsRequest.getDefaultInstance());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("listAcls failed: " + resp.getError().getMessage());
+        }
+        return resp.getEntriesList();
     }
 
     private static jbroker.proto.broker.AclEntry aclEntry(

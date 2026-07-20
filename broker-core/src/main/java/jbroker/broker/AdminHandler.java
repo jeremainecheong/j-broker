@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import jbroker.broker.auth.AclStore;
+import jbroker.broker.auth.Authorizer;
 import jbroker.proto.broker.AclEntry;
 import jbroker.proto.broker.CreateAclRequest;
 import jbroker.proto.broker.CreateAclResponse;
@@ -87,6 +88,22 @@ public final class AdminHandler {
         this.aclStore = store;
     }
 
+    /** ACL gate, wired by the broker; {@link Authorizer#OPEN} keeps test harnesses open. */
+    private Authorizer authorizer = Authorizer.OPEN;
+
+    public void setAuthorizer(Authorizer authorizer) {
+        this.authorizer = authorizer;
+    }
+
+    /** Null when allowed; the refusal envelope otherwise. */
+    private jbroker.proto.broker.Error requireAdmin(String resourceType, String resourceName) {
+        if (authorizer.allowsCurrent(resourceType, resourceName, "admin")) return null;
+        return buildError(
+                ErrorCodes.UNAUTHORIZED,
+                "principal " + jbroker.broker.auth.AuthContext.principalOrAnonymous()
+                        + " is not authorized to administer " + resourceType + " " + resourceName);
+    }
+
     public AdminHandler(
             TopicManager topicManager,
             MetadataProposer proposer,
@@ -133,6 +150,10 @@ public final class AdminHandler {
     }
 
     public CreateTopicResponse createTopic(CreateTopicRequest req) {
+        var denied = requireAdmin("topic", req.getTopic());
+        if (denied != null) {
+            return CreateTopicResponse.newBuilder().setError(denied).build();
+        }
         if (topicManager.exists(req.getTopic())) {
             return CreateTopicResponse.newBuilder()
                     .setError(buildError(ErrorCodes.TOPIC_ALREADY_EXISTS, "topic already exists: " + req.getTopic()))
@@ -195,6 +216,10 @@ public final class AdminHandler {
     }
 
     public DeleteTopicResponse deleteTopic(DeleteTopicRequest req) {
+        var denied = requireAdmin("topic", req.getTopic());
+        if (denied != null) {
+            return DeleteTopicResponse.newBuilder().setError(denied).build();
+        }
         if (!topicManager.exists(req.getTopic())) {
             return DeleteTopicResponse.newBuilder()
                     .setError(buildError(ErrorCodes.UNKNOWN_TOPIC, "unknown topic: " + req.getTopic()))
@@ -217,6 +242,10 @@ public final class AdminHandler {
     }
 
     public UpdateTopicConfigResponse updateTopicConfig(UpdateTopicConfigRequest req) {
+        var denied = requireAdmin("topic", req.getTopic());
+        if (denied != null) {
+            return UpdateTopicConfigResponse.newBuilder().setError(denied).build();
+        }
         var existing = topicManager.describe(req.getTopic());
         if (existing.isEmpty()) {
             return UpdateTopicConfigResponse.newBuilder()
@@ -357,6 +386,10 @@ public final class AdminHandler {
 
     public ListTopicsResponse listTopics(ListTopicsRequest req) {
         var b = ListTopicsResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) {
+            return b.setError(denied).build();
+        }
         for (var t : topicManager.list()) {
             b.addTopics(toDescriptionProto(t));
         }
@@ -371,6 +404,12 @@ public final class AdminHandler {
      * with no error so the admin-app can fan out safely.
      */
     public ForceCompactPartitionResponse forceCompactPartition(ForceCompactPartitionRequest req) {
+        var deniedCompact = requireAdmin("topic", req.getTopic());
+        if (deniedCompact != null) {
+            return ForceCompactPartitionResponse.newBuilder()
+                    .setError(deniedCompact)
+                    .build();
+        }
         var b = ForceCompactPartitionResponse.newBuilder().setRecordsKept(-1);
         if (compactor == null) {
             return b.setError(buildError(ErrorCodes.UNIMPLEMENTED, "compactor not wired"))
@@ -401,6 +440,10 @@ public final class AdminHandler {
     private static final Set<String> ACL_OPERATIONS = Set.of("produce", "consume", "admin", "*");
 
     public CreateAclResponse createAcl(CreateAclRequest req) {
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) {
+            return CreateAclResponse.newBuilder().setError(denied).build();
+        }
         var e = req.getEntry();
         var problem = validateAclEntry(e);
         if (problem != null) {
@@ -430,6 +473,10 @@ public final class AdminHandler {
     }
 
     public DeleteAclResponse deleteAcl(DeleteAclRequest req) {
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) {
+            return DeleteAclResponse.newBuilder().setError(denied).build();
+        }
         var e = req.getEntry();
         var problem = validateAclEntry(e);
         if (problem != null) {
@@ -459,6 +506,10 @@ public final class AdminHandler {
 
     public ListAclsResponse listAcls(ListAclsRequest req) {
         var b = ListAclsResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) {
+            return b.setError(denied).build();
+        }
         if (aclStore == null) return b.build();
         for (var a : aclStore.list()) {
             b.addEntries(AclEntry.newBuilder()
@@ -485,6 +536,10 @@ public final class AdminHandler {
     }
 
     public DescribeTopicResponse describeTopic(DescribeTopicRequest req) {
+        var denied = requireAdmin("topic", req.getTopic());
+        if (denied != null) {
+            return DescribeTopicResponse.newBuilder().setError(denied).build();
+        }
         var desc = topicManager.describe(req.getTopic());
         if (desc.isEmpty()) {
             return DescribeTopicResponse.newBuilder()

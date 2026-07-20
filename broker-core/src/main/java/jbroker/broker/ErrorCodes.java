@@ -31,6 +31,13 @@ public final class ErrorCodes {
      */
     public static final int STORAGE_FULL = 12;
 
+    /**
+     * The authenticated principal holds no ACL allowing this operation on
+     * this resource (default-deny whenever {@code auth.mode != none}).
+     * Fatal — retrying cannot succeed until an operator grants access.
+     */
+    public static final int UNAUTHORIZED = 13;
+
     // Consumer groups. Numerics match common.proto::ErrorCode.
     /** Coordinator-routed RPC arrived before {@code __consumer_offsets} has a leader. */
     public static final int COORDINATOR_NOT_AVAILABLE = 80;

@@ -357,6 +357,8 @@ message ListTopicsRequest {}
 
 message ListTopicsResponse {
   repeated TopicDescription topics = 1;
+  // Set only on refusal (UNAUTHORIZED); absent on success.
+  Error error = 2;
 }
 
 message DescribeTopicRequest {

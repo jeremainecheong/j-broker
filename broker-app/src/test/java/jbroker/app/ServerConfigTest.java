@@ -208,6 +208,34 @@ class ServerConfigTest {
     }
 
     @Test
+    void chaosPortDemandsExplicitOptInAndAToken(@TempDir Path dir) throws Exception {
+        var file = dir.resolve("j-broker.yaml");
+        Files.writeString(file, "chaos.port: 9100\n");
+
+        var config = ServerConfig.resolve(file, Map.of(), NO_FLAGS);
+
+        assertThat(config.validate())
+                .anySatisfy(p -> assertThat(p).contains("--enable-chaos"))
+                .anySatisfy(p -> assertThat(p).contains("chaos.token"));
+    }
+
+    @Test
+    void enabledChaosWithTokenValidates(@TempDir Path dir) throws Exception {
+        var file = dir.resolve("j-broker.yaml");
+        Files.writeString(
+                file,
+                """
+                chaos.port: 9100
+                chaos.enabled: true
+                chaos.token: hunter2
+                """);
+
+        var config = ServerConfig.resolve(file, Map.of(), NO_FLAGS);
+
+        assertThat(config.validate()).isEmpty();
+    }
+
+    @Test
     void referenceCoversEveryDeclaredKey() {
         var reference = ServerConfig.renderReference();
         for (var key : ServerConfig.KEYS) {

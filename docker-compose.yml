@@ -9,11 +9,14 @@
 # wire traffic with a tcpdump sidecar.
 #
 # Chaos control plane (broker-level kill/pause/partition REST endpoints) is
-# disabled by default (chaos-port = -1). To enable, run:
-#   JBROKER_CHAOS_PORT=9100 docker compose up
+# disabled by default (chaos-port = -1). Enabling takes the explicit opt-in
+# AND a bearer token every chaos request must present:
+#   JBROKER_CHAOS_ENABLED=true JBROKER_CHAOS_PORT=9100 \
+#   JBROKER_CHAOS_TOKEN=<secret> docker compose up
 # The three brokers then bind 9100 internally and the host maps them to
 # 9100/9101/9102. (They all bind the same internal 9100 because each broker
-# is a distinct container — no port collision.)
+# is a distinct container — no port collision.) The admin-app forwards the
+# same token on its chaos proxy calls.
 #
 # Monitoring (Prometheus + Grafana) lives in docker-compose.monitoring.yml as
 # a profile; bring it up with:
@@ -27,6 +30,11 @@ x-broker-common: &broker-common
   image: jbroker-broker:local
   restart: unless-stopped
   networks: [jbroker]
+  environment:
+    # Chaos opt-in + token ride the env layer (JBROKER_* maps onto the
+    # dotted config keys); empty defaults keep chaos fully disabled.
+    JBROKER_CHAOS_ENABLED: ${JBROKER_CHAOS_ENABLED:-false}
+    JBROKER_CHAOS_TOKEN: ${JBROKER_CHAOS_TOKEN:-}
 
 # YAML anchor — all three brokers advertise this same voter set. Changing
 # cluster size or renaming a broker is a single-line edit here.
@@ -143,6 +151,8 @@ services:
       # Harmless when chaos is disabled: the admin only dials these URLs
       # on explicit POSTs from the Chaos UI page.
       JBROKER_ADMIN_CHAOS_BROKERS: "1=broker1:9100,2=broker2:9100,3=broker3:9100"
+      # Forwarded as Authorization: Bearer on every chaos proxy call.
+      JBROKER_ADMIN_CHAOS_TOKEN: ${JBROKER_CHAOS_TOKEN:-}
 
 networks:
   jbroker:

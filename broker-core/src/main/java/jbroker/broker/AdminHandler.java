@@ -6,22 +6,32 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import jbroker.broker.auth.AclStore;
+import jbroker.proto.broker.AclEntry;
+import jbroker.proto.broker.CreateAclRequest;
+import jbroker.proto.broker.CreateAclResponse;
 import jbroker.proto.broker.CreateTopicRequest;
 import jbroker.proto.broker.CreateTopicResponse;
+import jbroker.proto.broker.DeleteAclRequest;
+import jbroker.proto.broker.DeleteAclResponse;
 import jbroker.proto.broker.DeleteTopicRequest;
 import jbroker.proto.broker.DeleteTopicResponse;
 import jbroker.proto.broker.DescribeTopicRequest;
 import jbroker.proto.broker.DescribeTopicResponse;
 import jbroker.proto.broker.ForceCompactPartitionRequest;
 import jbroker.proto.broker.ForceCompactPartitionResponse;
+import jbroker.proto.broker.ListAclsRequest;
+import jbroker.proto.broker.ListAclsResponse;
 import jbroker.proto.broker.ListTopicsRequest;
 import jbroker.proto.broker.ListTopicsResponse;
 import jbroker.proto.broker.UpdateTopicConfigRequest;
 import jbroker.proto.broker.UpdateTopicConfigResponse;
+import jbroker.proto.raft.AclRecord;
 import jbroker.proto.raft.CreateTopicRecord;
 import jbroker.proto.raft.DeleteTopicRecord;
 import jbroker.proto.raft.MetadataRecord;
 import jbroker.proto.raft.PartitionChangeRecord;
+import jbroker.proto.raft.RemoveAclRecord;
 import jbroker.proto.raft.TopicRecord;
 import jbroker.proto.raft.UpdateTopicConfigRecord;
 
@@ -65,6 +75,17 @@ public final class AdminHandler {
     private final LeaderIdLookup leaderLookup;
     private final BrokerRegistry addressBook;
     private final Compactor compactor;
+
+    /**
+     * Replicated ACL cache, set by the broker after the metadata state
+     * machine is built (it owns the instance). Null only in test harnesses
+     * that never exercise the ACL RPCs; {@code listAcls} then answers empty.
+     */
+    private AclStore aclStore;
+
+    public void setAclStore(AclStore store) {
+        this.aclStore = store;
+    }
 
     public AdminHandler(
             TopicManager topicManager,
@@ -374,6 +395,93 @@ public final class AdminHandler {
             return b.setError(buildError(ErrorCodes.IO_ERROR, e.getMessage() == null ? e.toString() : e.getMessage()))
                     .build();
         }
+    }
+
+    private static final Set<String> ACL_RESOURCE_TYPES = Set.of("topic", "group", "cluster");
+    private static final Set<String> ACL_OPERATIONS = Set.of("produce", "consume", "admin", "*");
+
+    public CreateAclResponse createAcl(CreateAclRequest req) {
+        var e = req.getEntry();
+        var problem = validateAclEntry(e);
+        if (problem != null) {
+            return CreateAclResponse.newBuilder()
+                    .setError(buildError(ErrorCodes.INVALID_CONFIG, problem))
+                    .build();
+        }
+        var record = MetadataRecord.newBuilder()
+                .setAcl(AclRecord.newBuilder()
+                        .setPrincipal(e.getPrincipal())
+                        .setResourceType(e.getResourceType())
+                        .setResourceName(e.getResourceName())
+                        .setPrefix(e.getPrefix())
+                        .setOperation(e.getOperation())
+                        .setAllow(e.getAllow()))
+                .build();
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) {
+            return CreateAclResponse.newBuilder().setError(notLeader.get()).build();
+        }
+        try {
+            proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
+        } catch (Exception ex) {
+            return CreateAclResponse.newBuilder().setError(notLeaderError(ex)).build();
+        }
+        return CreateAclResponse.newBuilder().build();
+    }
+
+    public DeleteAclResponse deleteAcl(DeleteAclRequest req) {
+        var e = req.getEntry();
+        var problem = validateAclEntry(e);
+        if (problem != null) {
+            return DeleteAclResponse.newBuilder()
+                    .setError(buildError(ErrorCodes.INVALID_CONFIG, problem))
+                    .build();
+        }
+        var record = MetadataRecord.newBuilder()
+                .setRemoveAcl(RemoveAclRecord.newBuilder()
+                        .setPrincipal(e.getPrincipal())
+                        .setResourceType(e.getResourceType())
+                        .setResourceName(e.getResourceName())
+                        .setPrefix(e.getPrefix())
+                        .setOperation(e.getOperation()))
+                .build();
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) {
+            return DeleteAclResponse.newBuilder().setError(notLeader.get()).build();
+        }
+        try {
+            proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
+        } catch (Exception ex) {
+            return DeleteAclResponse.newBuilder().setError(notLeaderError(ex)).build();
+        }
+        return DeleteAclResponse.newBuilder().build();
+    }
+
+    public ListAclsResponse listAcls(ListAclsRequest req) {
+        var b = ListAclsResponse.newBuilder();
+        if (aclStore == null) return b.build();
+        for (var a : aclStore.list()) {
+            b.addEntries(AclEntry.newBuilder()
+                    .setPrincipal(a.principal())
+                    .setResourceType(a.resourceType())
+                    .setResourceName(a.resourceName())
+                    .setPrefix(a.prefix())
+                    .setOperation(a.operation())
+                    .setAllow(a.allow()));
+        }
+        return b.build();
+    }
+
+    private static String validateAclEntry(AclEntry e) {
+        if (e.getPrincipal().isBlank()) return "acl principal must be non-blank";
+        if (!ACL_RESOURCE_TYPES.contains(e.getResourceType())) {
+            return "acl resource_type must be one of " + ACL_RESOURCE_TYPES + ", got: " + e.getResourceType();
+        }
+        if (e.getResourceName().isBlank()) return "acl resource_name must be non-blank";
+        if (!ACL_OPERATIONS.contains(e.getOperation())) {
+            return "acl operation must be one of " + ACL_OPERATIONS + ", got: " + e.getOperation();
+        }
+        return null;
     }
 
     public DescribeTopicResponse describeTopic(DescribeTopicRequest req) {

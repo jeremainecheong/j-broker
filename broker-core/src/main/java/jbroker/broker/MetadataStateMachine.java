@@ -76,6 +76,18 @@ public final class MetadataStateMachine implements StateMachine {
     private final PartitionChangeListener partitionChangeListener;
     private final TopicDeletionListener topicDeletionListener;
 
+    /**
+     * ACL cache fed by committed Acl/RemoveAcl records. Owned here so
+     * replay, snapshot, and restore keep it consistent with the rest of
+     * the metadata without extra wiring; the broker reaches it through
+     * {@link #aclStore()} for enforcement and admin listing.
+     */
+    private final jbroker.broker.auth.AclStore aclStore = new jbroker.broker.auth.AclStore();
+
+    public jbroker.broker.auth.AclStore aclStore() {
+        return aclStore;
+    }
+
     public MetadataStateMachine(TopicManager topicManager) {
         this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt, ah, ap) -> {}, (t, p, s) -> {});
     }
@@ -191,6 +203,21 @@ public final class MetadataStateMachine implements StateMachine {
                 var u = record.getUpdateTopicConfig();
                 topicManager.onTopicConfigUpdated(u.getTopic(), u.getConfigMap());
             }
+            case ACL -> {
+                var a = record.getAcl();
+                aclStore.put(new jbroker.broker.auth.AclStore.Entry(
+                        a.getPrincipal(),
+                        a.getResourceType(),
+                        a.getResourceName(),
+                        a.getPrefix(),
+                        a.getOperation(),
+                        a.getAllow()));
+            }
+            case REMOVE_ACL -> {
+                var r = record.getRemoveAcl();
+                aclStore.remove(
+                        r.getPrincipal(), r.getResourceType(), r.getResourceName(), r.getPrefix(), r.getOperation());
+            }
                 // PartitionRecord is not yet dispatched — unused by any
                 // consumer. KIND_NOT_SET is legal (pre-v4 snapshot frames).
             case PARTITION, KIND_NOT_SET -> {
@@ -263,7 +290,8 @@ public final class MetadataStateMachine implements StateMachine {
     //  v5:            appends producer-id counter.
     //  v6:            per-topic internal + compact flags.
     //  v7:            per-topic config map.
-    private static final byte SNAPSHOT_VERSION = 7;
+    //  v8:            appends ACL entries.
+    private static final byte SNAPSHOT_VERSION = 8;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
@@ -311,6 +339,17 @@ public final class MetadataStateMachine implements StateMachine {
         }
         // v5: producer-id counter.
         dout.writeLong(producerIdRegistry.peekNextProducerId());
+        // v8: ACL entries.
+        var acls = aclStore.list();
+        dout.writeInt(acls.size());
+        for (var a : acls) {
+            dout.writeUTF(a.principal());
+            dout.writeUTF(a.resourceType());
+            dout.writeUTF(a.resourceName());
+            dout.writeBoolean(a.prefix());
+            dout.writeUTF(a.operation());
+            dout.writeBoolean(a.allow());
+        }
         dout.flush();
     }
 
@@ -384,6 +423,20 @@ public final class MetadataStateMachine implements StateMachine {
         }
         if (version >= 5) {
             producerIdRegistry.applyAssignment(din.readLong());
+        }
+        if (version >= 8) {
+            aclStore.clear();
+            int acls = din.readInt();
+            for (int i = 0; i < acls; i++) {
+                var principal = din.readUTF();
+                var resourceType = din.readUTF();
+                var resourceName = din.readUTF();
+                var prefix = din.readBoolean();
+                var operation = din.readUTF();
+                var allow = din.readBoolean();
+                aclStore.put(new jbroker.broker.auth.AclStore.Entry(
+                        principal, resourceType, resourceName, prefix, operation, allow));
+            }
         }
     }
 }

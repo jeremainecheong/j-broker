@@ -965,6 +965,7 @@ public final class Broker implements AutoCloseable {
                         : raftDriver.currentLeader().map(jbroker.raft.core.NodeId::value),
                 brokerRegistry,
                 logManager::compactLogNowIfPresent);
+        admin.setAclStore(metadataSm.aclStore());
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var brokerLiveness = new jbroker.broker.BrokerLiveness();

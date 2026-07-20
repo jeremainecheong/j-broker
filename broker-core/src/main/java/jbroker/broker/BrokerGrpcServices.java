@@ -304,6 +304,30 @@ public final class BrokerGrpcServices {
             }
 
             @Override
+            public void createAcl(
+                    jbroker.proto.broker.CreateAclRequest req,
+                    StreamObserver<jbroker.proto.broker.CreateAclResponse> out) {
+                out.onNext(handler.createAcl(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void deleteAcl(
+                    jbroker.proto.broker.DeleteAclRequest req,
+                    StreamObserver<jbroker.proto.broker.DeleteAclResponse> out) {
+                out.onNext(handler.deleteAcl(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void listAcls(
+                    jbroker.proto.broker.ListAclsRequest req,
+                    StreamObserver<jbroker.proto.broker.ListAclsResponse> out) {
+                out.onNext(handler.listAcls(req));
+                out.onCompleted();
+            }
+
+            @Override
             public void forceCompactPartition(
                     jbroker.proto.broker.ForceCompactPartitionRequest req,
                     StreamObserver<jbroker.proto.broker.ForceCompactPartitionResponse> out) {

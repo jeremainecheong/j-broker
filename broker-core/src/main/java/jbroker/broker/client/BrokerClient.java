@@ -138,6 +138,59 @@ public final class BrokerClient implements AutoCloseable {
         return resp.getRecordsKept();
     }
 
+    /** Create (or overwrite) an ACL entry cluster-wide. */
+    public void createAcl(
+            String principal,
+            String resourceType,
+            String resourceName,
+            boolean prefix,
+            String operation,
+            boolean allow) {
+        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .createAcl(jbroker.proto.broker.CreateAclRequest.newBuilder()
+                        .setEntry(aclEntry(principal, resourceType, resourceName, prefix, operation, allow))
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("createAcl failed: " + resp.getError().getMessage());
+        }
+    }
+
+    /** Delete the ACL entry with this identity key (allow flag is not part of the key). */
+    public void deleteAcl(
+            String principal, String resourceType, String resourceName, boolean prefix, String operation) {
+        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .deleteAcl(jbroker.proto.broker.DeleteAclRequest.newBuilder()
+                        .setEntry(aclEntry(principal, resourceType, resourceName, prefix, operation, true))
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("deleteAcl failed: " + resp.getError().getMessage());
+        }
+    }
+
+    /** Every ACL entry in the responding broker's replicated cache. */
+    public List<jbroker.proto.broker.AclEntry> listAcls() {
+        return admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .listAcls(jbroker.proto.broker.ListAclsRequest.getDefaultInstance())
+                .getEntriesList();
+    }
+
+    private static jbroker.proto.broker.AclEntry aclEntry(
+            String principal,
+            String resourceType,
+            String resourceName,
+            boolean prefix,
+            String operation,
+            boolean allow) {
+        return jbroker.proto.broker.AclEntry.newBuilder()
+                .setPrincipal(principal)
+                .setResourceType(resourceType)
+                .setResourceName(resourceName)
+                .setPrefix(prefix)
+                .setOperation(operation)
+                .setAllow(allow)
+                .build();
+    }
+
     /** Create a topic with a config map. */
     public void createTopicWithConfig(String topic, int partitions, int rf, java.util.Map<String, String> config) {
         var b = CreateTopicRequest.newBuilder()

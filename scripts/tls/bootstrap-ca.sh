@@ -15,6 +15,8 @@
 #   broker3.key / broker3.crt
 #   admin.key       — admin-app client private key
 #   admin.crt       — admin-app client cert
+#   alice.key/.crt  — extra client principals for ACL tests
+#   bob.key/.crt
 #
 # Server cert SANs cover DNS:brokerN (Docker Compose service), DNS:localhost,
 # IP:127.0.0.1 so both `docker compose up` and host-side TLS clients validate.
@@ -74,32 +76,36 @@ EOF
     rm "${name}.csr" "${name}.ext"
 done
 
-# --- Admin-app client cert ---
-if [[ ! -f admin.crt || "${2:-}" == "--force" ]]; then
-    openssl genrsa -out admin.key 2048
-    openssl req -new -key admin.key \
-        -subj "/CN=admin" \
-        -out admin.csr
+# --- Client certs: admin (admin-app) + alice/bob (ACL test principals) ---
+for c in admin alice bob; do
+    if [[ -f "${c}.crt" && "${2:-}" != "--force" ]]; then
+        continue
+    fi
 
-    cat > admin.ext <<EOF
+    openssl genrsa -out "${c}.key" 2048
+    openssl req -new -key "${c}.key" \
+        -subj "/CN=${c}" \
+        -out "${c}.csr"
+
+    cat > "${c}.ext" <<EOF
 authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
 keyUsage=digitalSignature,keyEncipherment
 extendedKeyUsage=clientAuth
 EOF
 
-    openssl x509 -req -in admin.csr \
+    openssl x509 -req -in "${c}.csr" \
         -CA ca.crt -CAkey ca.key -CAcreateserial \
-        -out admin.crt -days 825 -sha256 \
-        -extfile admin.ext
+        -out "${c}.crt" -days 825 -sha256 \
+        -extfile "${c}.ext"
 
-    rm admin.csr admin.ext
-fi
+    rm "${c}.csr" "${c}.ext"
+done
 
 # --- PKCS#8 key re-encoding ---
 # gRPC's SslContextBuilder expects PKCS#8 PEM keys. `openssl genrsa` emits
 # PKCS#1 — convert in place so files are ready for consumption.
-for k in ca.key broker1.key broker2.key broker3.key admin.key; do
+for k in ca.key broker1.key broker2.key broker3.key admin.key alice.key bob.key; do
     if head -1 "$k" | grep -q "BEGIN RSA PRIVATE KEY"; then
         openssl pkcs8 -topk8 -nocrypt -in "$k" -out "${k}.pkcs8"
         mv "${k}.pkcs8" "$k"

@@ -124,7 +124,14 @@ public final class Broker implements AutoCloseable {
              * keep working the moment {@code auth.mode=mtls} turns on,
              * before any ACL exists. Empty by default.
              */
-            java.util.Set<String> superUsers) {
+            java.util.Set<String> superUsers,
+            /**
+             * Bearer token the chaos HTTP endpoints demand on every
+             * request. Blank (the default) leaves the chaos port open —
+             * acceptable only for test harnesses; the server config layer
+             * refuses to boot a chaos port without a token.
+             */
+            String chaosAuthToken) {
 
         /**
          * Cluster defaults behind the per-topic keys: {@code
@@ -191,6 +198,70 @@ public final class Broker implements AutoCloseable {
                 throw new IllegalArgumentException("auth.mode=mtls requires TLS on the broker listener");
             }
             superUsers = superUsers == null ? java.util.Set.of() : java.util.Set.copyOf(superUsers);
+            if (chaosAuthToken == null) chaosAuthToken = "";
+        }
+
+        /** Pre-chaos-token canonical shape kept callable: open chaos port. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis,
+                long storageHeadroomBytes,
+                TopicDefaults topicDefaults,
+                long offsetsRetentionMillis,
+                AuthMode authMode,
+                java.util.Set<String> superUsers) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    "");
+        }
+
+        /** Set the bearer token the chaos HTTP endpoints demand. */
+        public Config withChaosAuthToken(String token) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    token);
         }
 
         /** Pre-super-users canonical shape kept callable: empty super-user set. */
@@ -250,7 +321,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    users);
+                    users,
+                    chaosAuthToken);
         }
 
         /** Pre-auth-mode canonical shape kept callable: auth.mode=none. */
@@ -308,7 +380,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     mode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /** Default idle-group offset retention: 7 days, matching Kafka. */
@@ -400,7 +473,8 @@ public final class Broker implements AutoCloseable {
                     defaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /** Override the idle-group offset retention window. Non-positive disables expiry. */
@@ -422,7 +496,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     retentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -584,7 +659,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -606,7 +682,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /**
@@ -632,7 +709,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /**
@@ -685,7 +763,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /**
@@ -712,7 +791,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /**
@@ -738,7 +818,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
 
         /**
@@ -764,7 +845,8 @@ public final class Broker implements AutoCloseable {
                     topicDefaults,
                     offsetsRetentionMillis,
                     authMode,
-                    superUsers);
+                    superUsers,
+                    chaosAuthToken);
         }
     }
 
@@ -1181,8 +1263,12 @@ public final class Broker implements AutoCloseable {
                             Thread.currentThread().interrupt();
                         }
                     },
-                    () -> System.exit(137));
-            log.info("chaos HTTP server listening on port {}", chaosHttp.port());
+                    () -> System.exit(137),
+                    config.chaosAuthToken());
+            log.info(
+                    "chaos HTTP server listening on port {}{}",
+                    chaosHttp.port(),
+                    config.chaosAuthToken().isBlank() ? " (no auth token — test mode)" : "");
         }
 
         // Wait for Raft to complete a first election. In a multi-voter

@@ -159,7 +159,8 @@ public final class BrokerApp {
                         config.longValue("log.flush.ms")))
                 .withOffsetsRetentionMillis(config.longValue("offsets.retention.ms"))
                 .withAuthMode(jbroker.broker.auth.AuthMode.parse(config.raw("auth.mode")))
-                .withSuperUsers(parseSuperUsers(config.raw("super.users")));
+                .withSuperUsers(parseSuperUsers(config.raw("super.users")))
+                .withChaosAuthToken(config.raw("chaos.token"));
     }
 
     /** Splits the comma-separated {@code super.users} value; blanks drop out. */

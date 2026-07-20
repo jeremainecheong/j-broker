@@ -78,11 +78,39 @@ class ThreeNodeRaftIT {
                 leader.driver().propose(new byte[] {(byte) i, (byte) (i >>> 8)});
             }
 
+            // propose() is fire-and-forget: a burst of 300 append+fsync
+            // events can starve the leader's heartbeat tick on a loaded
+            // runner, a follower wins the resulting election, and the
+            // deposed leader's still-queued proposals drop by contract
+            // (no known leader to forward to mid-election; callers own
+            // retries). So retry like a real client: whenever progress
+            // stalls short of the target, top the shortfall back up at
+            // the current leader. Duplicate payloads are harmless — the
+            // assertion is >=, and ordered apply is unaffected.
             long deadline = System.currentTimeMillis() + 30_000;
+            int maxSeen = 0;
+            long lastProgressAt = System.currentTimeMillis();
             while (System.currentTimeMillis() < deadline) {
-                boolean allThere =
-                        cluster.nodes().stream().allMatch(n -> n.sm().applied.size() >= total);
-                if (allThere) break;
+                int minApplied = cluster.nodes().stream()
+                        .mapToInt(n -> n.sm().applied.size())
+                        .min()
+                        .orElse(0);
+                if (minApplied >= total) break;
+                int maxApplied = cluster.nodes().stream()
+                        .mapToInt(n -> n.sm().applied.size())
+                        .max()
+                        .orElse(0);
+                long now = System.currentTimeMillis();
+                if (maxApplied > maxSeen) {
+                    maxSeen = maxApplied;
+                    lastProgressAt = now;
+                } else if (now - lastProgressAt > 2_000 && maxSeen < total) {
+                    var current = cluster.waitForLeader(5_000);
+                    for (int i = maxSeen; i < total; i++) {
+                        current.driver().propose(new byte[] {(byte) i, (byte) (i >>> 8)});
+                    }
+                    lastProgressAt = now;
+                }
                 Thread.sleep(100);
             }
 

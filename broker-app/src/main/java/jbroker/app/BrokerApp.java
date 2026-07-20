@@ -158,7 +158,17 @@ public final class BrokerApp {
                         config.longValue("log.flush.messages"),
                         config.longValue("log.flush.ms")))
                 .withOffsetsRetentionMillis(config.longValue("offsets.retention.ms"))
-                .withAuthMode(jbroker.broker.auth.AuthMode.parse(config.raw("auth.mode")));
+                .withAuthMode(jbroker.broker.auth.AuthMode.parse(config.raw("auth.mode")))
+                .withSuperUsers(parseSuperUsers(config.raw("super.users")));
+    }
+
+    /** Splits the comma-separated {@code super.users} value; blanks drop out. */
+    static java.util.Set<String> parseSuperUsers(String raw) {
+        var out = new java.util.HashSet<String>();
+        for (var part : raw.split(",")) {
+            if (!part.isBlank()) out.add(part.trim());
+        }
+        return out;
     }
 
     /**

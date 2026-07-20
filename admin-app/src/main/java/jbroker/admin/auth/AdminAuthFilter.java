@@ -82,13 +82,20 @@ public class AdminAuthFilter extends OncePerRequestFilter {
         return null;
     }
 
+    /**
+     * Exact-match allowlist. Never suffix rules — {@code endsWith(".js")}
+     * would open every API route whose trailing path segment an attacker
+     * names (e.g. {@code DELETE /api/v1/topics/orders.js}). Requests whose
+     * raw URI smuggles traversal or path parameters are never open either:
+     * the container may normalize {@code /vendor/../api/x} into an API
+     * route after this check runs.
+     */
+    private static final java.util.Set<String> OPEN_EXACT = java.util.Set.of(
+            "/login", "/logout", "/favicon.ico", "/app.css", "/app.js", "/chaos.js", "/overview.js", "/epoch.js");
+
     private static boolean isOpenPath(String uri) {
-        return uri.equals("/login")
-                || uri.equals("/logout")
-                || uri.startsWith("/actuator")
-                || uri.equals("/favicon.ico")
-                || uri.endsWith(".css")
-                || uri.endsWith(".js");
+        if (uri.contains("..") || uri.contains(";") || uri.contains("\\")) return false;
+        return OPEN_EXACT.contains(uri) || uri.startsWith("/actuator/") || uri.startsWith("/vendor/");
     }
 
     private static boolean isMutation(String method) {

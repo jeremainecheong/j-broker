@@ -84,6 +84,20 @@ class AdminLoginE2EIT {
     }
 
     @Test
+    void staticAssetSuffixesDoNotOpenApiRoutes() {
+        // Regression: a suffix allowlist (endsWith ".js"/".css") would let
+        // any API route with an attacker-chosen trailing segment bypass
+        // auth entirely.
+        var byName = rest.getForEntity("/api/v1/topics/orders.js", String.class);
+        assertThat(byName.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        // Refusal may be 401 (API branch), 302-to-login (UI branch), or
+        // 400 (container rejects the raw path) — anything but content.
+        var byTraversal = rest.getForEntity("/vendor/../api/v1/cluster", String.class);
+        assertThat(byTraversal.getStatusCode().value()).isIn(302, 400, 401);
+    }
+
+    @Test
     void wrongPasswordStaysOnTheLoginPage() {
         var resp = postLogin("op", "wrong");
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -119,9 +133,15 @@ class AdminLoginE2EIT {
         var viaToken = rest.exchange("/api/v1/cluster", HttpMethod.GET, new HttpEntity<>(withToken), String.class);
         assertThat(viaToken.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        // --- Revoke: the same token is dead immediately.
-        var revoke =
-                rest.exchange("/api/v1/tokens/" + token, HttpMethod.DELETE, new HttpEntity<>(withToken), Void.class);
+        // --- Revoke: token in the body (never a URL), dead immediately.
+        var revokeHeaders = new HttpHeaders();
+        revokeHeaders.setBearerAuth(token);
+        revokeHeaders.setContentType(MediaType.APPLICATION_JSON);
+        var revoke = rest.exchange(
+                "/api/v1/tokens/revoke",
+                HttpMethod.POST,
+                new HttpEntity<>("{\"token\":\"" + token + "\"}", revokeHeaders),
+                Void.class);
         assertThat(revoke.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
         var afterRevoke = rest.exchange("/api/v1/cluster", HttpMethod.GET, new HttpEntity<>(withToken), String.class);
         assertThat(afterRevoke.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);

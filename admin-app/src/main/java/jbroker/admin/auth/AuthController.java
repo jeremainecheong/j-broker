@@ -8,10 +8,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 
@@ -44,7 +43,7 @@ public class AuthController {
     public String login(
             @RequestParam String username, @RequestParam String password, HttpServletRequest req, Model model) {
         if (!users.authenticate(username, password)) {
-            audit.info("{} LOGIN_FAILED /login", username);
+            audit.info("{} LOGIN_FAILED /login", sanitize(username));
             model.addAttribute("error", "invalid credentials");
             model.addAttribute("authDisabled", !users.enabled());
             return "login";
@@ -54,8 +53,13 @@ public class AuthController {
         var session = req.getSession(true);
         req.changeSessionId();
         session.setAttribute(AdminAuthFilter.SESSION_PRINCIPAL, username);
-        audit.info("{} LOGIN /login", username);
+        audit.info("{} LOGIN /login", sanitize(username));
         return "redirect:/";
+    }
+
+    /** Attempted user names are attacker-chosen; strip control characters before they reach a log line. */
+    private static String sanitize(String s) {
+        return s.replaceAll("[\\p{Cntrl}]", "_");
     }
 
     @PostMapping("/logout")
@@ -93,11 +97,20 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("token", tokens.issue(principal)));
     }
 
-    /** Revoke a token. Idempotent. */
-    @DeleteMapping("/api/v1/tokens/{token}")
+    /** Request body for {@link #revokeToken} — the token rides the body, never a URL. */
+    public record RevokeBody(String token) {}
+
+    /**
+     * Revoke a token. Idempotent. Deliberately a POST with the token in
+     * the body: a path or query parameter would copy the secret into
+     * access logs and the audit trail.
+     */
+    @PostMapping("/api/v1/tokens/revoke")
     @ResponseBody
-    public ResponseEntity<Void> revokeToken(@PathVariable String token) {
-        tokens.revoke(token);
+    public ResponseEntity<Void> revokeToken(@RequestBody RevokeBody body) {
+        if (body != null && body.token() != null) {
+            tokens.revoke(body.token());
+        }
         return ResponseEntity.noContent().build();
     }
 }

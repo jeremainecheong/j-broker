@@ -1,5 +1,10 @@
 server:
   port: 9090
+  servlet:
+    session:
+      # Cookie-only session tracking: never rewrite ;jsessionid into
+      # URLs, where it would leak into logs and copied links.
+      tracking-modes: cookie
 
 spring:
   application:

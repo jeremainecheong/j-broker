@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head th:replace="~{fragments/shell :: head ('j-broker admin — Login')}"></head>
+  <body>
+    <main class="login-page">
+      <form class="login-card" method="post" action="/login">
+        <h1>j-broker admin</h1>
+
+        <!--/* Shown when jbroker.admin.auth.users is unset: the app is
+              open and the login form is redundant. */-->
+        <p th:if="${authDisabled}" class="login-note">
+          Authentication is disabled (no operator accounts configured).
+          <a href="/">Continue to the console</a>.
+        </p>
+
+        <div th:unless="${authDisabled}">
+          <p th:if="${error}" class="login-error" th:text="${error}">invalid credentials</p>
+          <label>
+            Username
+            <input type="text" name="username" autocomplete="username" autofocus required />
+          </label>
+          <label>
+            Password
+            <input type="password" name="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit">Sign in</button>
+        </div>
+      </form>
+    </main>
+  </body>
+</html>

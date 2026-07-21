@@ -139,6 +139,109 @@ class RaftMembershipTest {
     }
 
     @Test
+    void learnerReceivesReplicationButDoesNotCountTowardCommit(@TempDir Path dir) throws Exception {
+        var core = becomeLeader(dir);
+
+        // Add N4 as a non-voting learner: voters stay {N1,N2,N3}.
+        var addLearner = core.step(new RaftEvent.ProposeConfigChange(new Membership(List.of(N1, N2, N3), List.of(N4))));
+        assertThat(core.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3);
+        // The learner is replicated to — AE goes to N4 alongside the voters.
+        assertThat(addLearner)
+                .filteredOn(e -> e instanceof RaftEffect.SendAppendEntries)
+                .extracting(e -> ((RaftEffect.SendAppendEntries) e).to())
+                .contains(N4);
+
+        // A normal client entry lands at index 3 (NO_OP idx1, config idx2).
+        core.step(new RaftEvent.ClientPropose(new byte[] {0x7}));
+
+        // The learner acking index 3 does NOT advance commit: it is not a voter.
+        core.step(new RaftEvent.AppendEntriesResp(N4, new Term(1), true, 0L, Term.ZERO, 3L));
+        assertThat(core.commitIndex()).as("learner ack alone cannot commit").isEqualTo(0L);
+
+        // A voter (N2) acking closes the quorum {N1, N2}.
+        core.step(new RaftEvent.AppendEntriesResp(N2, new Term(1), true, 0L, Term.ZERO, 3L));
+        assertThat(core.commitIndex()).isEqualTo(3L);
+    }
+
+    @Test
+    void promotingALearnerToVoterLetsItCompleteQuorum(@TempDir Path dir) throws Exception {
+        var core = becomeLeader(dir);
+        core.step(new RaftEvent.ProposeConfigChange(new Membership(List.of(N1, N2, N3), List.of(N4))));
+        // Once the learner has caught up, promote it: voters become {N1,N2,N3,N4}.
+        // (One config change at a time — the add-learner entry must commit first.)
+        core.step(new RaftEvent.AppendEntriesResp(N2, new Term(1), true, 0L, Term.ZERO, 2L));
+        core.step(new RaftEvent.AppendEntriesResp(N3, new Term(1), true, 0L, Term.ZERO, 2L));
+
+        var promote = core.step(new RaftEvent.ProposeConfigChange(List.of(N1, N2, N3, N4)));
+        assertThat(promote)
+                .filteredOn(e -> e instanceof RaftEffect.RejectConfigChange)
+                .isEmpty();
+        assertThat(core.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3, N4);
+    }
+
+    @Test
+    void aLearnerNodeDoesNotStartAnElection(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+            // N4 boots knowing it is a learner: voters {N1,N2,N3}, itself a learner.
+            var learnerConfig = new RaftConfig(
+                    N4,
+                    List.of(N1, N2, N3, N4),
+                    TimeUnit.MILLISECONDS.toNanos(1000),
+                    TimeUnit.MILLISECONDS.toNanos(500),
+                    TimeUnit.MILLISECONDS.toNanos(100),
+                    100);
+            var learner = new DefaultRaftCore(learnerConfig, log, state, 0L);
+            byte[] payload = MembershipCodec.encode(new Membership(List.of(N1, N2, N3), List.of(N4)));
+            var entry = new LogEntry(1L, new Term(1), LogEntry.Type.CONFIG_CHANGE, payload);
+            learner.step(new RaftEvent.AppendEntriesReq(
+                    new Term(1), N1, 0L, Term.ZERO, List.of(entry), 0L, TimeUnit.MILLISECONDS.toNanos(100)));
+            assertThat(learner.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3);
+
+            // Election timeout fires: a learner must not campaign — no
+            // pre-vote requests, and it stays a follower.
+            var effects = learner.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+
+            assertThat(effects)
+                    .filteredOn(e -> e instanceof RaftEffect.SendPreVoteReq)
+                    .isEmpty();
+            assertThat(learner.role()).isEqualTo(Role.FOLLOWER);
+        }
+    }
+
+    @Test
+    void aNodeBootsAsALearnerWhenAbsentFromItsOwnVoterSet(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+            // N4 boots knowing only the incumbent voters {N1,N2,N3} — itself
+            // absent. It is a non-voting learner until promoted.
+            var learnerBoot = new RaftConfig(
+                    N4,
+                    List.of(N1, N2, N3),
+                    TimeUnit.MILLISECONDS.toNanos(1000),
+                    TimeUnit.MILLISECONDS.toNanos(500),
+                    TimeUnit.MILLISECONDS.toNanos(100),
+                    100);
+            var learner = new DefaultRaftCore(learnerBoot, log, state, 0L);
+            assertThat(learner.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3);
+
+            // It never campaigns despite election timeouts.
+            var effects = learner.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+            assertThat(effects)
+                    .filteredOn(e -> e instanceof RaftEffect.SendPreVoteReq)
+                    .isEmpty();
+            assertThat(learner.role()).isEqualTo(Role.FOLLOWER);
+
+            // A CONFIG_CHANGE promoting it into the voter set takes effect.
+            byte[] promote = MembershipCodec.encode(List.of(N1, N2, N3, N4));
+            var entry = new LogEntry(1L, new Term(1), LogEntry.Type.CONFIG_CHANGE, promote);
+            learner.step(new RaftEvent.AppendEntriesReq(
+                    new Term(1), N1, 0L, Term.ZERO, List.of(entry), 0L, TimeUnit.MILLISECONDS.toNanos(100)));
+            assertThat(learner.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3, N4);
+        }
+    }
+
+    @Test
     void leaderRemovedFromVotersStepsDownAfterCommit(@TempDir Path dir) throws Exception {
         var core = becomeLeader(dir);
         // Leader (N1) proposes its own removal — new voter set is {N2, N3}.

@@ -17,9 +17,14 @@ public record RaftConfig(
     public RaftConfig {
         Objects.requireNonNull(selfId, "selfId");
         voters = List.copyOf(voters);
-        if (!voters.contains(selfId)) {
-            throw new IllegalArgumentException("voters must include selfId");
+        if (voters.isEmpty()) {
+            throw new IllegalArgumentException("voters must be non-empty");
         }
+        // selfId need NOT be a voter: a node may boot as a non-voting
+        // learner of an existing cluster (voters = the incumbent set,
+        // itself absent), catch its log up, and be promoted into the voter
+        // set by a later CONFIG_CHANGE. Such a node never campaigns — the
+        // election gate keys on membership, not on this bootstrap list.
         if (electionTimeoutNanos <= 0 || heartbeatIntervalNanos <= 0) {
             throw new IllegalArgumentException("timeouts must be positive");
         }

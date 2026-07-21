@@ -35,8 +35,10 @@ public class ChaosController {
 
     private final BrokerChaosClient client;
 
-    public ChaosController(@Value("${jbroker.admin.chaos.brokers:}") String mapping) {
-        this.client = new BrokerChaosClient(mapping);
+    public ChaosController(
+            @Value("${jbroker.admin.chaos.brokers:}") String mapping,
+            @Value("${jbroker.admin.chaos.token:}") String token) {
+        this.client = new BrokerChaosClient(mapping, token);
     }
 
     @PostMapping("/kill-broker/{id}")

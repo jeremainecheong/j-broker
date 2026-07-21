@@ -81,6 +81,8 @@ The table below is generated from the same key table that drives validation (`Se
 | `voters` | `(empty)` | `JBROKER_VOTERS` | `--voters` | Cluster voter list, `ID@HOST:RAFT:BROKER,...`. Empty runs a single-broker cluster with self as the only voter. |
 | `advertised.listeners` | `(empty)` | `JBROKER_ADVERTISED_LISTENERS` | `--advertised-listeners` | Client-facing address overlay, `ID=HOST:PORT,...`. Ids absent from the overlay advertise their bind address. |
 | `chaos.port` | `-1` | `JBROKER_CHAOS_PORT` | `--chaos-port` | Cooperative chaos HTTP port. -1 disables. |
+| `chaos.enabled` | `false` | `JBROKER_CHAOS_ENABLED` | `--enable-chaos` | Explicit opt-in for the chaos control plane. chaos.port refuses to bind without it. |
+| `chaos.token` | `(empty)` | `JBROKER_CHAOS_TOKEN` | — | Bearer token every chaos HTTP request must present. Required when the chaos port is enabled. |
 | `consumer.offsets.partitions` | `50` | `JBROKER_CONSUMER_OFFSETS_PARTITIONS` | `--consumer-offsets-partitions` | Partition count for the internal `__consumer_offsets` topic. Fixed at first boot. |
 | `min.insync.replicas` | `2` | `JBROKER_MIN_INSYNC_REPLICAS` | `--min-insync-replicas` | Cluster default acks=all durability floor. Per-topic config overrides; RF-1 topics clamp down. |
 | `max.message.bytes` | `1048576` | `JBROKER_MAX_MESSAGE_BYTES` | — | Cluster default for the largest serialized produce batch. Per-topic config overrides; hard cap 8 MiB (gRPC frame limits bound every hop). |

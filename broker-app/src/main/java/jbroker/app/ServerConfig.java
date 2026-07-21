@@ -50,6 +50,17 @@ final class ServerConfig {
                             + "advertise their bind address."),
             new Key("chaos.port", "--chaos-port", "-1", "Cooperative chaos HTTP port. -1 disables."),
             new Key(
+                    "chaos.enabled",
+                    "--enable-chaos",
+                    "false",
+                    "Explicit opt-in for the chaos control plane. chaos.port refuses to bind without it."),
+            new Key(
+                    "chaos.token",
+                    null,
+                    "",
+                    "Bearer token every chaos HTTP request must present. Required when the "
+                            + "chaos port is enabled."),
+            new Key(
                     "consumer.offsets.partitions",
                     "--consumer-offsets-partitions",
                     String.valueOf(jbroker.broker.ConsumerOffsetsTopic.PARTITION_COUNT),
@@ -338,6 +349,19 @@ final class ServerConfig {
             var mode = jbroker.broker.auth.AuthMode.parse(raw("auth.mode"));
             if (mode == jbroker.broker.auth.AuthMode.MTLS && !boolValue("tls.enabled")) {
                 errors.add("auth.mode=mtls requires tls.enabled=true");
+            }
+        } catch (IllegalArgumentException e) {
+            errors.add(e.getMessage());
+        }
+
+        try {
+            if (intValue("chaos.port") >= 0) {
+                if (!boolValue("chaos.enabled")) {
+                    errors.add("chaos.port requires --enable-chaos (chaos.enabled=true)");
+                }
+                if (raw("chaos.token").isBlank()) {
+                    errors.add("chaos.token is required when the chaos port is enabled");
+                }
             }
         } catch (IllegalArgumentException e) {
             errors.add(e.getMessage());

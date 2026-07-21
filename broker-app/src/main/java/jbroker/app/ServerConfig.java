@@ -119,6 +119,12 @@ final class ServerConfig {
                     "none",
                     "Client authentication: none or mtls. mtls derives the principal from the "
                             + "client certificate CN, rejects principal-less RPCs, and requires tls.enabled."),
+            new Key(
+                    "super.users",
+                    null,
+                    "",
+                    "Comma-separated principals that bypass ACL checks. Put inter-broker "
+                            + "certificate CNs here before turning on auth.mode=mtls."),
             new Key("tls.enabled", null, "false", "Enable mTLS on every gRPC listener and inter-broker client."),
             new Key("tls.cert", "--tls-cert", "", "PEM certificate chain. Required when tls.enabled."),
             new Key("tls.key", "--tls-key", "", "PEM private key. Required when tls.enabled."),

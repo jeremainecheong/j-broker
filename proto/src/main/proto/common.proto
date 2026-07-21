@@ -24,6 +24,10 @@ enum ErrorCode {
   // Admin tried to mutate a group the coordinator doesn't track
   // (never-joined or already deleted).
   UNKNOWN_GROUP = 86;
+  // The authenticated principal holds no ACL allowing this operation
+  // on this resource (default-deny whenever auth.mode != none). Fatal —
+  // an operator must grant access.
+  UNAUTHORIZED = 87;
 }
 
 message BrokerEndpoint {

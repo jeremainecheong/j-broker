@@ -29,4 +29,13 @@ public final class AuthContext {
         String p = PRINCIPAL.get();
         return p == null ? ANONYMOUS : p;
     }
+
+    /**
+     * Run {@code action} with {@code principal} as the current identity.
+     * Handler tests use this to exercise authorization without a TLS
+     * transport underneath.
+     */
+    public static <T> T callAs(String principal, java.util.concurrent.Callable<T> action) throws Exception {
+        return Context.current().withValue(PRINCIPAL, principal).call(action);
+    }
 }

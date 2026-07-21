@@ -71,9 +71,14 @@ class AnonymousRejectedIT {
 
         try (var node = TestBrokers.start((rp, bp) -> {
             var voters = List.of(new VoterAddress(new NodeId(1), "127.0.0.1", rp, bp));
+            // admin is a super-user because this test's subject is
+            // AUTHENTICATION (the certless 401), not authorization — with
+            // ACL default-deny live, an ungranted principal couldn't even
+            // create the topic. Real deployments bootstrap the same way.
             return new Broker.Config(new NodeId(1), dataDir, rp, bp, voters, 1)
                     .withTls(serverTls)
-                    .withAuthMode(AuthMode.MTLS);
+                    .withAuthMode(AuthMode.MTLS)
+                    .withSuperUsers(java.util.Set.of("admin"));
         })) {
             var broker = node.broker();
             int brokerPort = node.brokerPort();

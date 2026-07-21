@@ -28,6 +28,7 @@ public final class ErrorCodeNames {
             Map.entry(ErrorCodes.INVALID_CONFIG, "INVALID_CONFIG"),
             Map.entry(ErrorCodes.MESSAGE_TOO_LARGE, "MESSAGE_TOO_LARGE"),
             Map.entry(ErrorCodes.STORAGE_FULL, "STORAGE_FULL"),
+            Map.entry(ErrorCodes.UNAUTHORIZED, "UNAUTHORIZED"),
             Map.entry(ErrorCodes.COORDINATOR_NOT_AVAILABLE, "COORDINATOR_NOT_AVAILABLE"),
             Map.entry(ErrorCodes.NOT_COORDINATOR, "NOT_COORDINATOR"),
             Map.entry(ErrorCodes.UNKNOWN_MEMBER_ID, "UNKNOWN_MEMBER_ID"),

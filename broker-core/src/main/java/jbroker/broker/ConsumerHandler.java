@@ -55,6 +55,14 @@ public final class ConsumerHandler {
     private final BrokerRegistry brokerRegistry;
     private final GroupCoordinator groupCoordinator;
     private final OffsetCache offsetCache;
+
+    /** ACL gate, wired by the broker; {@link jbroker.broker.auth.Authorizer#OPEN} keeps test harnesses open. */
+    private jbroker.broker.auth.Authorizer authorizer = jbroker.broker.auth.Authorizer.OPEN;
+
+    public void setAuthorizer(jbroker.broker.auth.Authorizer authorizer) {
+        this.authorizer = authorizer;
+    }
+
     private final int selfBrokerId;
     private final java.util.function.LongSupplier nanoClock;
     private final java.util.function.LongSupplier wallClockMillis;
@@ -132,6 +140,11 @@ public final class ConsumerHandler {
      * The client retries on this error after a short backoff.
      */
     public FindCoordinatorResponse findCoordinator(FindCoordinatorRequest req) {
+        if (!authorizer.allowsCurrent("group", req.getKey(), "consume")) {
+            return FindCoordinatorResponse.newBuilder()
+                    .setError(ErrorCode.UNAUTHORIZED)
+                    .build();
+        }
         var topicDesc = topicManager.describe(ConsumerOffsetsTopic.NAME);
         if (topicDesc.isEmpty()) {
             return FindCoordinatorResponse.newBuilder()
@@ -190,6 +203,11 @@ public final class ConsumerHandler {
      * trigger the same retry path).
      */
     public ConsumerGroupHeartbeatResponse consumerGroupHeartbeat(ConsumerGroupHeartbeatRequest req) {
+        if (!authorizer.allowsCurrent("group", req.getGroupId(), "consume")) {
+            return ConsumerGroupHeartbeatResponse.newBuilder()
+                    .setError(ErrorCode.UNAUTHORIZED)
+                    .build();
+        }
         if (groupCoordinator == null) {
             return ConsumerGroupHeartbeatResponse.newBuilder()
                     .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
@@ -322,6 +340,15 @@ public final class ConsumerHandler {
      */
     public CommitOffsetsResponse commitOffsets(CommitOffsetsRequest req) {
         var b = CommitOffsetsResponse.newBuilder();
+        if (!authorizer.allowsCurrent("group", req.getGroupId(), "consume")) {
+            for (var commit : req.getCommitsList()) {
+                b.addResults(CommitResult.newBuilder()
+                        .setTp(commit.getTp())
+                        .setError(ErrorCode.UNAUTHORIZED)
+                        .build());
+            }
+            return b.build();
+        }
         if (groupCoordinator == null || offsetCache == null) {
             for (var commit : req.getCommitsList()) {
                 b.addResults(CommitResult.newBuilder()
@@ -395,6 +422,16 @@ public final class ConsumerHandler {
 
     public FetchOffsetsResponse fetchOffsets(FetchOffsetsRequest req) {
         var b = FetchOffsetsResponse.newBuilder();
+        if (!authorizer.allowsCurrent("group", req.getGroupId(), "consume")) {
+            for (var tp : req.getTpsList()) {
+                b.addResults(OffsetFetchResult.newBuilder()
+                        .setTp(tp)
+                        .setOffset(-1L)
+                        .setError(ErrorCode.UNAUTHORIZED)
+                        .build());
+            }
+            return b.build();
+        }
         if (groupCoordinator == null || offsetCache == null) {
             for (var tp : req.getTpsList()) {
                 b.addResults(OffsetFetchResult.newBuilder()
@@ -525,6 +562,7 @@ public final class ConsumerHandler {
      * </ul>
      */
     public ErrorCode deleteConsumerGroupAdmin(String groupId) {
+        if (!authorizer.allowsCurrent("group", groupId, "admin")) return ErrorCode.UNAUTHORIZED;
         if (groupCoordinator == null) return ErrorCode.COORDINATOR_NOT_AVAILABLE;
         var routing = coordinatorRoutingFor(groupId);
         if (routing != ErrorCode.OK) return routing;
@@ -542,6 +580,10 @@ public final class ConsumerHandler {
     public java.util.List<ErrorCode> resetConsumerGroupOffsetsAdmin(
             String groupId, java.util.List<jbroker.proto.broker.OffsetReset> resets, ErrorCode[] topLevelOut)
             throws IOException {
+        if (!authorizer.allowsCurrent("group", groupId, "admin")) {
+            topLevelOut[0] = ErrorCode.UNAUTHORIZED;
+            return java.util.Collections.nCopies(resets.size(), ErrorCode.UNAUTHORIZED);
+        }
         if (groupCoordinator == null || offsetCache == null) {
             topLevelOut[0] = ErrorCode.COORDINATOR_NOT_AVAILABLE;
             return java.util.Collections.nCopies(resets.size(), ErrorCode.COORDINATOR_NOT_AVAILABLE);
@@ -586,6 +628,13 @@ public final class ConsumerHandler {
         var b = ListOffsetsResponse.newBuilder();
         for (var part : req.getPartitionsList()) {
             var tp = part.getTp();
+            if (!authorizer.allowsCurrent("topic", tp.getTopic(), "consume")) {
+                b.addResults(ListOffsetsResult.newBuilder()
+                        .setTp(tp)
+                        .setError(ErrorCode.UNAUTHORIZED)
+                        .build());
+                continue;
+            }
             var topic = topicManager.describe(tp.getTopic());
             if (topic.isEmpty()) {
                 b.addResults(ListOffsetsResult.newBuilder()

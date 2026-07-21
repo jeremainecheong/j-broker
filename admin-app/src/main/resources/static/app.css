@@ -1070,3 +1070,79 @@ footer {
   border: 1px solid var(--border);
   font-size: 0.85rem;
 }
+
+/* ---- Login page ---- */
+
+.login-page {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 80vh;
+}
+
+.login-card {
+  width: 20rem;
+  padding: 2rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.login-card h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.2rem;
+}
+
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.login-card input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.login-card button {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.login-card div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.login-error {
+  color: #c0392b;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.login-note {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.logout-form {
+  display: inline-flex;
+  margin-left: 0.5rem;
+}
+
+.logout-form button {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}

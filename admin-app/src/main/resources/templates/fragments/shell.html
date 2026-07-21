@@ -55,6 +55,14 @@
       >
         checking…
       </span>
+      <!--
+        Sign-out control. A no-op when authentication is disabled (the
+        POST just redirects back through /login, whose page explains the
+        open state), so the fragment needs no per-page model wiring.
+      -->
+      <form class="logout-form" method="post" action="/logout">
+        <button type="submit" title="Sign out">Sign out</button>
+      </form>
     </nav>
 
     <!--

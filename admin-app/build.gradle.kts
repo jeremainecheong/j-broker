@@ -18,6 +18,9 @@ dependencies {
     implementation("io.grpc:grpc-netty-shaded:1.65.1")
 
     implementation("org.springframework.boot:spring-boot-starter-web")
+    // BCryptPasswordEncoder only — admin auth is a hand-rolled servlet
+    // filter (session + bearer token), not the Spring Security framework.
+    implementation("org.springframework.security:spring-security-crypto")
     implementation("org.springframework.boot:spring-boot-starter-thymeleaf")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
@@ -37,6 +40,10 @@ dependencies {
     // to tests so admin-app stays classpath-slim at runtime.
     testImplementation("org.testcontainers:testcontainers:1.20.2")
     testImplementation("org.testcontainers:junit-jupiter:1.20.2")
+    // With HttpClient5 on the test classpath TestRestTemplate stops
+    // following redirects, so login/auth ITs can assert on the 302s
+    // themselves instead of their destinations.
+    testImplementation("org.apache.httpcomponents.client5:httpclient5")
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
         // Spring Boot's starter-test pulls spring-boot-starter-logging (Logback
         // + Log4j bridges). The convention plugin already contributes Logback

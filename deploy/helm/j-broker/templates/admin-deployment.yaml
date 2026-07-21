@@ -41,6 +41,20 @@ spec:
             - name: JBROKER_REDIS_URL
               value: {{ printf "redis://%s:%d" (include "jbroker.redis.fullname" .) (int .Values.redis.service.port) | quote }}
             {{- end }}
+            {{- if .Values.admin.auth.existingSecret }}
+            - name: JBROKER_ADMIN_AUTH_USERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.admin.auth.existingSecret | quote }}
+                  key: users
+            {{- end }}
+            {{- if and (ge (int .Values.broker.chaosPort) 0) .Values.broker.chaosTokenSecret }}
+            - name: JBROKER_ADMIN_CHAOS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.broker.chaosTokenSecret | quote }}
+                  key: token
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - name: JBROKER_ADMIN_TLS_ENABLED
               value: "true"

@@ -69,3 +69,80 @@ jobs:
         with:
           name: perf-reports
           path: '**/build/reports/tests/'
+
+  helm-kind:
+    # Secured install on a real (Kind) cluster: mTLS from a Secret,
+    # auth.mode=mtls with ACL default-deny, admin login required. Proves
+    # the chart + certs + secrets actually deploy, not just template.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images
+        run: |
+          docker build -f Dockerfile.broker -t jbroker-broker:ci .
+          docker build -f Dockerfile.admin  -t jbroker-admin:ci .
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: jbroker-ci
+
+      - name: Load images into Kind
+        run: |
+          kind load docker-image jbroker-broker:ci --name jbroker-ci
+          kind load docker-image jbroker-admin:ci --name jbroker-ci
+
+      - name: Create TLS + operator secrets
+        run: |
+          scripts/tls/bootstrap-k8s.sh .tls-k8s jb-j-broker-broker-headless default
+          kubectl create secret generic jbroker-tls \
+            --from-file=tls.crt=.tls-k8s/server.crt \
+            --from-file=tls.key=.tls-k8s/server.key \
+            --from-file=ca.crt=.tls-k8s/ca.crt
+          HASH=$(docker run --rm httpd:2.4-alpine htpasswd -bnBC 10 "" ci-password | tr -d ':\n')
+          kubectl create secret generic jbroker-admin-users \
+            --from-literal=users="op:${HASH}"
+
+      - name: Install secured release
+        run: |
+          helm install jb deploy/helm/j-broker \
+            --set broker.image.repository=jbroker-broker \
+            --set broker.image.tag=ci \
+            --set broker.image.pullPolicy=Never \
+            --set admin.image.repository=jbroker-admin \
+            --set admin.image.tag=ci \
+            --set admin.image.pullPolicy=Never \
+            --set broker.persistence.enabled=false \
+            --set broker.resources.requests.cpu=100m \
+            --set broker.resources.requests.memory=256Mi \
+            --set broker.resources.limits.cpu=1000m \
+            --set broker.resources.limits.memory=1Gi \
+            --set tls.enabled=true \
+            --set broker.auth.mode=mtls \
+            --set admin.auth.existingSecret=jbroker-admin-users
+          kubectl rollout status statefulset/jb-j-broker-broker --timeout=300s
+          kubectl rollout status deployment/jb-j-broker-admin --timeout=300s
+
+      - name: Smoke — login required, session reaches a healthy cluster over mTLS
+        run: |
+          kubectl port-forward svc/jb-j-broker-admin 15672:15672 &
+          sleep 5
+          anon=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:15672/api/v1/cluster)
+          [ "$anon" = "401" ] || { echo "anonymous API expected 401, got $anon"; exit 1; }
+          curl -s -o /dev/null -c /tmp/session.jar \
+            --data-urlencode 'username=op' --data-urlencode 'password=ci-password' \
+            http://localhost:15672/login
+          body=$(curl -s -b /tmp/session.jar http://localhost:15672/api/v1/cluster)
+          echo "$body" | grep -q '"nodes"' || { echo "cluster summary missing nodes: $body"; exit 1; }
+          alive=$(echo "$body" | grep -o '"alive":true' | wc -l)
+          [ "$alive" -eq 3 ] || { echo "expected 3 alive brokers, got $alive: $body"; exit 1; }
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl describe pods || true
+          kubectl logs -l app.kubernetes.io/component=broker --tail=200 --prefix || true
+          kubectl logs -l app.kubernetes.io/component=admin --tail=200 --prefix || true

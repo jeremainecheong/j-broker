@@ -210,6 +210,38 @@ class RaftMembershipTest {
     }
 
     @Test
+    void aNodeBootsAsALearnerWhenAbsentFromItsOwnVoterSet(@TempDir Path dir) throws Exception {
+        try (var log = FileRaftLog.open(dir.resolve("log.bin"));
+                var state = FilePersistentState.open(dir.resolve("state.bin"))) {
+            // N4 boots knowing only the incumbent voters {N1,N2,N3} — itself
+            // absent. It is a non-voting learner until promoted.
+            var learnerBoot = new RaftConfig(
+                    N4,
+                    List.of(N1, N2, N3),
+                    TimeUnit.MILLISECONDS.toNanos(1000),
+                    TimeUnit.MILLISECONDS.toNanos(500),
+                    TimeUnit.MILLISECONDS.toNanos(100),
+                    100);
+            var learner = new DefaultRaftCore(learnerBoot, log, state, 0L);
+            assertThat(learner.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3);
+
+            // It never campaigns despite election timeouts.
+            var effects = learner.step(new RaftEvent.Tick(TimeUnit.MILLISECONDS.toNanos(5_000)));
+            assertThat(effects)
+                    .filteredOn(e -> e instanceof RaftEffect.SendPreVoteReq)
+                    .isEmpty();
+            assertThat(learner.role()).isEqualTo(Role.FOLLOWER);
+
+            // A CONFIG_CHANGE promoting it into the voter set takes effect.
+            byte[] promote = MembershipCodec.encode(List.of(N1, N2, N3, N4));
+            var entry = new LogEntry(1L, new Term(1), LogEntry.Type.CONFIG_CHANGE, promote);
+            learner.step(new RaftEvent.AppendEntriesReq(
+                    new Term(1), N1, 0L, Term.ZERO, List.of(entry), 0L, TimeUnit.MILLISECONDS.toNanos(100)));
+            assertThat(learner.activeVoters()).containsExactlyInAnyOrder(N1, N2, N3, N4);
+        }
+    }
+
+    @Test
     void leaderRemovedFromVotersStepsDownAfterCommit(@TempDir Path dir) throws Exception {
         var core = becomeLeader(dir);
         // Leader (N1) proposes its own removal — new voter set is {N2, N3}.

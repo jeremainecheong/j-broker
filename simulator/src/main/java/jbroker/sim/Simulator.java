@@ -110,17 +110,40 @@ public final class Simulator {
      * safety violations.
      */
     public Simulator(long seed, int clusterSize, Chaos chaos, Supplier<PersistentState> stateFactory) {
+        this(seed, clusterSize, 0, chaos, stateFactory);
+    }
+
+    /**
+     * Build a cluster of {@code voterCount} voters plus {@code spareCount}
+     * extra nodes that boot <em>outside</em> the voter set — ids
+     * {@code voterCount+1 .. voterCount+spareCount}. A spare runs and exchanges
+     * messages but is neither voter nor learner until a committed
+     * {@code CONFIG_CHANGE} adds it as a learner (then, once caught up,
+     * promotes it). This is the harness for membership-change safety
+     * (Raft dissertation §4): the corpus adds, promotes, and removes servers
+     * while the invariant checkers watch for any safety violation.
+     */
+    public static Simulator withSpares(long seed, int voterCount, int spareCount, Chaos chaos) {
+        return new Simulator(seed, voterCount, spareCount, chaos, InMemoryPersistentState::new);
+    }
+
+    private Simulator(long seed, int voterCount, int spareCount, Chaos chaos, Supplier<PersistentState> stateFactory) {
         this.seed = seed;
         this.random = new Random(seed);
         this.chaos = chaos;
-        var ids = new ArrayList<NodeId>();
-        for (int i = 1; i <= clusterSize; i++) ids.add(new NodeId(i));
-        for (var id : ids) {
+        var voterIds = new ArrayList<NodeId>();
+        for (int i = 1; i <= voterCount; i++) voterIds.add(new NodeId(i));
+        var allIds = new ArrayList<NodeId>(voterIds);
+        for (int i = voterCount + 1; i <= voterCount + spareCount; i++) allIds.add(new NodeId(i));
+        for (var id : allIds) {
             var log = new InMemoryRaftLog();
             var state = stateFactory.get();
+            // Every node bootstraps with the same voter set. A spare is not in
+            // it, so it treats itself as a non-voter until a CONFIG_CHANGE
+            // arrives — it never campaigns (the learner election gate).
             var config = new RaftConfig(
                     id,
-                    ids,
+                    voterIds,
                     TimeUnit.MILLISECONDS.toNanos(200),
                     TimeUnit.MILLISECONDS.toNanos(100),
                     TimeUnit.MILLISECONDS.toNanos(40),
@@ -165,6 +188,24 @@ public final class Simulator {
         if (leader == null) return false;
         deliver(leader.id, new RaftEvent.ClientPropose(payload));
         return true;
+    }
+
+    /**
+     * Inject a membership change on the current leader (if any). The leader
+     * rejects it if another change is still in flight, so callers pace
+     * changes by their commit. Returns true if delivered to a leader.
+     */
+    public boolean proposeMembership(jbroker.raft.core.Membership membership) {
+        var leader = leader();
+        if (leader == null) return false;
+        deliver(leader.id, new RaftEvent.ProposeConfigChange(membership));
+        return true;
+    }
+
+    /** The voter set the current leader is operating under, or empty when there is no leader. */
+    public List<NodeId> leaderVoters() {
+        var leader = leader();
+        return leader == null ? List.of() : leader.core.activeVoters();
     }
 
     /**

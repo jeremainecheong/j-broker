@@ -135,16 +135,23 @@ public sealed interface RaftEvent {
     record ClientRead(long clientId, long requestId) implements RaftEvent {}
 
     /**
-     * Admin-initiated single-server membership change: replace the active voter
-     * list with {@code newVoters}. Takes effect on append (Raft §4.2). Rejected
-     * by the leader if another config change is still in flight.
+     * Admin-initiated single-server membership change: replace the active
+     * membership (voters + learners) with {@code membership}. Takes effect on
+     * append (Raft §4.2). Rejected by the leader if another config change is
+     * still in flight. Learners receive replication but don't count toward
+     * quorum until a later change promotes them into the voter set.
      */
-    record ProposeConfigChange(List<NodeId> newVoters) implements RaftEvent {
+    record ProposeConfigChange(Membership membership) implements RaftEvent {
         public ProposeConfigChange {
-            newVoters = List.copyOf(newVoters);
-            if (newVoters.isEmpty()) {
-                throw new IllegalArgumentException("newVoters must be non-empty");
+            Objects.requireNonNull(membership, "membership");
+            if (membership.voters().isEmpty()) {
+                throw new IllegalArgumentException("voters must be non-empty");
             }
+        }
+
+        /** Voter-only change (no learners) — the historical shape. */
+        public ProposeConfigChange(List<NodeId> newVoters) {
+            this(Membership.ofVoters(newVoters));
         }
     }
 

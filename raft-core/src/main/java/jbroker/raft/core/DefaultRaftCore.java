@@ -70,11 +70,31 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     /**
-     * Active voter set. Begins as {@code activeVoters}; replaced when a
+     * Active voter set. Begins as {@code config.voters()}; replaced when a
      * {@link LogEntry.Type#CONFIG_CHANGE} entry is appended (Raft §4.2). The
-     * change takes effect on append, not on commit.
+     * change takes effect on append, not on commit. Only voters count toward
+     * {@code quorum()}, vote, and are counted for commit.
      */
     private List<NodeId> activeVoters;
+
+    /**
+     * Active learner set: non-voting members that receive replication and
+     * catch up to the leader's log, but never count toward quorum, vote, or
+     * campaign. A newcomer joins here first and is promoted into
+     * {@code activeVoters} by a later config change once caught up
+     * (Raft dissertation §4.2.1). Tracked alongside {@code activeVoters} from
+     * the same CONFIG_CHANGE payload.
+     */
+    private List<NodeId> activeLearners = List.of();
+
+    /** Voters and learners — every member the leader replicates to. */
+    private List<NodeId> replicationMembers() {
+        if (activeLearners.isEmpty()) return activeVoters;
+        var all = new java.util.ArrayList<NodeId>(activeVoters.size() + activeLearners.size());
+        all.addAll(activeVoters);
+        all.addAll(activeLearners);
+        return all;
+    }
 
     /**
      * Index of the most recently appended {@code CONFIG_CHANGE} that has not
@@ -153,7 +173,7 @@ public final class DefaultRaftCore implements RaftCore {
      * entry was truncated by a new leader.
      */
     private void reloadActiveVotersFromLog() {
-        var rebuilt = List.copyOf(config.voters());
+        var rebuilt = Membership.ofVoters(config.voters());
         long first = log.firstIndex();
         long last = log.lastIndex();
         for (long i = first; i <= last; i++) {
@@ -161,10 +181,11 @@ public final class DefaultRaftCore implements RaftCore {
             if (existing.isEmpty()) break;
             var entry = existing.get(0);
             if (entry.type() == LogEntry.Type.CONFIG_CHANGE) {
-                rebuilt = MembershipCodec.decode(entry.payload());
+                rebuilt = MembershipCodec.decodeMembership(entry.payload());
             }
         }
-        this.activeVoters = rebuilt;
+        this.activeVoters = rebuilt.voters();
+        this.activeLearners = rebuilt.learners();
     }
 
     public List<NodeId> activeVoters() {
@@ -256,6 +277,11 @@ public final class DefaultRaftCore implements RaftCore {
         if (ev.term().compareTo(currentTerm) > 0) {
             becomeFollower(ev.term(), Optional.empty(), effects);
         }
+        // A learner cannot win an election — never campaign, even when a
+        // (mistaken) leader transfers to it.
+        if (!activeVoters.contains(config.selfId())) {
+            return;
+        }
         // Skip pre-vote — the incumbent leader has already vouched for us.
         startElection(ev.nowNanos(), effects);
     }
@@ -270,13 +296,13 @@ public final class DefaultRaftCore implements RaftCore {
             return;
         }
         long nextIdx = log.lastIndex() + 1;
-        var payload = MembershipCodec.encode(ev.newVoters());
+        var payload = MembershipCodec.encode(ev.membership());
         var entry = new LogEntry(nextIdx, persistentState.currentTerm(), LogEntry.Type.CONFIG_CHANGE, payload);
         log.append(List.of(entry));
         effects.add(new RaftEffect.PersistLog(List.of(entry)));
-        activateVoters(ev.newVoters(), nextIdx);
+        activateMembership(ev.membership(), nextIdx);
         matchIndex.put(config.selfId(), nextIdx);
-        for (var peer : activeVoters) {
+        for (var peer : replicationMembers()) {
             if (!peer.equals(config.selfId())) {
                 nextIndex.putIfAbsent(peer, nextIdx);
                 matchIndex.putIfAbsent(peer, 0L);
@@ -286,12 +312,13 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     /**
-     * Apply a CONFIG_CHANGE payload to the active voter set immediately
+     * Apply a CONFIG_CHANGE payload to the active membership immediately
      * (append-time semantics). Invoked by the leader on its own propose, and
      * by every node when an AE batch brings a CONFIG_CHANGE entry in.
      */
-    private void activateVoters(List<NodeId> newVoters, long entryIndex) {
-        this.activeVoters = List.copyOf(newVoters);
+    private void activateMembership(Membership membership, long entryIndex) {
+        this.activeVoters = membership.voters();
+        this.activeLearners = membership.learners();
         this.inflightConfigChangeIndex = entryIndex;
     }
 
@@ -338,6 +365,13 @@ public final class DefaultRaftCore implements RaftCore {
             return;
         }
         if (now >= electionDeadlineNanos) {
+            // A learner (self not in the voter set) never campaigns — it has
+            // no vote and cannot win. Defer the deadline so it keeps waiting
+            // for a leader's heartbeats while it catches up.
+            if (!activeVoters.contains(config.selfId())) {
+                electionDeadlineNanos = now + randomisedElectionTimeout();
+                return;
+            }
             startPreVote(now, effects);
         }
     }
@@ -389,7 +423,7 @@ public final class DefaultRaftCore implements RaftCore {
     }
 
     private void sendHeartbeats(List<RaftEffect> effects) {
-        for (var peer : activeVoters) {
+        for (var peer : replicationMembers()) {
             if (!peer.equals(config.selfId())) {
                 sendAppendEntriesTo(peer, effects);
             }
@@ -400,7 +434,7 @@ public final class DefaultRaftCore implements RaftCore {
         if (votesReceived.size() >= quorum() && role == Role.CANDIDATE) {
             role = Role.LEADER;
             long lastIdx = log.lastIndex();
-            for (var peer : activeVoters) {
+            for (var peer : replicationMembers()) {
                 if (!peer.equals(config.selfId())) {
                     nextIndex.put(peer, lastIdx + 1);
                     matchIndex.put(peer, 0L);
@@ -451,7 +485,7 @@ public final class DefaultRaftCore implements RaftCore {
         if (event.clientId() != 0L) {
             highestAcceptedSeq.merge(event.clientId(), event.clientSeq(), Math::max);
         }
-        for (var peer : activeVoters) {
+        for (var peer : replicationMembers()) {
             if (!peer.equals(config.selfId())) {
                 sendAppendEntriesTo(peer, effects);
             }
@@ -532,7 +566,7 @@ public final class DefaultRaftCore implements RaftCore {
                 // replaces the active voter set immediately. The last one wins.
                 for (var e : toAppend) {
                     if (e.type() == LogEntry.Type.CONFIG_CHANGE) {
-                        activateVoters(MembershipCodec.decode(e.payload()), e.index());
+                        activateMembership(MembershipCodec.decodeMembership(e.payload()), e.index());
                     }
                 }
             }

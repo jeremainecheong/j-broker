@@ -76,8 +76,11 @@ public final class MembershipCodec {
             }
             return new Membership(voters, learners);
         }
-        // Legacy: `first` was the voter count.
-        if (first < 0 || first * 4 + 4 != payload.length) {
+        // Legacy: `first` was the voter count. Validate the declared count
+        // against the actual length in long arithmetic BEFORE sizing any
+        // collection — `first * 4` in int would overflow and let a corrupt
+        // count slip past the check into a huge allocation.
+        if (first < 0 || (long) first * 4 + 4 != payload.length) {
             throw new IllegalArgumentException("corrupt CONFIG_CHANGE payload");
         }
         var voters = new ArrayList<NodeId>(first);
@@ -92,7 +95,9 @@ public final class MembershipCodec {
             throw new IllegalArgumentException("corrupt CONFIG_CHANGE payload");
         }
         int n = buf.getInt();
-        if (n < 0 || buf.remaining() < n * 4) {
+        // Long arithmetic: a corrupt n near Integer.MAX_VALUE must fail the
+        // bound check, not overflow it, before it sizes the collection.
+        if (n < 0 || (long) n * 4 > buf.remaining()) {
             throw new IllegalArgumentException("corrupt CONFIG_CHANGE payload");
         }
         var out = new ArrayList<NodeId>(n);

@@ -185,6 +185,62 @@ public final class ClusterHarness implements AutoCloseable {
         return node;
     }
 
+    /**
+     * Bring up a brand-new node that joins as a non-voting learner (R4.3).
+     * It boots knowing only the incumbent voters (ids {@code 1..size}) —
+     * itself absent — so it never campaigns, and it is wired into every
+     * existing node's peer map so the leader can replicate to it the moment
+     * a CONFIG_CHANGE names it. The node has an empty log and catches up via
+     * the leader's AppendEntries / InstallSnapshot. The caller then proposes
+     * the add-learner (and later the promotion) on the leader.
+     *
+     * @return the new node; its id is {@code size + (learners added so far) + 1}
+     */
+    public Node joinLearner() throws IOException {
+        int newIdValue = nodes.stream().mapToInt(n -> n.id().value()).max().orElse(size) + 1;
+        var self = new NodeId(newIdValue);
+        int port = freePort();
+        var voterIds = IntStream.range(1, size + 1).mapToObj(NodeId::new).toList();
+
+        var dataDir = Files.createTempDirectory(tempDir, "learner-" + newIdValue + "-");
+        var log = FileRaftLog.open(dataDir.resolve("log.bin"));
+        var state = FilePersistentState.open(dataDir.resolve("state.bin"));
+        // Bootstrap voters = the incumbent set (self absent): a learner.
+        var config = new RaftConfig(
+                self,
+                voterIds,
+                TimeUnit.MILLISECONDS.toNanos(250),
+                TimeUnit.MILLISECONDS.toNanos(150),
+                TimeUnit.MILLISECONDS.toNanos(75),
+                100);
+        RaftCore core = new DefaultRaftCore(config, log, state, Long.MAX_VALUE);
+        var sm = new RecordingStateMachine();
+
+        // The learner dials every existing node.
+        Map<NodeId, RaftPeerClient> peers = new HashMap<>();
+        for (var n : nodes) {
+            peers.put(n.id(), new RaftPeerClient(n.id(), "127.0.0.1", n.port()));
+        }
+        var driver = new RaftDriver(self, core, sm, peers, TimeUnit.MILLISECONDS.toNanos(30));
+        driver.start(port);
+
+        // Every existing node learns to dial the newcomer.
+        for (var n : nodes) {
+            n.driver().addPeer(self, new RaftPeerClient(self, "127.0.0.1", port));
+        }
+
+        var node = new Node(self, port, driver, sm);
+        nodes.add(node);
+        try {
+            for (var peer : driver.peers()) {
+                peer.waitForReady(2_000);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return node;
+    }
+
     public void waitForAllApplied(int atLeast, long timeoutMs) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {

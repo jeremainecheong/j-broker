@@ -868,6 +868,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.BrokerMetrics metrics;
     private final jbroker.broker.chaos.ChaosHttpServer chaosHttp;
     private final jbroker.broker.DiskHeadroom diskHeadroom;
+    private final jbroker.broker.controller.MembershipController membershipController;
     private final int selfBrokerId;
 
     private Broker(
@@ -889,6 +890,7 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.BrokerMetrics metrics,
             jbroker.broker.chaos.ChaosHttpServer chaosHttp,
             jbroker.broker.DiskHeadroom diskHeadroom,
+            jbroker.broker.controller.MembershipController membershipController,
             int selfBrokerId) {
         this.topicManager = tm;
         this.logManager = lm;
@@ -908,6 +910,7 @@ public final class Broker implements AutoCloseable {
         this.metrics = metrics;
         this.chaosHttp = chaosHttp;
         this.diskHeadroom = diskHeadroom;
+        this.membershipController = membershipController;
         this.selfBrokerId = selfBrokerId;
     }
 
@@ -1036,9 +1039,24 @@ public final class Broker implements AutoCloseable {
                 chaosInterceptorFactory);
         var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
                 config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
-        MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt, ah, ap) -> {
-            brokerRegistry.onBrokerRegistration(bid, h, pt, ah, ap);
-            fetcherManager.onBrokerRegistration(bid, h, pt, ah, ap);
+        // Deferred: the Raft driver is built below (a construction cycle runs
+        // metadataSm -> regChain -> raftDriver -> waitingSm -> metadataSm), but
+        // the listener only fires once records commit, long after start.
+        var raftDriverRef = new java.util.concurrent.atomic.AtomicReference<RaftDriver>();
+        MetadataStateMachine.BrokerRegistrationListener regChain = (bid, h, pt, ah, ap, rp) -> {
+            brokerRegistry.onBrokerRegistration(bid, h, pt, ah, ap, rp);
+            fetcherManager.onBrokerRegistration(bid, h, pt, ah, ap, rp);
+            // Form a Raft dial channel to a dynamically-joined broker straight
+            // from its replicated registration, so peers appear cluster-wide
+            // without a static-config edit. Skip self, legacy records with no
+            // raft port, and channels already held (the listener re-fires on
+            // every re-proposed registration).
+            var peerId = new NodeId(bid);
+            var driver = raftDriverRef.get();
+            if (driver != null && !peerId.equals(config.selfId()) && rp > 0 && !driver.hasPeer(peerId)) {
+                driver.addPeer(
+                        peerId, new RaftPeerClient(peerId, h, rp, config.tls(), chaosInterceptorFactory.apply(bid)));
+            }
             long id = eventPublisher.allocateId();
             eventPublisher.publish(new jbroker.broker.events.BrokerEvent.BrokerRegistered(id, bid, h, pt));
         };
@@ -1072,7 +1090,14 @@ public final class Broker implements AutoCloseable {
         }
         var raftDriver = new RaftDriver(
                 config.selfId(), core, waitingSm, Map.copyOf(peerMap), TimeUnit.MILLISECONDS.toNanos(30));
+        raftDriverRef.set(raftDriver);
         raftDriver.start(config.raftPort(), config.tls());
+
+        // Broker-join orchestration: on the controller (Raft leader), drive a
+        // newcomer from non-voting learner to voter once its log catches up.
+        // Ticked from the registration loop below; requestAddBroker kicks it off.
+        var membershipController =
+                new jbroker.broker.controller.MembershipController(new RaftMembershipAdapter(raftDriver));
 
         // --- Broker gRPC server ---
         var brokerMetrics = new jbroker.broker.BrokerMetrics();
@@ -1354,7 +1379,10 @@ public final class Broker implements AutoCloseable {
                                 var brokerRecord = jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
                                         .setBrokerId(bid)
                                         .setHost(v.host())
-                                        .setPort(v.brokerPort());
+                                        .setPort(v.brokerPort())
+                                        // Publish the Raft peer port so every broker can dial a
+                                        // dynamically-joined broker straight from its registration.
+                                        .setRaftPort(v.raftPort());
                                 if (v.hasAdvertised()) {
                                     brokerRecord
                                             .setAdvertisedHost(v.advertisedHost())
@@ -1380,6 +1408,16 @@ public final class Broker implements AutoCloseable {
                             consumerOffsetsCreator.ensureCreated();
                         } catch (Exception e) {
                             log.debug("__consumer_offsets create attempt failed; will retry next tick", e);
+                        }
+                        // Advance any in-flight broker join (add-learner ->
+                        // catch-up -> promote). Idempotent per phase; a no-op
+                        // when no join is pending.
+                        try {
+                            membershipController.runOnce();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        } catch (Exception e) {
+                            log.debug("membership tick failed; will retry", e);
                         }
                     }
                     // Recovery is NOT gated on Raft leadership: every broker
@@ -1605,6 +1643,7 @@ public final class Broker implements AutoCloseable {
                 brokerMetrics,
                 chaosHttp,
                 diskHeadroom,
+                membershipController,
                 selfId);
     }
 
@@ -1636,6 +1675,53 @@ public final class Broker implements AutoCloseable {
 
     public jbroker.raft.core.Role role() {
         return raftDriver.role();
+    }
+
+    /**
+     * Ask this broker, acting as the controller, to admit a broker into the
+     * cluster: publish its address so every broker forms a Raft dial channel to
+     * it, then propose it as a non-voting learner, wait for its log to catch up,
+     * and promote it to voter. The address is committed synchronously (so this
+     * leader has a channel to the newcomer before naming it in a membership
+     * change); the learner-join then advances on the registration tick.
+     *
+     * <p>Returns {@code false} if this broker is not the Raft leader, the
+     * registration did not commit, a join is already in flight, or {@code id} is
+     * already a voter. Poll {@link #membershipProgress()} to watch a started
+     * join. The newcomer must already be running, booted as a learner (its
+     * config's voters are the incumbents, itself absent).
+     *
+     * @param id         node id of the joining broker
+     * @param host       its inter-broker dial host
+     * @param raftPort   its Raft peer port
+     * @param brokerPort its client-facing gRPC port
+     */
+    public boolean requestAddBroker(NodeId id, String host, int raftPort, int brokerPort) throws InterruptedException {
+        if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return false;
+        var record = jbroker.proto.raft.MetadataRecord.newBuilder()
+                .setBroker(jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()
+                        .setBrokerId(id.value())
+                        .setHost(host)
+                        .setPort(brokerPort)
+                        .setRaftPort(raftPort)
+                        .build())
+                .build()
+                .toByteArray();
+        try {
+            var applied = waitingSm.awaitApply(record);
+            raftDriver.propose(record);
+            applied.get(5, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+            // Registration did not commit (lost leadership, quorum stall);
+            // the caller retries against the current leader.
+            return false;
+        }
+        return membershipController.requestAddBroker(id);
+    }
+
+    /** Snapshot of the in-flight (or most recent) broker join, for observability. */
+    public jbroker.broker.controller.MembershipController.Progress membershipProgress() {
+        return membershipController.progress();
     }
 
     /** Test-only accessor for assertion-driven inspection of per-broker logs. */
@@ -1912,6 +1998,46 @@ public final class Broker implements AutoCloseable {
             logManager.close();
         } catch (IOException ignored) {
             /* best-effort */
+        }
+    }
+
+    /**
+     * Adapts the live {@link RaftDriver} to the minimal membership view the
+     * {@link jbroker.broker.controller.MembershipController} orchestrates over:
+     * leadership, the voter/learner sets, and leader-side replication progress
+     * (leader last index + per-peer matchIndex) that gates learner catch-up.
+     */
+    private record RaftMembershipAdapter(RaftDriver raft)
+            implements jbroker.broker.controller.MembershipController.RaftMembershipAccess {
+        @Override
+        public boolean isLeader() {
+            return raft.role() == jbroker.raft.core.Role.LEADER;
+        }
+
+        @Override
+        public List<NodeId> voters() {
+            return raft.activeVoters();
+        }
+
+        @Override
+        public List<NodeId> learners() {
+            return raft.activeLearners();
+        }
+
+        @Override
+        public long leaderLastIndex() {
+            return raft.replicationProgress().leaderLastIndex();
+        }
+
+        @Override
+        public java.util.OptionalLong matchIndex(NodeId peer) {
+            Long m = raft.replicationProgress().matchByPeer().get(peer);
+            return m == null ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(m);
+        }
+
+        @Override
+        public void proposeMembership(jbroker.raft.core.Membership membership) throws InterruptedException {
+            raft.proposeMembership(membership);
         }
     }
 }

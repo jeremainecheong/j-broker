@@ -26,11 +26,15 @@ public final class BrokerRegistry implements MetadataStateMachine.BrokerRegistra
 
     /** Older signature kept for call sites that only know an inter-broker address. */
     public void onBrokerRegistration(int brokerId, String host, int port) {
-        onBrokerRegistration(brokerId, host, port, "", 0);
+        onBrokerRegistration(brokerId, host, port, "", 0, 0);
     }
 
+    // The registry is an address book for client-facing and replica-fetch
+    // RPCs; the Raft peer port is consumed only by the driver's peer map
+    // (see Broker's registration listener), so it is accepted and ignored here.
     @Override
-    public void onBrokerRegistration(int brokerId, String host, int port, String advertisedHost, int advertisedPort) {
+    public void onBrokerRegistration(
+            int brokerId, String host, int port, String advertisedHost, int advertisedPort, int raftPort) {
         var internal = new HostPort(host, port);
         HostPort advertised;
         if (advertisedHost == null || advertisedHost.isEmpty() || advertisedPort <= 0) {

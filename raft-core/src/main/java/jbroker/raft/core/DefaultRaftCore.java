@@ -188,8 +188,28 @@ public final class DefaultRaftCore implements RaftCore {
         this.activeLearners = rebuilt.learners();
     }
 
+    @Override
     public List<NodeId> activeVoters() {
         return activeVoters;
+    }
+
+    @Override
+    public List<NodeId> activeLearners() {
+        return activeLearners;
+    }
+
+    @Override
+    public ReplicationProgress replicationProgress() {
+        if (role != Role.LEADER) {
+            return new ReplicationProgress(log.lastIndex(), Map.of());
+        }
+        var snapshot = new HashMap<NodeId, Long>();
+        for (var e : matchIndex.entrySet()) {
+            if (!e.getKey().equals(config.selfId())) {
+                snapshot.put(e.getKey(), e.getValue());
+            }
+        }
+        return new ReplicationProgress(log.lastIndex(), Map.copyOf(snapshot));
     }
 
     private int quorum() {

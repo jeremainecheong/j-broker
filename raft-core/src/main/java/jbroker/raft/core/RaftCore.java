@@ -39,6 +39,22 @@ public interface RaftCore {
      */
     Optional<NodeId> currentLeader();
 
+    /** The current voting members. Exposed for membership observability. */
+    List<NodeId> activeVoters();
+
+    /** The current non-voting learners (empty when none). */
+    List<NodeId> activeLearners();
+
+    /**
+     * Leader-side replication progress: the leader's own last-log index plus
+     * each peer's matched index. A controller driving a broker join reads
+     * this to know when a learner has caught up enough to promote. On a
+     * non-leader, {@code matchByPeer} is empty.
+     */
+    record ReplicationProgress(long leaderLastIndex, java.util.Map<NodeId, Long> matchByPeer) {}
+
+    ReplicationProgress replicationProgress();
+
     /** Point-in-time Raft-node state exposed by {@code /api/v1/raft}. */
     record Observability(
             long currentTerm, long commitIndex, long lastApplied, long lastLogIndex, long lastLogTerm, int votedFor) {}

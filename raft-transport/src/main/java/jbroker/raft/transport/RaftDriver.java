@@ -77,7 +77,11 @@ public final class RaftDriver implements AutoCloseable {
         this.selfId = Objects.requireNonNull(selfId);
         this.core = Objects.requireNonNull(core);
         this.stateMachine = Objects.requireNonNull(stateMachine);
-        this.peers = Map.copyOf(peers);
+        // Concurrent so a broker join can add a peer while the pump thread
+        // reads the map to dispatch AppendEntries (R4.3). Reads see a
+        // consistent view per get; a newly-added peer is visible on the next
+        // dispatch.
+        this.peers = new java.util.concurrent.ConcurrentHashMap<>(peers);
         this.tickIntervalNanos = tickIntervalNanos;
         this.clock = clock;
     }
@@ -194,6 +198,16 @@ public final class RaftDriver implements AutoCloseable {
     }
 
     /**
+     * Propose a single-server membership change (Raft §4.2). Fire-and-forget:
+     * the core rejects it if self is not leader or another change is still in
+     * flight, so the caller (the controller's broker-join orchestration)
+     * re-derives and retries. Takes effect on append, commits on quorum.
+     */
+    public void proposeMembership(jbroker.raft.core.Membership membership) throws InterruptedException {
+        queue.put(new PendingEvent(new RaftEvent.ProposeConfigChange(membership), null));
+    }
+
+    /**
      * Chaos force-election — queues a self-addressed {@code TimeoutNow}
      * so the core short-circuits the pre-vote + election-timeout wait and
      * jumps straight to {@code startElection} at {@code currentTerm + 1}.
@@ -272,8 +286,37 @@ public final class RaftDriver implements AutoCloseable {
         return core.observability();
     }
 
+    /** The current voting members (for membership observability + broker-join orchestration). */
+    public List<NodeId> activeVoters() {
+        return core.activeVoters();
+    }
+
+    /** The current non-voting learners (empty when none). */
+    public List<NodeId> activeLearners() {
+        return core.activeLearners();
+    }
+
+    /** Leader-side replication progress; drives catch-up detection during a broker join. */
+    public jbroker.raft.core.RaftCore.ReplicationProgress replicationProgress() {
+        return core.replicationProgress();
+    }
+
     public java.util.Collection<RaftPeerClient> peers() {
         return peers.values();
+    }
+
+    /**
+     * Register a dial channel to a broker joining the cluster (R4.3). Existing
+     * members call this before the controller proposes the add-learner change,
+     * so their pump threads can send it AppendEntries the moment it is a
+     * replication target. Idempotent; replaces any prior client for the id
+     * (closing the old one).
+     */
+    public void addPeer(NodeId id, RaftPeerClient client) {
+        var prior = peers.put(id, client);
+        if (prior != null && prior != client) {
+            prior.close();
+        }
     }
 
     private void pumpLoop() {

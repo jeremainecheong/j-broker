@@ -185,6 +185,35 @@ metrics:
     # Extra labels so the object matches your operator's
     # serviceMonitorSelector, e.g. release: kube-prometheus-stack.
     additionalLabels: {}
+  # Alert pack. Expressions assume operator-style target labels (the
+  # `namespace` label the ServiceMonitor attaches), so enable it
+  # together with serviceMonitor.enabled — or make sure your own scrape
+  # config attaches the same label.
+  prometheusRule:
+    enabled: false
+    # Extra labels so the object matches your operator's ruleSelector.
+    additionalLabels: {}
+    thresholds:
+      # JBrokerReplicationLagHigh: records a follower may stay behind
+      # its partition leader before the alert fires.
+      replicationLagRecords: 1000
+      # JBrokerRaftTermFlapping: metadata-Raft term increases tolerated
+      # within a 10-minute window before the alert fires.
+      raftTermIncreasesPer10m: 3
+    # Failure modes with NO backing metric today. No alert ships for
+    # them — better absent than one that can never fire:
+    #   - offline partitions: partition gauges are leader-reported, so
+    #     a leaderless partition silently vanishes from the exposition;
+    #     needs a controller-side offline-partitions gauge.
+    #   - min-ISR produce rejections: NOT_ENOUGH_REPLICAS rejections go
+    #     back to clients but are never counted; needs a rejection
+    #     counter in DescribeMetrics.
+    #   - disk headroom low: DescribeMetrics already carries
+    #     disk_usable_bytes + disk_headroom_low, but the admin
+    #     exposition does not bind them to gauges yet.
+    #   - single broker down: a broker that drops out of the admin's
+    #     scrape keeps its last-reported per-broker gauge values, so
+    #     its absence is invisible; needs a per-broker liveness gauge.
 
 # Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
 # Off by default — the admin-app and broker both degrade gracefully

@@ -1,0 +1,115 @@
+{{- if .Values.metrics.prometheusRule.enabled -}}
+{{- $ns := .Release.Namespace -}}
+{{- $job := include "jbroker.admin.fullname" . -}}
+{{- $t := .Values.metrics.prometheusRule.thresholds -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "jbroker.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: jbroker.alerts
+      rules:
+        # ISR smaller than the assigned replica set. The replica count
+        # is recovered from the per-follower lag rows, which the leader
+        # reports for every assigned follower whether or not it is in
+        # sync — so followers + 1 = replicas. Replication-factor-1
+        # partitions emit no lag rows and are correctly exempt.
+        - alert: JBrokerUnderReplicatedPartitions
+          expr: |
+            jbroker_isr_size{namespace="{{ $ns }}"}
+              < on (namespace, broker_id, topic, partition)
+            (count by (namespace, broker_id, topic, partition) (jbroker_replication_lag_records{namespace="{{ $ns }}"}) + 1)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Partition {{ "{{ $labels.topic }}" }}-{{ "{{ $labels.partition }}" }} is under-replicated'
+            description: >-
+              The ISR of {{ "{{ $labels.topic }}" }}-{{ "{{ $labels.partition }}" }} (leader broker
+              {{ "{{ $labels.broker_id }}" }}) has been smaller than its assigned replica set for
+              10 minutes. Check the out-of-sync follower pods and inter-broker connectivity; a
+              follower rejoins the ISR on its own once it catches back up to the leader's log
+              end offset. Losing further replicas risks NOT_ENOUGH_REPLICAS produce failures.
+
+        # A follower persistently far behind its leader. Not fatal on
+        # its own, but the precursor to falling out of the ISR.
+        - alert: JBrokerReplicationLagHigh
+          expr: jbroker_replication_lag_records{namespace="{{ $ns }}"} > {{ $t.replicationLagRecords }}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Follower {{ "{{ $labels.follower_id }}" }} lags {{ "{{ $labels.topic }}" }}-{{ "{{ $labels.partition }}" }}'
+            description: >-
+              Follower broker {{ "{{ $labels.follower_id }}" }} has stayed more than
+              {{ $t.replicationLagRecords }} records behind the leader of
+              {{ "{{ $labels.topic }}" }}-{{ "{{ $labels.partition }}" }} for 15 minutes
+              (currently {{ "{{ $value }}" }}). Look for a slow disk or saturated network on
+              the follower pod; if the lag keeps growing the follower will drop out of the
+              ISR and acks=all produces lose headroom.
+
+        # The leader holds records beyond the high watermark and the
+        # watermark has stopped moving: replication is wedged, not just
+        # slow. Consumers cannot see the stuck records and acks=all
+        # produces time out.
+        - alert: JBrokerReplicationStalled
+          expr: |
+            (jbroker_leader_log_end_offset{namespace="{{ $ns }}"} - jbroker_hwm{namespace="{{ $ns }}"}) > 0
+            and
+            delta(jbroker_hwm{namespace="{{ $ns }}"}[10m]) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'High watermark of {{ "{{ $labels.topic }}" }}-{{ "{{ $labels.partition }}" }} is stuck'
+            description: >-
+              {{ "{{ $labels.topic }}" }}-{{ "{{ $labels.partition }}" }} on leader broker
+              {{ "{{ $labels.broker_id }}" }} has records past the high watermark but the
+              watermark has not advanced in 10 minutes — follower fetch is wedged.
+              Restart or investigate the ISR follower pods and check the broker gRPC/Raft
+              ports between pods (NetworkPolicy, DNS). New records stay invisible to
+              consumers until the watermark moves again.
+
+        # Repeated metadata-Raft elections. A healthy quorum bumps the
+        # term only when a leader is lost.
+        - alert: JBrokerRaftTermFlapping
+          expr: delta(jbroker_raft_current_term{namespace="{{ $ns }}"}[10m]) > {{ $t.raftTermIncreasesPer10m }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Metadata-Raft term is flapping on broker {{ "{{ $labels.broker_id }}" }}'
+            description: >-
+              Broker {{ "{{ $labels.broker_id }}" }} observed the metadata-Raft term rise more
+              than {{ $t.raftTermIncreasesPer10m }} times in 10 minutes — the controller
+              quorum keeps re-electing. Look for crash-looping broker pods, long GC or node
+              pressure pauses, and packet loss on the Raft port. Metadata operations
+              (topic create, ISR changes) stall while no stable leader holds the term.
+{{- if .Values.metrics.serviceMonitor.enabled }}
+
+        # Only meaningful with the chart's ServiceMonitor: the job label
+        # equals the admin Service name. Every alert above reads through
+        # this one scrape target, so losing it means flying blind.
+        - alert: JBrokerAdminMetricsDown
+          expr: |
+            up{job="{{ $job }}", namespace="{{ $ns }}"} == 0
+            or
+            absent(up{job="{{ $job }}", namespace="{{ $ns }}"})
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Metrics scrape of {{ $job }} is down'
+            description: >-
+              Prometheus has not scraped the admin metrics endpoint for 5 minutes; every
+              other alert in this pack is blind while this fires. Check the admin pod
+              ({{ $job }}) and, when networkPolicy.adminFrom is set, confirm the Prometheus
+              pods are allowed to reach the admin port.
+{{- end }}
+{{- end }}

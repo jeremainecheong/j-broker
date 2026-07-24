@@ -163,6 +163,58 @@ networkPolicy:
   # NetworkPolicyPeer list for the admin UI/API port.
   adminFrom: []
 
+# Prometheus-operator integration. Off by default: these toggles render
+# monitoring.coreos.com/v1 objects, and the CRDs only exist on clusters
+# running prometheus-operator / kube-prometheus.
+#
+# The admin app is the single scrape point. Its MetricsScraper pulls
+# DescribeMetrics from every broker over gRPC and re-exposes the merged
+# snapshot at /actuator/prometheus on the admin port; broker pods have
+# no metrics port of their own. The actuator path stays open even when
+# admin auth (admin.auth.existingSecret) is enabled. When
+# networkPolicy.enabled is true and adminFrom is non-empty, add the
+# Prometheus pods to adminFrom or scrapes will be dropped.
+metrics:
+  serviceMonitor:
+    enabled: false
+    # Prometheus-side scrape cadence. Keep it >= the admin app's own
+    # broker-scrape cadence (jbroker.metrics.scrape.intervalSeconds,
+    # 5s default) — scraping faster only re-reads the same snapshot.
+    interval: 15s
+    scrapeTimeout: 10s
+    # Extra labels so the object matches your operator's
+    # serviceMonitorSelector, e.g. release: kube-prometheus-stack.
+    additionalLabels: {}
+  # Alert pack. Expressions assume operator-style target labels (the
+  # `namespace` label the ServiceMonitor attaches), so enable it
+  # together with serviceMonitor.enabled — or make sure your own scrape
+  # config attaches the same label.
+  prometheusRule:
+    enabled: false
+    # Extra labels so the object matches your operator's ruleSelector.
+    additionalLabels: {}
+    thresholds:
+      # JBrokerReplicationLagHigh: records a follower may stay behind
+      # its partition leader before the alert fires.
+      replicationLagRecords: 1000
+      # JBrokerRaftTermFlapping: metadata-Raft term increases tolerated
+      # within a 10-minute window before the alert fires.
+      raftTermIncreasesPer10m: 3
+    # Failure modes with NO backing metric today. No alert ships for
+    # them — better absent than one that can never fire:
+    #   - offline partitions: partition gauges are leader-reported, so
+    #     a leaderless partition silently vanishes from the exposition;
+    #     needs a controller-side offline-partitions gauge.
+    #   - min-ISR produce rejections: NOT_ENOUGH_REPLICAS rejections go
+    #     back to clients but are never counted; needs a rejection
+    #     counter in DescribeMetrics.
+    #   - disk headroom low: DescribeMetrics already carries
+    #     disk_usable_bytes + disk_headroom_low, but the admin
+    #     exposition does not bind them to gauges yet.
+    #   - single broker down: a broker that drops out of the admin's
+    #     scrape keeps its last-reported per-broker gauge values, so
+    #     its absence is invisible; needs a per-broker liveness gauge.
+
 # Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
 # Off by default — the admin-app and broker both degrade gracefully
 # (in-memory quota + single-pod SSE) without it.

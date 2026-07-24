@@ -58,6 +58,110 @@ service Admin {
   rpc CreateAcl(CreateAclRequest) returns (CreateAclResponse);
   rpc DeleteAcl(DeleteAclRequest) returns (DeleteAclResponse);
   rpc ListAcls(ListAclsRequest) returns (ListAclsResponse);
+  // Cluster lifecycle. All route to the controller (the Raft leader);
+  // non-leaders answer NOT_LEADER with the usual suggested_leader_*
+  // hints. Joins and decommissions advance asynchronously on the
+  // controller tick — DescribeMembership reports where they are.
+  rpc AddBroker(AddBrokerRequest) returns (AddBrokerResponse);
+  rpc DecommissionBroker(DecommissionBrokerRequest) returns (DecommissionBrokerResponse);
+  rpc DescribeMembership(DescribeMembershipRequest) returns (DescribeMembershipResponse);
+  rpc ReassignPartition(ReassignPartitionRequest) returns (ReassignPartitionResponse);
+  rpc ListReassignments(ListReassignmentsRequest) returns (ListReassignmentsResponse);
+  rpc CancelReassignment(CancelReassignmentRequest) returns (CancelReassignmentResponse);
+  rpc RebalanceLeadership(RebalanceLeadershipRequest) returns (RebalanceLeadershipResponse);
+}
+
+// ---- Cluster lifecycle messages ----
+
+// Admit a broker into the cluster: publish its address, add it as a
+// non-voting learner, promote it to voter once its log catches up. The
+// broker must already be running, booted with the incumbent voter set.
+message AddBrokerRequest {
+  int32 broker_id = 1;
+  string host = 2;
+  int32 raft_port = 3;
+  int32 broker_port = 4;
+}
+
+message AddBrokerResponse {
+  Error error = 1;
+}
+
+// Drain every replica off the broker (refused up front if any partition
+// would lose replication factor), then remove its Raft vote. The broker
+// itself may already be dead; decommissioning the controller is refused.
+message DecommissionBrokerRequest {
+  int32 broker_id = 1;
+}
+
+message DecommissionBrokerResponse {
+  Error error = 1;
+}
+
+message DescribeMembershipRequest {}
+
+// Progress of the in-flight (or most recent) join and decommission, plus
+// the current voter set. Phases are the controller state names
+// (e.g. CATCHING_UP, DRAINING, DONE, FAILED); empty when never started.
+message DescribeMembershipResponse {
+  Error error = 1;
+  repeated int32 voter_ids = 2;
+  string join_phase = 3;
+  int32 join_broker_id = 4;
+  int64 join_lag = 5;
+  string decommission_phase = 6;
+  int32 decommission_broker_id = 7;
+  int32 decommission_remaining_partitions = 8;
+  string decommission_detail = 9;
+}
+
+// Reassign one partition's replicas to the target set. The controller
+// expands the replica set so newcomers catch up, waits for them to join
+// the ISR, then contracts to the target — moving leadership into it if
+// the current leader is leaving.
+message ReassignPartitionRequest {
+  string topic = 1;
+  int32 partition = 2;
+  repeated int32 replicas = 3;
+}
+
+message ReassignPartitionResponse {
+  Error error = 1;
+}
+
+message ListReassignmentsRequest {}
+
+message ReassignmentInfo {
+  string topic = 1;
+  int32 partition = 2;
+  repeated int32 target_replicas = 3;
+  repeated int32 original_replicas = 4;
+}
+
+// Answered from the responding broker's replicated reassignment cache.
+message ListReassignmentsResponse {
+  Error error = 1;
+  repeated ReassignmentInfo reassignments = 2;
+}
+
+// Revert a pending reassignment to its original replica set. Only
+// honored before the leader switch (while the pending entry exists).
+message CancelReassignmentRequest {
+  string topic = 1;
+  int32 partition = 2;
+}
+
+message CancelReassignmentResponse {
+  Error error = 1;
+}
+
+message RebalanceLeadershipRequest {}
+
+// moves_proposed counts the preferred-leader moves submitted; 0 means
+// the cluster was already balanced.
+message RebalanceLeadershipResponse {
+  Error error = 1;
+  int32 moves_proposed = 2;
 }
 
 // Read-only admin observability surface. All RPCs answer from

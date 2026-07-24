@@ -2,6 +2,8 @@ package jbroker.broker;
 
 import io.grpc.stub.StreamObserver;
 import jbroker.proto.broker.AdminGrpc;
+import jbroker.proto.broker.ApiVersionsRequest;
+import jbroker.proto.broker.ApiVersionsResponse;
 import jbroker.proto.broker.BrokerHeartbeatRequest;
 import jbroker.proto.broker.BrokerHeartbeatResponse;
 import jbroker.proto.broker.ClusterGrpc;
@@ -167,6 +169,12 @@ public final class BrokerGrpcServices {
 
     public static MetadataGrpc.MetadataImplBase metadata(MetadataServiceHandler handler) {
         return new MetadataGrpc.MetadataImplBase() {
+            @Override
+            public void apiVersions(ApiVersionsRequest req, StreamObserver<ApiVersionsResponse> out) {
+                out.onNext(handler.apiVersions(req));
+                out.onCompleted();
+            }
+
             @Override
             public void describeCluster(DescribeClusterRequest req, StreamObserver<DescribeClusterResponse> out) {
                 out.onNext(handler.describeCluster(req));

@@ -155,6 +155,8 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
         var req = BrokerHeartbeatRequest.newBuilder()
                 .setBrokerId(selfBrokerId)
                 .setCurrentMetadataOffset(offset)
+                .setSupportedProtocolMin(ProtocolVersion.MIN_SUPPORTED)
+                .setSupportedProtocolMax(ProtocolVersion.CURRENT)
                 .build();
         for (var p : peers) {
             var stub = stubs.get(p.brokerId());

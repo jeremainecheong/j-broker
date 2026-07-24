@@ -121,3 +121,7 @@ deploy/helm/j-broker/tests/render-smoke.sh
 Runs `helm template` across the default, TLS-enabled, Redis-enabled, and
 advertised-listener value matrices and grep-asserts structural
 invariants. No Kubernetes cluster required.
+
+Against a live release, `helm test <release>` runs a hook pod (reusing
+the broker image) that TCP-connects to every broker pod and the admin
+service and fails if any port does not answer.

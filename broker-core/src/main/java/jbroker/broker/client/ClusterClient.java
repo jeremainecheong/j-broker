@@ -256,6 +256,11 @@ public final class ClusterClient implements AutoCloseable {
         this.random = Objects.requireNonNull(random, "random");
     }
 
+    /** The retry/deadline tuning this client was built with. */
+    public Config config() {
+        return config;
+    }
+
     // ---- Producer path ----
 
     /**

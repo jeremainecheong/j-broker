@@ -1,8 +1,6 @@
 package jbroker.broker.client.consumer;
 
 import com.google.protobuf.ByteString;
-import io.grpc.ManagedChannel;
-import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -16,24 +14,20 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import jbroker.broker.client.ClusterClient;
 import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.ConsumerGroupHeartbeatRequest;
-import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.FetchOffsetsRequest;
 import jbroker.proto.broker.FetchRequest;
-import jbroker.proto.broker.FindCoordinatorRequest;
 import jbroker.proto.broker.ListOffsetsPartition;
 import jbroker.proto.broker.ListOffsetsRequest;
 import jbroker.proto.broker.OffsetCommit;
 import jbroker.proto.broker.ProduceRequest;
-import jbroker.proto.broker.ProducerGrpc;
 import jbroker.proto.broker.TopicPartitions;
 import jbroker.proto.common.ErrorCode;
 import jbroker.proto.common.TopicPartition;
 import jbroker.storage.Record;
 import jbroker.storage.RecordBatch;
-import jbroker.tls.TlsContexts;
 
 /**
  * Consumer client. Single-threaded — the application drives the
@@ -73,9 +67,16 @@ import jbroker.tls.TlsContexts;
  * Apps that don't care about the staged dance can pass
  * {@link RebalanceListener#NO_OP}.
  *
- * <p>Coordinator caching: the first successful {@link #findCoordinator}
+ * <p>Coordinator caching: the first successful {@code FindCoordinator}
  * call caches the endpoint. On {@code NOT_COORDINATOR}, the cache is
  * cleared and the next call refreshes via {@code FindCoordinator}.
+ *
+ * <p>Network wiring is behind the {@link ConsumerRpc} seam: the classic
+ * constructor keeps the original single-endpoint behavior (bootstrap
+ * broker + cached coordinator channel), while the {@link ClusterClient}
+ * constructor routes every call cluster-wide so poll/commit loops ride
+ * through leader and coordinator failover with no application-side error
+ * handling.
  *
  * <p>Not Kafka-API-compatible — see {@code BrokerClient} for the producer
  * surface.
@@ -90,11 +91,7 @@ public final class Consumer<K, V> implements AutoCloseable {
     private final ConsumerConfig cfg;
     private final Deserializer<K> keyDe;
     private final Deserializer<V> valueDe;
-    private final ManagedChannel bootstrapChannel;
-    private final ConsumerGrpc.ConsumerBlockingStub bootstrapStub;
-    private ManagedChannel coordinatorChannel;
-    private ConsumerGrpc.ConsumerBlockingStub coordinatorStub;
-    private CoordinatorEndpoint cachedCoordinator;
+    private final ConsumerRpc rpc;
 
     private Set<String> subscribed = Set.of();
     private RebalanceListener listener = RebalanceListener.NO_OP;
@@ -105,40 +102,37 @@ public final class Consumer<K, V> implements AutoCloseable {
     // buffer. Positions are populated lazily on first assignment via
     // FetchOffsets, then advanced as records are returned from poll.
     private final FetchState<K, V> fetchState = new FetchState<>();
-    // Lazy ProducerGrpc stub over the bootstrap channel for DLT routing.
-    private ProducerGrpc.ProducerBlockingStub dltProducerStub;
     // Lazy single-thread executor behind commitAsync. One thread keeps
     // overlapping async commits in submission order.
     private ExecutorService commitExecutor;
     // Incremental fetch session. 0 = no session; any positive value
     // is echoed on subsequent Fetch requests so the broker can reuse cached
     // per-partition state. Reset to 0 on FETCH_SESSION_ID_NOT_FOUND (LRU
-    // eviction or broker restart).
+    // eviction, broker restart, or a cluster-routed fetch landing on a
+    // different broker after failover).
     private int fetchSessionId;
     private int fetchSessionEpoch;
     private boolean closed;
 
     public Consumer(ConsumerConfig cfg, Deserializer<K> keyDe, Deserializer<V> valueDe) {
+        this(cfg, keyDe, valueDe, new SingleEndpointConsumerRpc(cfg));
+    }
+
+    /**
+     * Cluster-aware construction path: fetch, commit, and coordinator
+     * calls route through {@code cluster}, which the application owns
+     * (and may share with a producer). {@code cfg}'s bootstrap host/port
+     * are ignored — discovery comes from the ClusterClient.
+     */
+    public Consumer(ConsumerConfig cfg, Deserializer<K> keyDe, Deserializer<V> valueDe, ClusterClient cluster) {
+        this(cfg, keyDe, valueDe, new ClusterConsumerRpc(cluster, cfg));
+    }
+
+    Consumer(ConsumerConfig cfg, Deserializer<K> keyDe, Deserializer<V> valueDe, ConsumerRpc rpc) {
         this.cfg = cfg;
         this.keyDe = keyDe;
         this.valueDe = valueDe;
-        this.bootstrapChannel = buildChannel(cfg, cfg.bootstrapHost(), cfg.bootstrapPort());
-        this.bootstrapStub = ConsumerGrpc.newBlockingStub(bootstrapChannel);
-    }
-
-    private static ManagedChannel buildChannel(ConsumerConfig cfg, String host, int port) {
-        var b = NettyChannelBuilder.forAddress(host, port);
-        try {
-            var sslCtx = TlsContexts.clientContext(cfg.tls());
-            if (sslCtx == null) {
-                b.usePlaintext();
-            } else {
-                b.sslContext(sslCtx);
-            }
-        } catch (javax.net.ssl.SSLException e) {
-            throw new IllegalStateException("TLS client context build failed", e);
-        }
-        return b.build();
+        this.rpc = rpc;
     }
 
     public synchronized void subscribe(Collection<String> topics, RebalanceListener listener) {
@@ -206,9 +200,6 @@ public final class Consumer<K, V> implements AutoCloseable {
         if (closed) throw new IllegalStateException("consumer is closed");
         if (subscribed.isEmpty()) return ConsumerRecords.empty();
 
-        var stub = ensureCoordinator();
-        if (stub == null) return ConsumerRecords.empty();
-
         var hbReq = ConsumerGroupHeartbeatRequest.newBuilder()
                 .setGroupId(cfg.groupId())
                 .setMemberId(memberId)
@@ -217,12 +208,12 @@ public final class Consumer<K, V> implements AutoCloseable {
                 .setRebalanceTimeoutMs(cfg.rebalanceTimeoutMs())
                 .addAllSubscribedTopics(subscribed)
                 .addAllOwnedPartitions(toProtoTopicPartitions(currentAssignment));
-        var hbResp = stub.withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
-                .consumerGroupHeartbeat(hbReq.build());
+        var hbResp = rpc.heartbeat(hbReq.build());
+        if (hbResp == null) return ConsumerRecords.empty(); // no coordinator this tick
 
         if (hbResp.getError() == ErrorCode.NOT_COORDINATOR
                 || hbResp.getError() == ErrorCode.COORDINATOR_NOT_AVAILABLE) {
-            invalidateCoordinator();
+            rpc.invalidateCoordinator();
             return ConsumerRecords.empty();
         }
         if (hbResp.getError() == ErrorCode.UNKNOWN_MEMBER_ID || hbResp.getError() == ErrorCode.FENCED_MEMBER_EPOCH) {
@@ -247,7 +238,7 @@ public final class Consumer<K, V> implements AutoCloseable {
 
         if (currentAssignment.isEmpty()) return ConsumerRecords.empty();
 
-        return fetchAssignedPartitions(stub);
+        return fetchAssignedPartitions();
     }
 
     /**
@@ -331,9 +322,7 @@ public final class Consumer<K, V> implements AutoCloseable {
                 .setBaseSequence(-1)
                 .setAcks(1)
                 .build();
-        var resp = lazyDltProducer()
-                .withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
-                .produce(req);
+        var resp = rpc.produceDlt(req);
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("DLT produce to " + policy.dltTopic() + "-"
                     + rec.tp().getPartition() + " failed: " + resp.getError().getMessage());
@@ -351,13 +340,6 @@ public final class Consumer<K, V> implements AutoCloseable {
         if (o instanceof byte[] b) return b;
         if (o instanceof String s) return s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         return o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-    }
-
-    private ProducerGrpc.ProducerBlockingStub lazyDltProducer() {
-        if (dltProducerStub == null) {
-            dltProducerStub = ProducerGrpc.newBlockingStub(bootstrapChannel);
-        }
-        return dltProducerStub;
     }
 
     /** Commit the consumer's current per-partition positions. */
@@ -429,8 +411,6 @@ public final class Consumer<K, V> implements AutoCloseable {
 
     public synchronized void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets) {
         if (offsets.isEmpty()) return;
-        var stub = ensureCoordinator();
-        if (stub == null) throw new IllegalStateException("coordinator not available");
         var b = CommitOffsetsRequest.newBuilder()
                 .setGroupId(cfg.groupId())
                 .setMemberId(memberId)
@@ -443,11 +423,11 @@ public final class Consumer<K, V> implements AutoCloseable {
                     .setMetadata(e.getValue().metadata())
                     .build());
         }
-        var resp = stub.withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
-                .commitOffsets(b.build());
+        var resp = rpc.commitOffsets(b.build());
+        if (resp == null) throw new IllegalStateException("coordinator not available");
         for (var r : resp.getResultsList()) {
             if (r.getError() == ErrorCode.NOT_COORDINATOR) {
-                invalidateCoordinator();
+                rpc.invalidateCoordinator();
                 throw new RuntimeException("coordinator moved; retry commit");
             }
             if (r.getError() != ErrorCode.OK) {
@@ -459,13 +439,11 @@ public final class Consumer<K, V> implements AutoCloseable {
 
     /** Look up the last committed offset for {@code tp} via the coordinator. */
     public synchronized OffsetAndMetadata committed(TopicPartition tp) {
-        var stub = ensureCoordinator();
-        if (stub == null) return new OffsetAndMetadata(-1L);
-        var resp = stub.withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
-                .fetchOffsets(FetchOffsetsRequest.newBuilder()
-                        .setGroupId(cfg.groupId())
-                        .addTps(tp)
-                        .build());
+        var resp = rpc.fetchOffsets(FetchOffsetsRequest.newBuilder()
+                .setGroupId(cfg.groupId())
+                .addTps(tp)
+                .build());
+        if (resp == null) return new OffsetAndMetadata(-1L);
         var r = resp.getResults(0);
         if (r.getError() == ErrorCode.OFFSET_OUT_OF_RANGE) {
             return new OffsetAndMetadata(-1L);
@@ -482,68 +460,24 @@ public final class Consumer<K, V> implements AutoCloseable {
         closed = true;
         // Best-effort leave — if the coordinator is unreachable, the
         // session-timeout eviction will pick up the slack.
-        try {
-            if (!memberId.isEmpty() && coordinatorStub != null) {
-                coordinatorStub
-                        .withDeadlineAfter(2, TimeUnit.SECONDS)
-                        .consumerGroupHeartbeat(ConsumerGroupHeartbeatRequest.newBuilder()
-                                .setGroupId(cfg.groupId())
-                                .setMemberId(memberId)
-                                .setMemberEpoch(-1)
-                                .build());
-            }
-        } catch (Exception ignored) {
-            // best-effort
+        if (!memberId.isEmpty()) {
+            rpc.leaveGroup(ConsumerGroupHeartbeatRequest.newBuilder()
+                    .setGroupId(cfg.groupId())
+                    .setMemberId(memberId)
+                    .setMemberEpoch(-1)
+                    .build());
         }
         if (!currentAssignment.isEmpty()) {
             listener.onPartitionsRevoked(currentAssignment);
             currentAssignment = List.of();
         }
-        shutdownChannel(coordinatorChannel);
-        shutdownChannel(bootstrapChannel);
-        // Async commits still queued now run against the closed channels and
-        // complete exceptionally — loud, never dropped.
+        rpc.close();
+        // Async commits still queued now run against the closed transport
+        // and complete exceptionally — loud, never dropped.
         if (commitExecutor != null) commitExecutor.shutdown();
     }
 
     // ---------- internals ----------
-
-    private record CoordinatorEndpoint(String host, int port) {}
-
-    private ConsumerGrpc.ConsumerBlockingStub ensureCoordinator() {
-        if (cachedCoordinator != null && coordinatorStub != null) {
-            return coordinatorStub;
-        }
-        var resp = bootstrapStub
-                .withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
-                .findCoordinator(FindCoordinatorRequest.newBuilder()
-                        .setKey(cfg.groupId())
-                        .build());
-        if (resp.getError() != ErrorCode.OK) {
-            return null;
-        }
-        var ep = new CoordinatorEndpoint(
-                resp.getCoordinator().getHost(), resp.getCoordinator().getPort());
-        cachedCoordinator = ep;
-        if (ep.host().equals(cfg.bootstrapHost()) && ep.port() == cfg.bootstrapPort()) {
-            // Coordinator is the bootstrap broker — reuse the channel.
-            coordinatorChannel = null;
-            coordinatorStub = bootstrapStub;
-        } else {
-            coordinatorChannel = buildChannel(cfg, ep.host(), ep.port());
-            coordinatorStub = ConsumerGrpc.newBlockingStub(coordinatorChannel);
-        }
-        return coordinatorStub;
-    }
-
-    private void invalidateCoordinator() {
-        cachedCoordinator = null;
-        if (coordinatorChannel != null) {
-            shutdownChannel(coordinatorChannel);
-            coordinatorChannel = null;
-        }
-        coordinatorStub = null;
-    }
 
     private void applyAssignment(List<TopicPartition> newAssignment) {
         var oldSet = new HashSet<>(currentAssignment);
@@ -564,10 +498,18 @@ public final class Consumer<K, V> implements AutoCloseable {
         if (!added.isEmpty()) {
             listener.onPartitionsAssigned(added);
             // Prime positions for newly-added partitions from the
-            // coordinator's committed view (or 0 if never committed).
+            // coordinator's committed view (or 0 if never committed) — but
+            // never rewind a live local position. A rejoin after member
+            // eviction (UNKNOWN_MEMBER_ID) re-adds partitions this
+            // instance never stopped owning; re-priming below the local
+            // position would re-deliver records the application already
+            // saw. Committed-ahead still wins: another member may have
+            // advanced the group while we were out.
             for (var tp : added) {
                 var committed = committedQuiet(tp);
-                fetchState.position(tp, committed.offset() < 0 ? 0L : committed.offset());
+                long floor = committed.offset() < 0 ? 0L : committed.offset();
+                long resume = fetchState.hasPosition(tp) ? Math.max(fetchState.position(tp), floor) : floor;
+                fetchState.position(tp, resume);
             }
         }
     }
@@ -578,16 +520,14 @@ public final class Consumer<K, V> implements AutoCloseable {
      * {@code -2} earliest, {@code -1} latest.
      */
     private long resolveOffset(TopicPartition tp, long timestamp) {
-        var stub = ensureCoordinator();
-        if (stub == null) throw new IllegalStateException("coordinator not available");
-        var resp = stub.withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
-                .listOffsets(ListOffsetsRequest.newBuilder()
-                        .setReplicaId(-1)
-                        .addPartitions(ListOffsetsPartition.newBuilder()
-                                .setTp(tp)
-                                .setTimestamp(timestamp)
-                                .build())
-                        .build());
+        var resp = rpc.listOffsets(ListOffsetsRequest.newBuilder()
+                .setReplicaId(-1)
+                .addPartitions(ListOffsetsPartition.newBuilder()
+                        .setTp(tp)
+                        .setTimestamp(timestamp)
+                        .build())
+                .build());
+        if (resp == null) throw new IllegalStateException("coordinator not available");
         var r = resp.getResults(0);
         if (r.getError() != ErrorCode.OK) {
             throw new RuntimeException(
@@ -615,21 +555,21 @@ public final class Consumer<K, V> implements AutoCloseable {
         }
     }
 
-    private ConsumerRecords<K, V> fetchAssignedPartitions(ConsumerGrpc.ConsumerBlockingStub stub) {
+    private ConsumerRecords<K, V> fetchAssignedPartitions() {
         for (var tp : currentAssignment) {
             // Paused partitions and partitions still carrying surplus from a
             // previous poll issue no fetch this tick.
             if (!fetchState.fetchable(tp)) continue;
             long offset = fetchState.position(tp);
-            var resp = stub.withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
-                    .fetch(FetchRequest.newBuilder()
-                            .setTopic(tp.getTopic())
-                            .setPartition(tp.getPartition())
-                            .setOffset(offset)
-                            .setMaxBytes(cfg.fetchMaxBytes())
-                            .setSessionId(fetchSessionId)
-                            .setSessionEpoch(fetchSessionEpoch)
-                            .build());
+            var resp = rpc.fetch(FetchRequest.newBuilder()
+                    .setTopic(tp.getTopic())
+                    .setPartition(tp.getPartition())
+                    .setOffset(offset)
+                    .setMaxBytes(cfg.fetchMaxBytes())
+                    .setSessionId(fetchSessionId)
+                    .setSessionEpoch(fetchSessionEpoch)
+                    .build());
+            if (resp == null) continue; // partition unreachable this tick — try next poll
             if (resp.hasError() && resp.getError().getCode() != 0) {
                 // Broker evicted (or never knew) our session — fall back to
                 // a fresh bootstrap request on the next call.
@@ -703,15 +643,5 @@ public final class Consumer<K, V> implements AutoCloseable {
             }
         }
         return out;
-    }
-
-    private static void shutdownChannel(ManagedChannel ch) {
-        if (ch == null) return;
-        ch.shutdown();
-        try {
-            ch.awaitTermination(2, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 }

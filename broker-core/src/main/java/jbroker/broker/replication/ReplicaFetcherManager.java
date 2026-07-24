@@ -144,15 +144,16 @@ public final class ReplicaFetcherManager
     }
 
     @Override
-    public void onBrokerRegistration(int brokerId, String host, int port, String advertisedHost, int advertisedPort) {
+    public void onBrokerRegistration(
+            int brokerId, String host, int port, String advertisedHost, int advertisedPort, int raftPort) {
         // ReplicaFetcher always dials the inter-broker address, so the
-        // advertised fields are irrelevant here.
+        // advertised and Raft-peer ports are irrelevant here.
         scheduleReconcile();
     }
 
     /** Legacy signature (without advertised host/port) kept for test call sites. */
     public void onBrokerRegistration(int brokerId, String host, int port) {
-        onBrokerRegistration(brokerId, host, port, "", 0);
+        onBrokerRegistration(brokerId, host, port, "", 0, 0);
     }
 
     @Override

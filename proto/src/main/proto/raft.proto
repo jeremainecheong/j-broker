@@ -147,6 +147,12 @@ message BrokerRegistrationRecord {
   // — preserves single-network behavior for deployments that don't set it.
   string advertised_host = 4;
   int32 advertised_port = 5;
+  // Inter-broker Raft peer port. Lets every broker form its Raft dial
+  // channel to a dynamically-joined broker straight from the replicated
+  // registration (R4.3), rather than only from the static voter config.
+  // 0 for records written before this field existed / brokers whose
+  // raft port equals the legacy convention.
+  int32 raft_port = 6;
 }
 
 // Emitted by the partition leader (via the controller's Raft log) whenever

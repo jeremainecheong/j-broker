@@ -319,6 +319,15 @@ public final class RaftDriver implements AutoCloseable {
         }
     }
 
+    /**
+     * Whether a dial channel to {@code id} already exists. Lets callers driven
+     * by a re-firing registration listener skip rebuilding a channel they
+     * already hold, rather than churning it through {@link #addPeer}.
+     */
+    public boolean hasPeer(NodeId id) {
+        return peers.containsKey(id);
+    }
+
     private void pumpLoop() {
         while (running.get()) {
             try {

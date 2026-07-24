@@ -11,28 +11,32 @@ import org.junit.jupiter.api.Test;
 
 class MetadataStateBrokerRegistrationTest {
 
-    private record Reg(int id, String host, int port) {}
+    private record Reg(int id, String host, int port, int raftPort) {}
 
     @Test
     void brokerRegistrationListenerFiresOnApply() {
         var seen = new ArrayList<Reg>();
         MetadataStateMachine.BrokerRegistrationListener listener =
-                (id, host, port, advHost, advPort) -> seen.add(new Reg(id, host, port));
+                (id, host, port, advHost, advPort, raftPort) -> seen.add(new Reg(id, host, port, raftPort));
         var sm = new MetadataStateMachine(
                 new TopicManager(), new ProducerIdRegistry(), (t, p, e, l) -> {}, listener, (t, p, s) -> {});
 
-        sm.apply(wrap(reg(1, "h1", 9001), 1));
-        sm.apply(wrap(reg(2, "h2", 9002), 2));
-        sm.apply(wrap(reg(1, "h1-new", 9001), 3));
+        sm.apply(wrap(reg(1, "h1", 9001, 7001), 1));
+        sm.apply(wrap(reg(2, "h2", 9002, 7002), 2));
+        // A legacy record with no raft_port surfaces 0 (see BrokerRegistrationRecord).
+        sm.apply(wrap(reg(1, "h1-new", 9001, 0), 3));
 
-        assertThat(seen).containsExactly(new Reg(1, "h1", 9001), new Reg(2, "h2", 9002), new Reg(1, "h1-new", 9001));
+        assertThat(seen)
+                .containsExactly(
+                        new Reg(1, "h1", 9001, 7001), new Reg(2, "h2", 9002, 7002), new Reg(1, "h1-new", 9001, 0));
     }
 
-    private static BrokerRegistrationRecord reg(int id, String host, int port) {
+    private static BrokerRegistrationRecord reg(int id, String host, int port, int raftPort) {
         return BrokerRegistrationRecord.newBuilder()
                 .setBrokerId(id)
                 .setHost(host)
                 .setPort(port)
+                .setRaftPort(raftPort)
                 .build();
     }
 

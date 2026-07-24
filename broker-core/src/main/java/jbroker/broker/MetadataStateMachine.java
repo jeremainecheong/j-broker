@@ -48,8 +48,11 @@ public final class MetadataStateMachine implements StateMachine {
          * @param port            inter-broker dial port
          * @param advertisedHost  externally-reachable host, "" when unset
          * @param advertisedPort  externally-reachable port, 0 when unset
+         * @param raftPort        inter-broker Raft peer port, 0 when unset
+         *                        (legacy records / brokers on the static config)
          */
-        void onBrokerRegistration(int brokerId, String host, int port, String advertisedHost, int advertisedPort);
+        void onBrokerRegistration(
+                int brokerId, String host, int port, String advertisedHost, int advertisedPort, int raftPort);
     }
 
     /**
@@ -89,16 +92,16 @@ public final class MetadataStateMachine implements StateMachine {
     }
 
     public MetadataStateMachine(TopicManager topicManager) {
-        this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt, ah, ap) -> {}, (t, p, s) -> {});
+        this(topicManager, new ProducerIdRegistry(), (t, p, e, l) -> {}, (b, h, pt, ah, ap, rp) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(TopicManager topicManager, ProducerIdRegistry producerIdRegistry) {
-        this(topicManager, producerIdRegistry, (t, p, e, l) -> {}, (b, h, pt, ah, ap) -> {}, (t, p, s) -> {});
+        this(topicManager, producerIdRegistry, (t, p, e, l) -> {}, (b, h, pt, ah, ap, rp) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(
             TopicManager topicManager, ProducerIdRegistry producerIdRegistry, LeaderEpochListener leaderEpochListener) {
-        this(topicManager, producerIdRegistry, leaderEpochListener, (b, h, pt, ah, ap) -> {}, (t, p, s) -> {});
+        this(topicManager, producerIdRegistry, leaderEpochListener, (b, h, pt, ah, ap, rp) -> {}, (t, p, s) -> {});
     }
 
     public MetadataStateMachine(
@@ -187,7 +190,12 @@ public final class MetadataStateMachine implements StateMachine {
                 // clients can reach the broker via its published listener.
                 var r = record.getBroker();
                 brokerRegistrationListener.onBrokerRegistration(
-                        r.getBrokerId(), r.getHost(), r.getPort(), r.getAdvertisedHost(), r.getAdvertisedPort());
+                        r.getBrokerId(),
+                        r.getHost(),
+                        r.getPort(),
+                        r.getAdvertisedHost(),
+                        r.getAdvertisedPort(),
+                        r.getRaftPort());
             }
             case DELETE_TOPIC -> {
                 // Drop the topic from the catalogue, then let the

@@ -87,6 +87,19 @@ public final class MetadataStateMachine implements StateMachine {
      */
     private final jbroker.broker.auth.AclStore aclStore = new jbroker.broker.auth.AclStore();
 
+    /**
+     * Pending partition reassignments fed by committed
+     * {@code PartitionReassignmentRecord} entries. Owned here for the same
+     * reason as {@link #aclStore}: replay/snapshot/restore keep it consistent
+     * with the rest of the metadata. The controller's reassignment driver
+     * reads it through {@link #reassignments()}.
+     */
+    private final ReassignmentStore reassignmentStore = new ReassignmentStore();
+
+    public ReassignmentStore reassignments() {
+        return reassignmentStore;
+    }
+
     public jbroker.broker.auth.AclStore aclStore() {
         return aclStore;
     }
@@ -226,6 +239,15 @@ public final class MetadataStateMachine implements StateMachine {
                 aclStore.remove(
                         r.getPrincipal(), r.getResourceType(), r.getResourceName(), r.getPrefix(), r.getOperation());
             }
+            case PARTITION_REASSIGNMENT -> {
+                var r = record.getPartitionReassignment();
+                if (r.getTargetReplicasList().isEmpty()) {
+                    reassignmentStore.clear(r.getTopic(), r.getPartition());
+                } else {
+                    reassignmentStore.put(new ReassignmentStore.Pending(
+                            r.getTopic(), r.getPartition(), r.getTargetReplicasList(), r.getOriginalReplicasList()));
+                }
+            }
                 // PartitionRecord is not yet dispatched — unused by any
                 // consumer. KIND_NOT_SET is legal (pre-v4 snapshot frames).
             case PARTITION, KIND_NOT_SET -> {
@@ -299,7 +321,8 @@ public final class MetadataStateMachine implements StateMachine {
     //  v6:            per-topic internal + compact flags.
     //  v7:            per-topic config map.
     //  v8:            appends ACL entries.
-    private static final byte SNAPSHOT_VERSION = 8;
+    //  v9:            appends pending partition reassignments.
+    private static final byte SNAPSHOT_VERSION = 9;
 
     @Override
     public void snapshot(OutputStream out) throws IOException {
@@ -357,6 +380,21 @@ public final class MetadataStateMachine implements StateMachine {
             dout.writeBoolean(a.prefix());
             dout.writeUTF(a.operation());
             dout.writeBoolean(a.allow());
+        }
+        // v9: pending partition reassignments.
+        var reassignments = reassignmentStore.list();
+        dout.writeInt(reassignments.size());
+        for (var r : reassignments) {
+            dout.writeUTF(r.topic());
+            dout.writeInt(r.partition());
+            dout.writeInt(r.target().size());
+            for (int b : r.target()) {
+                dout.writeInt(b);
+            }
+            dout.writeInt(r.original().size());
+            for (int b : r.original()) {
+                dout.writeInt(b);
+            }
         }
         dout.flush();
     }
@@ -444,6 +482,25 @@ public final class MetadataStateMachine implements StateMachine {
                 var allow = din.readBoolean();
                 aclStore.put(new jbroker.broker.auth.AclStore.Entry(
                         principal, resourceType, resourceName, prefix, operation, allow));
+            }
+        }
+        if (version >= 9) {
+            reassignmentStore.clearAll();
+            int reassignments = din.readInt();
+            for (int i = 0; i < reassignments; i++) {
+                var topic = din.readUTF();
+                var partition = din.readInt();
+                int targetSize = din.readInt();
+                var target = new java.util.ArrayList<Integer>(targetSize);
+                for (int j = 0; j < targetSize; j++) {
+                    target.add(din.readInt());
+                }
+                int originalSize = din.readInt();
+                var original = new java.util.ArrayList<Integer>(originalSize);
+                for (int j = 0; j < originalSize; j++) {
+                    original.add(din.readInt());
+                }
+                reassignmentStore.put(new ReassignmentStore.Pending(topic, partition, target, original));
             }
         }
     }

@@ -37,6 +37,31 @@ class IsrManagerTest {
     }
 
     @Test
+    void internalTopicsGetIsrHousekeepingToo(@TempDir Path dir) throws Exception {
+        // Regression: decideChanges used to iterate list(), which filters
+        // internal topics — __consumer_offsets ISR was frozen at creation, so
+        // a replica added by reassignment could never join and laggards never
+        // shrank out. A caught-up out-of-ISR replica of an internal topic
+        // must be proposed for expansion like any other.
+        var tm = new TopicManager();
+        tm.onTopicCommitted("__consumer_offsets", 1, 3, 0L);
+        tm.onPartitionChange("__consumer_offsets", 0, SELF, List.of(SELF, 2), List.of(SELF, 2, 3), /* epoch */ 1);
+        var tracker = new FollowerStateTracker();
+        try (var lm = lm(dir)) {
+            tracker.record("__consumer_offsets", 0, 2, 0L, /* fresh */ 100_000L);
+            tracker.record("__consumer_offsets", 0, 3, 0L, /* fresh, caught up */ 100_000L);
+
+            var isr = new IsrManager(SELF, tm, lm, tracker, LAG_TIMEOUT_MS);
+            var proposals = isr.decideChanges(/* now */ 105_000L);
+
+            assertThat(proposals).hasSize(1);
+            var change = MetadataRecord.parseFrom(proposals.get(0)).getPartitionChange();
+            assertThat(change.getTopic()).isEqualTo("__consumer_offsets");
+            assertThat(change.getIsrList()).containsExactlyInAnyOrder(SELF, 2, 3);
+        }
+    }
+
+    @Test
     void decideProposesIsrShrinkWhenFollowerIsStale(@TempDir Path dir) throws Exception {
         var tm = new TopicManager();
         tm.onTopicCommitted("orders", 1, 3, 0L);

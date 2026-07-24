@@ -921,6 +921,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.chaos.ChaosHttpServer chaosHttp;
     private final jbroker.broker.DiskHeadroom diskHeadroom;
     private final jbroker.broker.controller.MembershipController membershipController;
+    private final jbroker.broker.controller.DecommissionController decommissionController;
     private final int selfBrokerId;
 
     private Broker(
@@ -943,6 +944,7 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.chaos.ChaosHttpServer chaosHttp,
             jbroker.broker.DiskHeadroom diskHeadroom,
             jbroker.broker.controller.MembershipController membershipController,
+            jbroker.broker.controller.DecommissionController decommissionController,
             int selfBrokerId) {
         this.topicManager = tm;
         this.logManager = lm;
@@ -963,6 +965,7 @@ public final class Broker implements AutoCloseable {
         this.chaosHttp = chaosHttp;
         this.diskHeadroom = diskHeadroom;
         this.membershipController = membershipController;
+        this.decommissionController = decommissionController;
         this.selfBrokerId = selfBrokerId;
     }
 
@@ -1224,6 +1227,63 @@ public final class Broker implements AutoCloseable {
 
         var brokerLiveness = new jbroker.broker.BrokerLiveness();
         var heartbeatHandler = new jbroker.broker.BrokerHeartbeatHandler(brokerLiveness, System::nanoTime);
+
+        // Decommission orchestration: drain every replica off a leaving
+        // broker via reassignments, then drop it from the Raft voter set.
+        // Ticked with the membership controller below; decommissionBroker
+        // kicks it off. "Live" mirrors the fencer's judgment: a fresh
+        // heartbeat within the stale threshold, and self is always live.
+        final long decommissionLiveThresholdNanos = TimeUnit.SECONDS.toNanos(3);
+        var decommissionController = new jbroker.broker.controller.DecommissionController(
+                new jbroker.broker.controller.DecommissionController.ClusterAccess() {
+                    @Override
+                    public boolean isLeader() {
+                        return raftDriver.role() == jbroker.raft.core.Role.LEADER;
+                    }
+
+                    @Override
+                    public java.util.List<jbroker.broker.PartitionAssignment> assignments() {
+                        return topicManager.allPartitionAssignments();
+                    }
+
+                    @Override
+                    public java.util.Set<Integer> liveBrokers() {
+                        var out = new java.util.HashSet<Integer>();
+                        long now = System.nanoTime();
+                        for (int id : brokerRegistry.knownBrokerIds()) {
+                            if (id == selfBrokerId) {
+                                out.add(id);
+                                continue;
+                            }
+                            var sig = brokerLiveness.lastSignal(id);
+                            if (sig.isPresent() && now - sig.get().wallClockNanos() <= decommissionLiveThresholdNanos) {
+                                out.add(id);
+                            }
+                        }
+                        return out;
+                    }
+
+                    @Override
+                    public boolean reassignmentPending(String topic, int partition) {
+                        return metadataSm.reassignments().get(topic, partition).isPresent();
+                    }
+
+                    @Override
+                    public boolean startReassignment(String topic, int partition, java.util.List<Integer> target)
+                            throws InterruptedException {
+                        return proposeReassignment(raftDriver, waitingSm, topicManager, topic, partition, target);
+                    }
+
+                    @Override
+                    public java.util.List<NodeId> voters() {
+                        return raftDriver.activeVoters();
+                    }
+
+                    @Override
+                    public void proposeMembership(jbroker.raft.core.Membership membership) throws InterruptedException {
+                        raftDriver.proposeMembership(membership);
+                    }
+                });
 
         // Group coordinator: in-memory state for groups whose coordinator
         // partition this broker leads. The heartbeat path is wired; the
@@ -1488,6 +1548,15 @@ public final class Broker implements AutoCloseable {
                         } catch (Exception e) {
                             log.debug("membership tick failed; will retry", e);
                         }
+                        // Advance any in-flight decommission (drain ->
+                        // voter removal). Same idempotent-per-tick contract.
+                        try {
+                            decommissionController.runOnce();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        } catch (Exception e) {
+                            log.debug("decommission tick failed; will retry", e);
+                        }
                     }
                     // Recovery is NOT gated on Raft leadership: every broker
                     // must bootstrap its OffsetCache + GroupCoordinator for
@@ -1727,6 +1796,7 @@ public final class Broker implements AutoCloseable {
                 chaosHttp,
                 diskHeadroom,
                 membershipController,
+                decommissionController,
                 selfId);
     }
 
@@ -1758,6 +1828,11 @@ public final class Broker implements AutoCloseable {
 
     public jbroker.raft.core.Role role() {
         return raftDriver.role();
+    }
+
+    /** The current Raft voter set, for membership observability. */
+    public List<NodeId> raftVoters() {
+        return raftDriver.activeVoters();
     }
 
     /**
@@ -1808,6 +1883,25 @@ public final class Broker implements AutoCloseable {
     }
 
     /**
+     * Ask this controller to decommission broker {@code brokerId}: drain every
+     * replica it hosts onto other live brokers (refused up front if any
+     * partition would lose replication factor), then remove it from the Raft
+     * voter set. The drain advances on the controller tick; poll
+     * {@link #decommissionProgress()} to watch it. Self-decommission is
+     * refused — removing the active controller's own vote would abandon the
+     * drain mid-flight when leadership moves; ask another broker instead.
+     */
+    public boolean decommissionBroker(int brokerId) {
+        if (brokerId == selfBrokerId) return false;
+        return decommissionController.requestDecommission(brokerId);
+    }
+
+    /** Snapshot of the in-flight (or most recent) decommission, for observability. */
+    public jbroker.broker.controller.DecommissionController.Progress decommissionProgress() {
+        return decommissionController.progress();
+    }
+
+    /**
      * Ask this controller to reassign a partition's replicas to {@code target}.
      * Publishes a reassignment record (target + the current set as the original,
      * so a cancel can revert) and blocks until it commits; the controller's tick
@@ -1817,6 +1911,22 @@ public final class Broker implements AutoCloseable {
      * original set before the leader switches.
      */
     public boolean reassignPartition(String topic, int partition, java.util.List<Integer> target)
+            throws InterruptedException {
+        return proposeReassignment(raftDriver, waitingSm, topicManager, topic, partition, target);
+    }
+
+    /**
+     * Shared propose path for reassignments: used by the public
+     * {@link #reassignPartition} entry point and by the decommission
+     * controller's drain (which starts one per affected partition).
+     */
+    private static boolean proposeReassignment(
+            RaftDriver raftDriver,
+            WaitingStateMachine waitingSm,
+            TopicManager topicManager,
+            String topic,
+            int partition,
+            java.util.List<Integer> target)
             throws InterruptedException {
         if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return false;
         var state = topicManager.partitionState(topic, partition).orElse(null);

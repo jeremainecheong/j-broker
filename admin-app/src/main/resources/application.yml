@@ -46,9 +46,12 @@ jbroker:
       key: ""
       trust: ""
   redis:
-    # Empty → admin-app uses its in-process ring buffer for the SSE event
-    # stream and does not attempt a Redis connection. Set to e.g.
-    # "redis://localhost:6379" in production.
+    # Empty (the default) → in-process SSE fan-out: no Redis connection is
+    # attempted at any point and a single admin replica serves the event
+    # stream entirely from its own ring buffer. Set to e.g.
+    # "redis://localhost:6379" ONLY for multi-replica admin deployments —
+    # Redis pub/sub is what carries events across replicas so every
+    # browser sees every event regardless of which replica it is pinned to.
     url: ""
   metrics:
     scrape:

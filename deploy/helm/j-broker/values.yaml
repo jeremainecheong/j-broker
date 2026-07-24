@@ -86,6 +86,10 @@ broker:
 # Admin UI — Deployment serving the Thymeleaf + htmx dashboard on
 # port 15672 (RabbitMQ management convention).
 admin:
+  # One replica serves SSE straight from its in-process event bus and
+  # needs no Redis. More than one replica requires redis.enabled=true:
+  # without the Redis pub/sub bridge each browser only sees events from
+  # the replica its SSE connection is pinned to.
   replicaCount: 1
   image:
     repository: jbroker-admin
@@ -216,8 +220,11 @@ metrics:
     #     its absence is invisible; needs a per-broker liveness gauge.
 
 # Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
-# Off by default — the admin-app and broker both degrade gracefully
-# (in-memory quota + single-pod SSE) without it.
+# Off by default — a single admin replica serves SSE from its in-process
+# event bus and the broker falls back to in-memory quota, so nothing in
+# the default install ever dials Redis. Required only when
+# admin.replicaCount > 1: Redis pub/sub is what carries events across
+# admin replicas so every replica's SSE clients see every event.
 redis:
   enabled: false
   image:

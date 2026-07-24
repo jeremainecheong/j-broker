@@ -12,6 +12,13 @@ Raft voters: {{ include "jbroker.voters" . }}
 Admin UI:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "jbroker.admin.fullname" . }} {{ .Values.admin.service.port }}:{{ .Values.admin.service.port }}
   open http://localhost:{{ .Values.admin.service.port }}
+{{- if and (gt (int .Values.admin.replicaCount) 1) (not .Values.redis.enabled) }}
+
+NOTE: admin.replicaCount is {{ .Values.admin.replicaCount }} but redis.enabled=false. SSE event
+streams are per-replica without Redis — a browser pinned to one admin
+replica misses events ingested by the others. Set redis.enabled=true so
+events fan out across all admin replicas.
+{{- end }}
 
 {{- if .Values.tls.enabled }}
 

@@ -28,8 +28,9 @@ import org.springframework.stereotype.Component;
  * </ul>
  *
  * <p>When a broker stream errors or closes, the bus retries the connection
- * with a brief back-off. Redis pub/sub remains the optional production
- * path; without Redis the bus is in-process fan-in only.
+ * with a brief back-off. The {@link EventFanout} seam decides whether
+ * ingested events also propagate to peer admin replicas (Redis) or stay
+ * in-process (the default, correct for a single replica).
  */
 @Component
 public class AdminEventBus {

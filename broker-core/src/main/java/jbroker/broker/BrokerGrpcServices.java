@@ -320,6 +320,62 @@ public final class BrokerGrpcServices {
             }
 
             @Override
+            public void addBroker(
+                    jbroker.proto.broker.AddBrokerRequest req,
+                    StreamObserver<jbroker.proto.broker.AddBrokerResponse> out) {
+                out.onNext(handler.addBroker(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void decommissionBroker(
+                    jbroker.proto.broker.DecommissionBrokerRequest req,
+                    StreamObserver<jbroker.proto.broker.DecommissionBrokerResponse> out) {
+                out.onNext(handler.decommissionBroker(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void describeMembership(
+                    jbroker.proto.broker.DescribeMembershipRequest req,
+                    StreamObserver<jbroker.proto.broker.DescribeMembershipResponse> out) {
+                out.onNext(handler.describeMembership(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void reassignPartition(
+                    jbroker.proto.broker.ReassignPartitionRequest req,
+                    StreamObserver<jbroker.proto.broker.ReassignPartitionResponse> out) {
+                out.onNext(handler.reassignPartition(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void listReassignments(
+                    jbroker.proto.broker.ListReassignmentsRequest req,
+                    StreamObserver<jbroker.proto.broker.ListReassignmentsResponse> out) {
+                out.onNext(handler.listReassignments(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void cancelReassignment(
+                    jbroker.proto.broker.CancelReassignmentRequest req,
+                    StreamObserver<jbroker.proto.broker.CancelReassignmentResponse> out) {
+                out.onNext(handler.cancelReassignment(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void rebalanceLeadership(
+                    jbroker.proto.broker.RebalanceLeadershipRequest req,
+                    StreamObserver<jbroker.proto.broker.RebalanceLeadershipResponse> out) {
+                out.onNext(handler.rebalanceLeadership(req));
+                out.onCompleted();
+            }
+
+            @Override
             public void listAcls(
                     jbroker.proto.broker.ListAclsRequest req,
                     StreamObserver<jbroker.proto.broker.ListAclsResponse> out) {

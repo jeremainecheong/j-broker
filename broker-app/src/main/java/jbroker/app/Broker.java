@@ -1699,6 +1699,55 @@ public final class Broker implements AutoCloseable {
                 () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
                 lastLeaderChangeMillis::get,
                 config.balancerStabilityMillis());
+        // Cluster-lifecycle admin RPCs delegate to the controllers built
+        // above; wired late (like the ACL store) because the handler is
+        // constructed before the controllers exist.
+        admin.setClusterOperations(new AdminHandler.ClusterOperations() {
+            @Override
+            public boolean addBroker(int brokerId, String host, int raftPort, int brokerPort)
+                    throws InterruptedException {
+                return requestAddBroker(
+                        raftDriver, waitingSm, membershipController, new NodeId(brokerId), host, raftPort, brokerPort);
+            }
+
+            @Override
+            public boolean decommissionBroker(int brokerId) {
+                if (brokerId == selfBrokerId) return false;
+                return decommissionController.requestDecommission(brokerId);
+            }
+
+            @Override
+            public boolean reassignPartition(String topic, int partition, java.util.List<Integer> replicas)
+                    throws InterruptedException {
+                return proposeReassignment(raftDriver, waitingSm, topicManager, topic, partition, replicas);
+            }
+
+            @Override
+            public int rebalanceLeadership() throws InterruptedException {
+                return proposePreferredMoves(topicManager, raftDriver, preferredBalancer.proposeRebalancesNow());
+            }
+
+            @Override
+            public jbroker.broker.controller.MembershipController.Progress joinProgress() {
+                return membershipController.progress();
+            }
+
+            @Override
+            public jbroker.broker.controller.DecommissionController.Progress decommissionProgress() {
+                return decommissionController.progress();
+            }
+
+            @Override
+            public java.util.List<NodeId> voters() {
+                return raftDriver.activeVoters();
+            }
+
+            @Override
+            public java.util.List<jbroker.broker.ReassignmentStore.Pending> reassignments() {
+                return metadataSm.reassignments().list();
+            }
+        });
+
         var balancerTicker = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "preferred-leader-balancer-" + config.selfId().value());
             t.setDaemon(true);
@@ -1832,6 +1881,19 @@ public final class Broker implements AutoCloseable {
      * @param brokerPort its client-facing gRPC port
      */
     public boolean requestAddBroker(NodeId id, String host, int raftPort, int brokerPort) throws InterruptedException {
+        return requestAddBroker(raftDriver, waitingSm, membershipController, id, host, raftPort, brokerPort);
+    }
+
+    /** Shared join path: the public entry point above and the admin RPC adapter both land here. */
+    private static boolean requestAddBroker(
+            RaftDriver raftDriver,
+            WaitingStateMachine waitingSm,
+            jbroker.broker.controller.MembershipController membershipController,
+            NodeId id,
+            String host,
+            int raftPort,
+            int brokerPort)
+            throws InterruptedException {
         if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return false;
         var record = jbroker.proto.raft.MetadataRecord.newBuilder()
                 .setBroker(jbroker.proto.raft.BrokerRegistrationRecord.newBuilder()

@@ -95,6 +95,37 @@ public final class AdminHandler {
         this.authorizer = authorizer;
     }
 
+    /**
+     * Broker-level cluster lifecycle operations (join, drain, reassign,
+     * rebalance). Wired in by the broker after its controllers exist —
+     * the same late-binding shape as {@link #setAclStore}. Null until
+     * then; the RPCs answer UNIMPLEMENTED in that window.
+     */
+    public interface ClusterOperations {
+        boolean addBroker(int brokerId, String host, int raftPort, int brokerPort) throws InterruptedException;
+
+        boolean decommissionBroker(int brokerId);
+
+        boolean reassignPartition(String topic, int partition, java.util.List<Integer> replicas)
+                throws InterruptedException;
+
+        int rebalanceLeadership() throws InterruptedException;
+
+        jbroker.broker.controller.MembershipController.Progress joinProgress();
+
+        jbroker.broker.controller.DecommissionController.Progress decommissionProgress();
+
+        java.util.List<jbroker.raft.core.NodeId> voters();
+
+        java.util.List<ReassignmentStore.Pending> reassignments();
+    }
+
+    private ClusterOperations clusterOps;
+
+    public void setClusterOperations(ClusterOperations ops) {
+        this.clusterOps = ops;
+    }
+
     /** Null when allowed; the refusal envelope otherwise. */
     private jbroker.proto.broker.Error requireAdmin(String resourceType, String resourceName) {
         if (authorizer.allowsCurrent(resourceType, resourceName, "admin")) return null;
@@ -519,6 +550,213 @@ public final class AdminHandler {
                     .setPrefix(a.prefix())
                     .setOperation(a.operation())
                     .setAllow(a.allow()));
+        }
+        return b.build();
+    }
+
+    // ---- Cluster lifecycle ----
+
+    private jbroker.proto.broker.Error clusterOpsUnavailable() {
+        return buildError(ErrorCodes.UNIMPLEMENTED, "cluster operations are not wired on this broker yet");
+    }
+
+    public jbroker.proto.broker.AddBrokerResponse addBroker(jbroker.proto.broker.AddBrokerRequest req) {
+        var b = jbroker.proto.broker.AddBrokerResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) return b.setError(denied).build();
+        if (clusterOps == null) return b.setError(clusterOpsUnavailable()).build();
+        if (req.getBrokerId() <= 0 || req.getHost().isBlank() || req.getRaftPort() <= 0 || req.getBrokerPort() <= 0) {
+            return b.setError(buildError(
+                            ErrorCodes.INVALID_CONFIG, "add-broker needs broker_id > 0, host, raft_port, broker_port"))
+                    .build();
+        }
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) return b.setError(notLeader.get()).build();
+        try {
+            if (!clusterOps.addBroker(req.getBrokerId(), req.getHost(), req.getRaftPort(), req.getBrokerPort())) {
+                return b.setError(buildError(
+                                ErrorCodes.REASSIGNMENT_IN_PROGRESS,
+                                "join refused: a membership change is already in flight, the broker is already a"
+                                        + " voter, or its registration did not commit — retry once the cluster"
+                                        + " settles"))
+                        .build();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return b.setError(notLeaderError(e)).build();
+        }
+        return b.build();
+    }
+
+    public jbroker.proto.broker.DecommissionBrokerResponse decommissionBroker(
+            jbroker.proto.broker.DecommissionBrokerRequest req) {
+        var b = jbroker.proto.broker.DecommissionBrokerResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) return b.setError(denied).build();
+        if (clusterOps == null) return b.setError(clusterOpsUnavailable()).build();
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) return b.setError(notLeader.get()).build();
+        if (req.getBrokerId() == selfBrokerId) {
+            return b.setError(buildError(
+                            ErrorCodes.INVALID_CONFIG,
+                            "cannot decommission the active controller; ask another broker after leadership moves"))
+                    .build();
+        }
+        if (!clusterOps.decommissionBroker(req.getBrokerId())) {
+            // The controller records a refusal reason (a partition that
+            // would lose replication factor); an in-flight decommission is
+            // the retriable case.
+            var progress = clusterOps.decommissionProgress();
+            if (progress.phase() == jbroker.broker.controller.DecommissionController.Phase.REFUSED) {
+                return b.setError(buildError(ErrorCodes.INVALID_CONFIG, "decommission refused: " + progress.detail()))
+                        .build();
+            }
+            return b.setError(buildError(
+                            ErrorCodes.REASSIGNMENT_IN_PROGRESS,
+                            "decommission refused: another decommission is in flight — retry once it completes"))
+                    .build();
+        }
+        return b.build();
+    }
+
+    public jbroker.proto.broker.DescribeMembershipResponse describeMembership(
+            jbroker.proto.broker.DescribeMembershipRequest req) {
+        var b = jbroker.proto.broker.DescribeMembershipResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) return b.setError(denied).build();
+        if (clusterOps == null) return b.setError(clusterOpsUnavailable()).build();
+        // Join/decommission progress lives on the controller; route there so
+        // the answer reflects the run actually in flight.
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) return b.setError(notLeader.get()).build();
+        for (var v : clusterOps.voters()) {
+            b.addVoterIds(v.value());
+        }
+        var join = clusterOps.joinProgress();
+        b.setJoinPhase(join.phase().name());
+        if (join.target() != null) b.setJoinBrokerId(join.target().value());
+        b.setJoinLag(join.lag() == Long.MAX_VALUE ? -1 : join.lag());
+        var dec = clusterOps.decommissionProgress();
+        b.setDecommissionPhase(dec.phase().name());
+        b.setDecommissionBrokerId(dec.brokerId());
+        b.setDecommissionRemainingPartitions(dec.remaining());
+        b.setDecommissionDetail(dec.detail());
+        return b.build();
+    }
+
+    public jbroker.proto.broker.ReassignPartitionResponse reassignPartition(
+            jbroker.proto.broker.ReassignPartitionRequest req) {
+        var b = jbroker.proto.broker.ReassignPartitionResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) return b.setError(denied).build();
+        if (clusterOps == null) return b.setError(clusterOpsUnavailable()).build();
+        var problem = validateReassignment(req.getTopic(), req.getPartition(), req.getReplicasList());
+        if (problem != null) {
+            return b.setError(buildError(ErrorCodes.INVALID_CONFIG, problem)).build();
+        }
+        boolean pending = clusterOps.reassignments().stream()
+                .anyMatch(p -> p.topic().equals(req.getTopic()) && p.partition() == req.getPartition());
+        if (pending) {
+            return b.setError(buildError(
+                            ErrorCodes.REASSIGNMENT_IN_PROGRESS,
+                            "a reassignment for " + req.getTopic() + "-" + req.getPartition()
+                                    + " is already in flight — cancel it or wait for it to complete"))
+                    .build();
+        }
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) return b.setError(notLeader.get()).build();
+        try {
+            if (!clusterOps.reassignPartition(req.getTopic(), req.getPartition(), req.getReplicasList())) {
+                return b.setError(buildError(ErrorCodes.NOT_LEADER, "reassignment record did not commit — retry"))
+                        .build();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return b.setError(notLeaderError(e)).build();
+        }
+        return b.build();
+    }
+
+    private String validateReassignment(String topic, int partition, java.util.List<Integer> replicas) {
+        var desc = topicManager.describe(topic).orElse(null);
+        if (desc == null) return "unknown topic: " + topic;
+        if (partition < 0 || partition >= desc.partitions()) {
+            return "partition " + partition + " out of range for " + topic + " (" + desc.partitions() + " partitions)";
+        }
+        if (replicas.isEmpty()) return "target replica set must be non-empty";
+        if (new java.util.HashSet<>(replicas).size() != replicas.size()) {
+            return "target replica set has duplicates: " + replicas;
+        }
+        var known = knownBrokers.get();
+        for (int r : replicas) {
+            if (!known.contains(r)) return "target broker " + r + " is not registered";
+        }
+        return null;
+    }
+
+    public jbroker.proto.broker.ListReassignmentsResponse listReassignments(
+            jbroker.proto.broker.ListReassignmentsRequest req) {
+        var b = jbroker.proto.broker.ListReassignmentsResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) return b.setError(denied).build();
+        if (clusterOps == null) return b.setError(clusterOpsUnavailable()).build();
+        // Answered from the replicated cache — valid on any broker.
+        for (var p : clusterOps.reassignments()) {
+            b.addReassignments(jbroker.proto.broker.ReassignmentInfo.newBuilder()
+                    .setTopic(p.topic())
+                    .setPartition(p.partition())
+                    .addAllTargetReplicas(p.target())
+                    .addAllOriginalReplicas(p.original()));
+        }
+        return b.build();
+    }
+
+    public jbroker.proto.broker.CancelReassignmentResponse cancelReassignment(
+            jbroker.proto.broker.CancelReassignmentRequest req) {
+        var b = jbroker.proto.broker.CancelReassignmentResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) return b.setError(denied).build();
+        if (clusterOps == null) return b.setError(clusterOpsUnavailable()).build();
+        var pending = clusterOps.reassignments().stream()
+                .filter(p -> p.topic().equals(req.getTopic()) && p.partition() == req.getPartition())
+                .findFirst()
+                .orElse(null);
+        if (pending == null) {
+            return b.setError(buildError(
+                            ErrorCodes.INVALID_CONFIG,
+                            "no reassignment pending for " + req.getTopic() + "-" + req.getPartition()))
+                    .build();
+        }
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) return b.setError(notLeader.get()).build();
+        try {
+            // Cancel = reassign back to the original set. Only meaningful
+            // while the pending entry exists (before the leader switch);
+            // the drive then contracts back the same way it expanded.
+            if (!clusterOps.reassignPartition(req.getTopic(), req.getPartition(), pending.original())) {
+                return b.setError(buildError(ErrorCodes.NOT_LEADER, "cancel record did not commit — retry"))
+                        .build();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return b.setError(notLeaderError(e)).build();
+        }
+        return b.build();
+    }
+
+    public jbroker.proto.broker.RebalanceLeadershipResponse rebalanceLeadership(
+            jbroker.proto.broker.RebalanceLeadershipRequest req) {
+        var b = jbroker.proto.broker.RebalanceLeadershipResponse.newBuilder();
+        var denied = requireAdmin("cluster", Authorizer.CLUSTER_RESOURCE);
+        if (denied != null) return b.setError(denied).build();
+        if (clusterOps == null) return b.setError(clusterOpsUnavailable()).build();
+        var notLeader = requireLeadership();
+        if (notLeader.isPresent()) return b.setError(notLeader.get()).build();
+        try {
+            b.setMovesProposed(clusterOps.rebalanceLeadership());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return b.setError(notLeaderError(e)).build();
         }
         return b.build();
     }

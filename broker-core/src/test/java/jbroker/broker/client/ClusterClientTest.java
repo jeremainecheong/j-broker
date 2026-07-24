@@ -14,7 +14,9 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import jbroker.broker.ProtocolVersion;
 import jbroker.broker.client.ClusterClient.Endpoint;
+import jbroker.proto.broker.ApiVersionsResponse;
 import jbroker.proto.broker.BrokerInfo;
 import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.CommitOffsetsResponse;
@@ -116,6 +118,16 @@ class ClusterClientTest {
                 return (T) outcome;
             }
             return fallback.get();
+        }
+
+        @Override
+        public ApiVersionsResponse apiVersions(long timeoutMs) {
+            // Like MetadataServiceHandler: any broker answers its range.
+            return dispatch("apiVersions", () -> ApiVersionsResponse.newBuilder()
+                    .setError(ErrorCode.OK)
+                    .setMinProtocolVersion(ProtocolVersion.MIN_SUPPORTED)
+                    .setMaxProtocolVersion(ProtocolVersion.CURRENT)
+                    .build());
         }
 
         @Override
@@ -405,8 +417,8 @@ class ClusterClientTest {
         produceOne(client, "t");
 
         assertThat(h.world.callsSince(mark))
-                .as("hint short-circuits: no metadata RPC between the two attempts")
-                .containsExactly("1:produce", "2:produce");
+                .as("hint short-circuits: no metadata RPC between the two attempts, only the new channel's handshake")
+                .containsExactly("1:produce", "2:apiVersions", "2:produce");
         assertThat(h.ticker.sleepsMs).as("hint follow does not back off").isEmpty();
     }
 
@@ -611,8 +623,8 @@ class ClusterClientTest {
         client.createTopic("t", 1, 3);
 
         assertThat(h.world.callsSince(mark))
-                .as("hint short-circuits: no metadata RPC between the two attempts")
-                .containsExactly("3:createTopic", "1:createTopic");
+                .as("hint short-circuits: no metadata RPC between the two attempts, only the new channel's handshake")
+                .containsExactly("3:createTopic", "1:apiVersions", "1:createTopic");
         assertThat(h.ticker.sleepsMs).as("hint follow does not back off").isEmpty();
     }
 
@@ -722,4 +734,5 @@ class ClusterClientTest {
         assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
         assertThat(h.world.calls).contains("3:heartbeat");
     }
+
 }

@@ -16,7 +16,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.random.RandomGenerator;
 import jbroker.broker.ErrorCodeNames;
 import jbroker.broker.ErrorCodes;
+import jbroker.broker.ProtocolVersion;
 import jbroker.proto.broker.AdminGrpc;
+import jbroker.proto.broker.ApiVersionsRequest;
+import jbroker.proto.broker.ApiVersionsResponse;
 import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.CommitOffsetsResponse;
 import jbroker.proto.broker.ConsumerGroupHeartbeatRequest;
@@ -84,7 +87,11 @@ import jbroker.tls.TlsContexts;
  * <p>Channel lifecycle: one lazily-connected channel per broker endpoint,
  * cached; a broker that disappears from the cluster view (and is not a
  * bootstrap endpoint) has its channel closed, as does every channel on
- * {@link #close()}.
+ * {@link #close()}. The first use of each channel runs the
+ * {@code ApiVersions} handshake: a broker whose advertised protocol range
+ * does not overlap this client's raises {@link UnsupportedBrokerException}
+ * immediately — fatal, never retried — instead of failing obscurely on
+ * some later request.
  *
  * <p>Internally composes raw per-broker stubs rather than
  * {@link BrokerClient}: routing decisions need the error envelope's
@@ -148,6 +155,8 @@ public final class ClusterClient implements AutoCloseable {
      * routing, cache-refresh, and backoff logic runs without a broker.
      */
     public interface Transport extends AutoCloseable {
+        ApiVersionsResponse apiVersions(long timeoutMs);
+
         DescribeClusterResponse describeCluster(long timeoutMs);
 
         DescribeTopicPartitionsResponse describeTopicPartitions(String topic, long timeoutMs);
@@ -830,7 +839,53 @@ public final class ClusterClient implements AutoCloseable {
 
     private Transport transportFor(Endpoint ep) {
         if (closed) throw new IllegalStateException("client is closed");
-        return transports.computeIfAbsent(ep, factory::connect);
+        return transports.computeIfAbsent(ep, e -> {
+            var t = factory.connect(e);
+            try {
+                verifyProtocolRange(e, t);
+                return t;
+            } catch (RuntimeException handshake) {
+                t.close();
+                throw handshake;
+            }
+        });
+    }
+
+    /**
+     * Protocol-version handshake, run once per endpoint before the first
+     * real RPC on the channel (a failed handshake leaves nothing cached,
+     * so a broker restarted with a different version is re-checked).
+     * Incompatibility — a disjoint range, or UNIMPLEMENTED from a broker
+     * predating the ApiVersions RPC — raises
+     * {@link UnsupportedBrokerException} and is never retried: a version
+     * mismatch cannot heal on its own, and rotating to another candidate
+     * would only mask a broker the operator must upgrade. Transport-level
+     * failures (UNAVAILABLE, ...) propagate as usual for the caller's
+     * rotation handling.
+     */
+    private static void verifyProtocolRange(Endpoint ep, Transport t) {
+        ApiVersionsResponse resp;
+        try {
+            resp = t.apiVersions(METADATA_TIMEOUT_MS);
+        } catch (StatusRuntimeException e) {
+            if (e.getStatus().getCode() == Status.Code.UNIMPLEMENTED) {
+                throw UnsupportedBrokerException.missingHandshake(
+                        ep.toString(), ProtocolVersion.MIN_SUPPORTED, ProtocolVersion.CURRENT);
+            }
+            throw e;
+        }
+        if (resp.getError() != ErrorCode.OK) {
+            throw new IllegalStateException("apiVersions failed against " + ep + ": " + resp.getError());
+        }
+        if (resp.getMinProtocolVersion() > ProtocolVersion.CURRENT
+                || resp.getMaxProtocolVersion() < ProtocolVersion.MIN_SUPPORTED) {
+            throw UnsupportedBrokerException.incompatibleRange(
+                    ep.toString(),
+                    resp.getMinProtocolVersion(),
+                    resp.getMaxProtocolVersion(),
+                    ProtocolVersion.MIN_SUPPORTED,
+                    ProtocolVersion.CURRENT);
+        }
     }
 
     private void closeTransport(Endpoint ep) {
@@ -955,6 +1010,12 @@ public final class ClusterClient implements AutoCloseable {
             this.consumer = ConsumerGrpc.newBlockingStub(channel);
             this.admin = AdminGrpc.newBlockingStub(channel);
             this.metadata = MetadataGrpc.newBlockingStub(channel);
+        }
+
+        @Override
+        public ApiVersionsResponse apiVersions(long timeoutMs) {
+            return metadata.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .apiVersions(ApiVersionsRequest.getDefaultInstance());
         }
 
         @Override

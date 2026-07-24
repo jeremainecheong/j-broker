@@ -476,6 +476,28 @@ class ClusterClientTest {
         assertThat(h.transports.get(B1).closed).isTrue();
     }
 
+    @Test
+    void serverSentStreamResetRotatesLikeUnavailable() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        var client = h.client();
+        produceOne(client, "t");
+
+        // An abrupt broker death mid-RPC surfaces as CANCELLED
+        // (RST_STREAM), not UNAVAILABLE — it must rotate all the same.
+        h.world.script(
+                1,
+                "produce",
+                io.grpc.Status.CANCELLED
+                        .withDescription("RST_STREAM closed stream. HTTP/2 error code: CANCEL")
+                        .asRuntimeException());
+        h.world.partitionLeaders.put("t", 3);
+
+        assertThat(produceOne(client, "t")).isEqualTo(1L);
+        assertThat(h.world.calls).contains("3:produce");
+        assertThat(h.transports.get(B1).closed).isTrue();
+    }
+
     // ---- retriable vs fatal envelope codes ----
 
     @Test

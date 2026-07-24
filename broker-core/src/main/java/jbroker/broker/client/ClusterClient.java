@@ -851,7 +851,18 @@ public final class ClusterClient implements AutoCloseable {
 
     private static boolean retriableTransport(StatusRuntimeException e) {
         var code = e.getStatus().getCode();
-        return code == Status.Code.UNAVAILABLE || code == Status.Code.DEADLINE_EXCEEDED;
+        if (code == Status.Code.UNAVAILABLE || code == Status.Code.DEADLINE_EXCEEDED) return true;
+        // An abrupt broker death doesn't always map to UNAVAILABLE: an RPC
+        // caught mid-stream when the server socket dies surfaces as a
+        // server-sent reset — CANCELLED (RST_STREAM) or INTERNAL
+        // (connection closed). Those rotate and retry like UNAVAILABLE.
+        // Client-initiated cancellation (thread interrupt) stays fatal so
+        // shutdown is prompt.
+        if (code == Status.Code.CANCELLED || code == Status.Code.INTERNAL) {
+            return !(e.getCause() instanceof InterruptedException)
+                    && !Thread.currentThread().isInterrupted();
+        }
+        return false;
     }
 
     /**

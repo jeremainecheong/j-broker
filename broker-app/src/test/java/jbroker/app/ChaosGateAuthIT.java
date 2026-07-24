@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * R3.4 acceptance: a chaos port configured with an auth token refuses
+ * Acceptance: a chaos port configured with an auth token refuses
  * anonymous and wrong-token requests with 401 — and the refused pause
  * really did not happen — while the correct bearer token drives the
  * endpoint normally.

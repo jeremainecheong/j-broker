@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * R7.2 acceptance: a rolling restart of every broker under continuous
+ * Acceptance: a rolling restart of every broker under continuous
  * acks=all load produces zero non-retriable client errors and loses
  * nothing that was acked. Each broker shuts down via
  * {@link Broker#closeGracefully} — leadership hands off to another ISR

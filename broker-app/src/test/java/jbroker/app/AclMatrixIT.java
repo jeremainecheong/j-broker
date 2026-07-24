@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * R3.2 acceptance: the allow/deny grid enforced end to end over mTLS.
+ * Acceptance: the allow/deny grid enforced end to end over mTLS.
  * One broker, {@code auth.mode=mtls}, {@code super.users=admin,broker1}.
  * The admin principal seeds topics and ACLs; alice holds produce+consume
  * on {@code orders} only; bob holds nothing. Every check asserts on the

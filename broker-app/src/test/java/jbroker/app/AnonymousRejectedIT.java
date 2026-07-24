@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * R3.1 acceptance: with {@code auth.mode=mtls}, a client without a
+ * Acceptance: with {@code auth.mode=mtls}, a client without a
  * client certificate is rejected with {@code UNAUTHENTICATED} on every
  * service — produce, fetch, admin — while a certificate-bearing client
  * works end to end.

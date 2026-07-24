@@ -131,7 +131,14 @@ public final class Broker implements AutoCloseable {
              * acceptable only for test harnesses; the server config layer
              * refuses to boot a chaos port without a token.
              */
-            String chaosAuthToken) {
+            String chaosAuthToken,
+            /**
+             * Ceiling on the byte rate at which a partition reassignment's
+             * "adding" replicas fetch during catch-up, per broker, so a
+             * reassignment cannot starve live traffic. 0 (the default) is
+             * unlimited.
+             */
+            long reassignmentThrottleBytesPerSec) {
 
         /**
          * Cluster defaults behind the per-topic keys: {@code
@@ -199,6 +206,10 @@ public final class Broker implements AutoCloseable {
             }
             superUsers = superUsers == null ? java.util.Set.of() : java.util.Set.copyOf(superUsers);
             if (chaosAuthToken == null) chaosAuthToken = "";
+            if (reassignmentThrottleBytesPerSec < 0L) {
+                throw new IllegalArgumentException(
+                        "reassignmentThrottleBytesPerSec must be ≥ 0, got " + reassignmentThrottleBytesPerSec);
+            }
         }
 
         /** Pre-chaos-token canonical shape kept callable: open chaos port. */
@@ -238,7 +249,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    "");
+                    "",
+                    0L);
         }
 
         /** Set the bearer token the chaos HTTP endpoints demand. */
@@ -261,7 +273,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    token);
+                    token,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /** Pre-super-users canonical shape kept callable: empty super-user set. */
@@ -322,7 +335,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     users,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /** Pre-auth-mode canonical shape kept callable: auth.mode=none. */
@@ -381,7 +395,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     mode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /** Default idle-group offset retention: 7 days, matching Kafka. */
@@ -474,7 +489,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /** Override the idle-group offset retention window. Non-positive disables expiry. */
@@ -497,7 +513,8 @@ public final class Broker implements AutoCloseable {
                     retentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -660,7 +677,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -683,7 +701,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /**
@@ -710,7 +729,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /**
@@ -764,7 +784,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /**
@@ -792,7 +813,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /**
@@ -819,7 +841,8 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
         }
 
         /**
@@ -846,7 +869,36 @@ public final class Broker implements AutoCloseable {
                     offsetsRetentionMillis,
                     authMode,
                     superUsers,
-                    chaosAuthToken);
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec);
+        }
+
+        /**
+         * Cap the byte rate at which reassignment newcomers catch up, per
+         * broker. 0 (the default) is unlimited. Set it low to keep a
+         * reassignment from starving live produce/consume traffic.
+         */
+        public Config withReassignmentThrottleBytesPerSec(long bytesPerSec) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    chaosAuthToken,
+                    bytesPerSec);
         }
     }
 
@@ -1074,6 +1126,23 @@ public final class Broker implements AutoCloseable {
         var metadataSm = new MetadataStateMachine(
                 topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager, topicDeletionChain);
         var waitingSm = new WaitingStateMachine(metadataSm);
+
+        // Meter reassignment catch-up: a fetcher whose partition is being
+        // reassigned and where self is an "adding" replica (in the target set
+        // but not the original) pulls at most the throttle's byte budget, so it
+        // cannot starve live traffic. Every other fetch gets the full ceiling.
+        int selfBroker = config.selfId().value();
+        var reassignmentThrottle = new jbroker.broker.replication.ReassignmentThrottle(
+                config.reassignmentThrottleBytesPerSec(), System::nanoTime);
+        fetcherFactory.setFetchThrottle((topic, partition) -> {
+            var pending = metadataSm.reassignments().get(topic, partition).orElse(null);
+            if (pending == null
+                    || !pending.target().contains(selfBroker)
+                    || pending.original().contains(selfBroker)) {
+                return jbroker.broker.replication.ReplicaFetcher.DEFAULT_MAX_FETCH_BYTES;
+            }
+            return reassignmentThrottle.reserve(jbroker.broker.replication.ReplicaFetcher.DEFAULT_MAX_FETCH_BYTES);
+        });
 
         // --- Raft transport (peer map built from static voter set) ---
         var peerMap = new java.util.HashMap<NodeId, RaftPeerClient>();
@@ -1449,6 +1518,10 @@ public final class Broker implements AutoCloseable {
         // timeout matches Kafka's default replica.lag.time.max.ms.
         var isr = new IsrManager(
                 config.selfId().value(), topicManager, logManager, followerTracker, TimeUnit.SECONDS.toMillis(10));
+        // Advances in-flight partition reassignments on the controller: expand
+        // the replica set, wait for the ISR machinery to grow the newcomers,
+        // then contract to the target. Ticked alongside the ISR housekeeper.
+        var reassignmentDriver = new jbroker.broker.ReassignmentDriver(topicManager, metadataSm.reassignments());
         var isrTicker = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "isr-manager");
             t.setDaemon(true);
@@ -1461,6 +1534,16 @@ public final class Broker implements AutoCloseable {
                             var fut = waitingSm.awaitApply(proposal);
                             raftDriver.propose(proposal);
                             fut.get(3, TimeUnit.SECONDS);
+                        }
+                        // Reassignment is a controller operation: only the Raft
+                        // leader drives it (its proposals name a partition's
+                        // replicas/leader, not just the ISR it owns).
+                        if (raftDriver.role() == jbroker.raft.core.Role.LEADER) {
+                            for (var proposal : reassignmentDriver.decide()) {
+                                var fut = waitingSm.awaitApply(proposal);
+                                raftDriver.propose(proposal);
+                                fut.get(3, TimeUnit.SECONDS);
+                            }
                         }
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -1722,6 +1805,39 @@ public final class Broker implements AutoCloseable {
     /** Snapshot of the in-flight (or most recent) broker join, for observability. */
     public jbroker.broker.controller.MembershipController.Progress membershipProgress() {
         return membershipController.progress();
+    }
+
+    /**
+     * Ask this controller to reassign a partition's replicas to {@code target}.
+     * Publishes a reassignment record (target + the current set as the original,
+     * so a cancel can revert) and blocks until it commits; the controller's tick
+     * then drives the change — expand, wait for catch-up, contract. Returns
+     * {@code false} if this broker is not the Raft leader, the partition is
+     * unknown, or the record did not commit. Cancel by reassigning back to the
+     * original set before the leader switches.
+     */
+    public boolean reassignPartition(String topic, int partition, java.util.List<Integer> target)
+            throws InterruptedException {
+        if (raftDriver.role() != jbroker.raft.core.Role.LEADER) return false;
+        var state = topicManager.partitionState(topic, partition).orElse(null);
+        if (state == null) return false;
+        var record = jbroker.proto.raft.MetadataRecord.newBuilder()
+                .setPartitionReassignment(jbroker.proto.raft.PartitionReassignmentRecord.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .addAllTargetReplicas(target)
+                        .addAllOriginalReplicas(state.replicas())
+                        .build())
+                .build()
+                .toByteArray();
+        try {
+            var applied = waitingSm.awaitApply(record);
+            raftDriver.propose(record);
+            applied.get(5, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+            return false;
+        }
+        return true;
     }
 
     /** Test-only accessor for assertion-driven inspection of per-broker logs. */

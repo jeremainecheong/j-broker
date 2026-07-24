@@ -91,6 +91,15 @@ public final class ConsumerConfig {
         return new Builder(groupId, bootstrapHost, bootstrapPort);
     }
 
+    /**
+     * Builder for the cluster-aware construction path, where discovery
+     * comes from a {@code ClusterClient} and the bootstrap host/port are
+     * unused.
+     */
+    public static Builder builder(String groupId) {
+        return new Builder(groupId, "", 0);
+    }
+
     public static final class Builder {
         private final String groupId;
         private final String bootstrapHost;

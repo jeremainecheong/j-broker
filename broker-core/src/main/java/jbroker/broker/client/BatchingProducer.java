@@ -133,6 +133,43 @@ public final class BatchingProducer implements AutoCloseable {
         return create(client, Config.defaults());
     }
 
+    /**
+     * Wire a producer to a whole cluster: idempotent, acks=all, and
+     * failover-transparent. Batches route to the partition leader through
+     * {@link ClusterClient}; on leader failover the SAME base sequence is
+     * retried against the new leader, which either dedupes (the batch
+     * replicated before the old leader died) or appends it fresh — so a
+     * completed future still means exactly-once at the reported offsets,
+     * with no error handling in the application.
+     */
+    public static BatchingProducer create(ClusterClient client) {
+        return create(client, Config.defaults());
+    }
+
+    /** Cluster-routed producer with explicit tuning. */
+    public static BatchingProducer create(ClusterClient client, Config config) {
+        return new BatchingProducer(
+                new BatchSender() {
+                    @Override
+                    public long initProducerId() {
+                        return client.initProducerId();
+                    }
+
+                    @Override
+                    public long send(
+                            String topic,
+                            int partition,
+                            long producerId,
+                            int producerEpoch,
+                            int baseSequence,
+                            List<byte[]> values) {
+                        return client.produceIdempotentBatchAcksAll(
+                                topic, partition, values, producerId, producerEpoch, baseSequence);
+                    }
+                },
+                config);
+    }
+
     /** Wire a producer to a live broker with explicit tuning. */
     public static BatchingProducer create(BrokerClient client, Config config) {
         return new BatchingProducer(

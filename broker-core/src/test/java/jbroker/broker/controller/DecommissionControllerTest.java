@@ -177,6 +177,36 @@ class DecommissionControllerTest {
     }
 
     @Test
+    void midExpandUnionReplicaSetDoesNotFailTheDrain() throws Exception {
+        // Regression: while a drain move is mid-expand, the partition's
+        // replica set is the union — it still contains the leaver AND every
+        // candidate. Re-planning over that state used to conclude "no
+        // replacement broker" and fail a healthy drain; pending partitions
+        // must be left to the reassignment engine instead.
+        var cluster = new FakeCluster();
+        cluster.live = new HashSet<>(Set.of(1, 2, 3));
+        cluster.put("t", 0, 1, List.of(1, 2));
+        var c = new DecommissionController(cluster);
+        assertThat(c.requestDecommission(2)).isTrue();
+        c.runOnce();
+        assertThat(cluster.started).containsExactly("t-0");
+
+        // Simulate the expand step committing: replicas grow to the union
+        // {1, 2, 3} while the reassignment is still pending.
+        cluster.assignments.put(
+                "t-0", new PartitionAssignment("t", 0, new PartitionState(1, List.of(1, 2), List.of(1, 2, 3), 1, 1)));
+        c.runOnce();
+        assertThat(c.progress().phase()).isEqualTo(DecommissionController.Phase.DRAINING);
+        assertThat(c.progress().remaining()).isEqualTo(1);
+        assertThat(cluster.started).hasSize(1);
+
+        // The engine contracts to the target; the drain then completes.
+        cluster.completePending("t", 0);
+        c.runOnce();
+        assertThat(c.progress().phase()).isEqualTo(DecommissionController.Phase.REMOVING_VOTER);
+    }
+
+    @Test
     void candidateLossMidDrainFailsWithTheReason() throws Exception {
         var cluster = new FakeCluster();
         cluster.live = new HashSet<>(Set.of(1, 2, 3));

@@ -77,7 +77,18 @@ public final class DecommissionController {
     public synchronized boolean requestDecommission(int brokerId) {
         if (!cluster.isLeader()) return false;
         if (phase == Phase.DRAINING || phase == Phase.REMOVING_VOTER) return false;
-        var result = DecommissionPlanner.plan(brokerId, cluster.liveBrokers(), cluster.assignments());
+        // Feasibility check over partitions not already mid-reassignment
+        // (see runOnce for why an in-flight expand must not be re-planned).
+        var hosting = 0;
+        var unmanaged = new java.util.ArrayList<PartitionAssignment>();
+        for (var a : cluster.assignments()) {
+            if (!a.state().replicas().contains(brokerId)) continue;
+            hosting++;
+            if (!cluster.reassignmentPending(a.topic(), a.partition())) {
+                unmanaged.add(a);
+            }
+        }
+        var result = DecommissionPlanner.plan(brokerId, cluster.liveBrokers(), unmanaged);
         if (result instanceof DecommissionPlanner.Result.Refused refused) {
             this.target = brokerId;
             this.detail = refused.reason();
@@ -86,7 +97,7 @@ public final class DecommissionController {
         }
         this.target = brokerId;
         this.detail = "";
-        this.remaining = ((DecommissionPlanner.Result.Plan) result).moves().size();
+        this.remaining = hosting;
         this.phase = Phase.DRAINING;
         return true;
     }
@@ -102,10 +113,33 @@ public final class DecommissionController {
             case DRAINING -> {
                 // Re-plan against current state each tick: moves whose
                 // reassignment never landed are retried, completed ones
-                // disappear from the plan, and a broker that died mid-drain
-                // shifts the replacement choice. Partitions with a pending
-                // reassignment are left to the reassignment driver.
-                var result = DecommissionPlanner.plan(target, cluster.liveBrokers(), cluster.assignments());
+                // disappear, and a broker that died mid-drain shifts the
+                // replacement choice. Partitions with a reassignment already
+                // pending MUST be excluded from the re-plan, not just from
+                // the starts: mid-expand their replica set is the union —
+                // it still contains the leaver and every candidate — and
+                // planning over that state misreads a healthy drain as
+                // "no replacement broker left".
+                var hosting = new java.util.ArrayList<PartitionAssignment>();
+                var unmanaged = new java.util.ArrayList<PartitionAssignment>();
+                for (var a : cluster.assignments()) {
+                    if (!a.state().replicas().contains(target)) continue;
+                    hosting.add(a);
+                    if (!cluster.reassignmentPending(a.topic(), a.partition())) {
+                        unmanaged.add(a);
+                    }
+                }
+                remaining = hosting.size();
+                if (hosting.isEmpty()) {
+                    phase = Phase.REMOVING_VOTER;
+                    return;
+                }
+                if (unmanaged.isEmpty()) {
+                    // Everything left is draining under the reassignment
+                    // engine; nothing to start this tick.
+                    return;
+                }
+                var result = DecommissionPlanner.plan(target, cluster.liveBrokers(), unmanaged);
                 if (result instanceof DecommissionPlanner.Result.Refused refused) {
                     // A candidate died mid-drain and no replacement exists
                     // any more — surface it rather than spinning silently.
@@ -113,14 +147,7 @@ public final class DecommissionController {
                     phase = Phase.FAILED;
                     return;
                 }
-                var moves = ((DecommissionPlanner.Result.Plan) result).moves();
-                remaining = moves.size();
-                if (moves.isEmpty()) {
-                    phase = Phase.REMOVING_VOTER;
-                    return;
-                }
-                for (var move : moves) {
-                    if (cluster.reassignmentPending(move.topic(), move.partition())) continue;
+                for (var move : ((DecommissionPlanner.Result.Plan) result).moves()) {
                     cluster.startReassignment(move.topic(), move.partition(), move.target());
                 }
             }

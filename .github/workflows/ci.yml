@@ -70,6 +70,33 @@ jobs:
           name: perf-reports
           path: '**/build/reports/tests/'
 
+  proto-compat:
+    # Rolling upgrades mean old and new brokers speak the same RPCs
+    # mid-deploy, and client jars lag broker releases. buf compares this
+    # PR's protos against the base branch and fails on wire-breaking
+    # edits — field retypes, deletes without reserving the number.
+    # Rule set lives in buf.yaml (WIRE_JSON).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # buf reads the base branch straight out of .git, so the
+          # remote-tracking ref has to exist in the clone.
+          fetch-depth: 0
+
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: 1.72.0
+          setup_only: true
+
+      - name: Check wire compatibility against base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: buf breaking --against ".git#branch=origin/${BASE_REF},subdir=proto/src/main/proto"
+
   helm-kind:
     # Secured install on a real (Kind) cluster: mTLS from a Secret,
     # auth.mode=mtls with ACL default-deny, admin login required. Proves

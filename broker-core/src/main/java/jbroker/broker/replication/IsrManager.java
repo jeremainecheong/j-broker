@@ -2,7 +2,9 @@ package jbroker.broker.replication;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import jbroker.broker.PartitionState;
 import jbroker.broker.TopicManager;
 import jbroker.proto.raft.MetadataRecord;
@@ -16,6 +18,14 @@ import org.slf4j.LoggerFactory;
  * ISR when a follower's last-fetch timestamp exceeds {@code lagTimeoutMs};
  * expands it when an out-of-ISR replica's LEO catches up to the partition
  * HWM.
+ *
+ * <p>A follower with no fetch record at all gets a first-fetch grace of
+ * {@code lagTimeoutMs} before it can be shrunk: the tracker is local to
+ * this broker, so right after a leader promotion (or leader restart) every
+ * follower looks never-heard-from even when it is healthy and about to
+ * re-point its fetcher. The grace clock starts when this leader first
+ * observes the missing record; a follower WITH a record keeps the plain
+ * staleness check.
  *
  * <p>The decision logic lives in {@link #decideChanges} as a pure function
  * of {@code (TopicManager, LogManager, FollowerStateTracker, now)} so it
@@ -31,6 +41,11 @@ public final class IsrManager {
     private final LogManager logManager;
     private final FollowerStateTracker tracker;
     private final long lagTimeoutMs;
+
+    private record FollowerKey(String topic, int partition, int brokerId) {}
+
+    /** When this leader first saw an ISR member with no fetch record; anchors the first-fetch grace. */
+    private final Map<FollowerKey, Long> firstSeenWithoutRecord = new HashMap<>();
 
     public IsrManager(
             int selfBrokerId,
@@ -69,6 +84,24 @@ public final class IsrManager {
         return out;
     }
 
+    /**
+     * True while an ISR member with no fetch record is still inside its
+     * first-fetch grace. "No record" is ambiguous between "dead" and
+     * "hasn't reached this leader yet" — the same {@code lagTimeoutMs}
+     * allowance a recorded follower gets from its last fetch applies here,
+     * measured from the first tick that observed the record missing. Once
+     * a record exists the grace anchor is dropped; staleness takes over.
+     */
+    private boolean withinFirstFetchGrace(String topic, int partition, int brokerId, long nowMillis) {
+        var key = new FollowerKey(topic, partition, brokerId);
+        if (tracker.get(topic, partition, brokerId).isPresent()) {
+            firstSeenWithoutRecord.remove(key);
+            return false;
+        }
+        long firstSeen = firstSeenWithoutRecord.computeIfAbsent(key, k -> nowMillis);
+        return nowMillis - firstSeen < lagTimeoutMs;
+    }
+
     private byte[] decideForPartition(String topic, int partition, PartitionState state, long nowMillis) {
         long leaderLeo;
         try {
@@ -84,7 +117,8 @@ public final class IsrManager {
         for (int b : state.isr()) {
             if (b != selfBrokerId) nonLeaderIsr.add(b);
         }
-        var laggards = tracker.laggardsOf(topic, partition, nonLeaderIsr, nowMillis, lagTimeoutMs);
+        var laggards = new ArrayList<>(tracker.laggardsOf(topic, partition, nonLeaderIsr, nowMillis, lagTimeoutMs));
+        laggards.removeIf(b -> withinFirstFetchGrace(topic, partition, b, nowMillis));
 
         // Expand: replicas outside ISR whose LEO has caught up to HWM.
         var catchupCandidates = new ArrayList<Integer>();

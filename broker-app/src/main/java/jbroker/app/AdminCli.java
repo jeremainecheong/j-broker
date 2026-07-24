@@ -25,6 +25,13 @@ import java.util.Arrays;
  *   j-broker admin [--admin URL] groups list
  *   j-broker admin [--admin URL] groups describe --group ID
  *   j-broker admin [--admin URL] raft
+ *   j-broker admin [--admin URL] cluster membership
+ *   j-broker admin [--admin URL] cluster add-broker --id N --host H --raft-port N --broker-port N
+ *   j-broker admin [--admin URL] cluster decommission --id N
+ *   j-broker admin [--admin URL] cluster reassign --topic NAME --partition N --replicas a,b,c
+ *   j-broker admin [--admin URL] cluster reassignments
+ *   j-broker admin [--admin URL] cluster cancel-reassignment --topic NAME --partition N
+ *   j-broker admin [--admin URL] cluster rebalance-leaders
  * </pre>
  */
 public final class AdminCli {
@@ -43,6 +50,7 @@ public final class AdminCli {
             case "topics" -> topics(adminUrl, Arrays.copyOfRange(rest, 1, rest.length));
             case "groups" -> groups(adminUrl, Arrays.copyOfRange(rest, 1, rest.length));
             case "raft" -> get(adminUrl + "/api/v1/raft");
+            case "cluster" -> cluster(adminUrl, Arrays.copyOfRange(rest, 1, rest.length));
             case "verify-log" -> verifyLog(Arrays.copyOfRange(rest, 1, rest.length));
             default -> usage(System.err);
         }
@@ -146,8 +154,85 @@ public final class AdminCli {
         }
     }
 
+    /**
+     * Cluster-lifecycle verbs, routed through the admin REST layer's
+     * {@code /api/v1/cluster/*} endpoints. Mutations answer 202 — joins,
+     * drains, and reassignments advance asynchronously on the controller;
+     * poll {@code cluster membership} / {@code cluster reassignments} to
+     * watch them progress.
+     */
+    private static void cluster(String adminUrl, String[] args) {
+        if (args.length == 0) {
+            usage(System.err);
+            return;
+        }
+        switch (args[0]) {
+            case "membership" -> get(adminUrl + "/api/v1/cluster/membership");
+            case "add-broker" -> {
+                var id = flag(args, "--id", null);
+                var host = flag(args, "--host", null);
+                var raftPort = flag(args, "--raft-port", null);
+                var brokerPort = flag(args, "--broker-port", null);
+                if (id == null || host == null || raftPort == null || brokerPort == null) {
+                    System.err.println("--id, --host, --raft-port, --broker-port required");
+                    return;
+                }
+                // Admin REST envelope is snake_case.
+                postJson(
+                        adminUrl + "/api/v1/cluster/add-broker",
+                        String.format(
+                                "{\"broker_id\":%d,\"host\":\"%s\",\"raft_port\":%d,\"broker_port\":%d}",
+                                Integer.parseInt(id), host, Integer.parseInt(raftPort), Integer.parseInt(brokerPort)));
+            }
+            case "decommission" -> {
+                var id = flag(args, "--id", null);
+                if (id == null) {
+                    System.err.println("--id required");
+                    return;
+                }
+                post(adminUrl + "/api/v1/cluster/decommission/" + Integer.parseInt(id));
+            }
+            case "reassign" -> {
+                var t = flag(args, "--topic", null);
+                var p = flag(args, "--partition", null);
+                var replicas = flag(args, "--replicas", null);
+                if (t == null || p == null || replicas == null) {
+                    System.err.println("--topic, --partition, --replicas required");
+                    return;
+                }
+                var ids = new StringBuilder();
+                for (var r : replicas.split(",")) {
+                    if (!ids.isEmpty()) ids.append(',');
+                    ids.append(Integer.parseInt(r.trim()));
+                }
+                postJson(
+                        adminUrl + "/api/v1/cluster/reassignments",
+                        String.format(
+                                "{\"topic\":\"%s\",\"partition\":%d,\"replicas\":[%s]}", t, Integer.parseInt(p), ids));
+            }
+            case "reassignments" -> get(adminUrl + "/api/v1/cluster/reassignments");
+            case "cancel-reassignment" -> {
+                var t = flag(args, "--topic", null);
+                var p = flag(args, "--partition", null);
+                if (t == null || p == null) {
+                    System.err.println("--topic and --partition required");
+                    return;
+                }
+                delete(adminUrl + "/api/v1/cluster/reassignments/" + t + "/" + Integer.parseInt(p));
+            }
+            case "rebalance-leaders" -> post(adminUrl + "/api/v1/cluster/rebalance-leadership");
+            default -> usage(System.err);
+        }
+    }
+
     private static void get(String url) {
         send(HttpRequest.newBuilder(URI.create(url)).GET().build());
+    }
+
+    private static void post(String url) {
+        send(HttpRequest.newBuilder(URI.create(url))
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build());
     }
 
     private static void delete(String url) {
@@ -202,5 +287,10 @@ public final class AdminCli {
         out.println("  topics list|describe|create|delete ...");
         out.println("  groups list|describe --group ID");
         out.println("  raft");
+        out.println("  cluster membership|reassignments|rebalance-leaders");
+        out.println("  cluster add-broker --id N --host H --raft-port N --broker-port N");
+        out.println("  cluster decommission --id N");
+        out.println("  cluster reassign --topic NAME --partition N --replicas a,b,c");
+        out.println("  cluster cancel-reassignment --topic NAME --partition N");
     }
 }

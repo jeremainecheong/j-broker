@@ -70,9 +70,19 @@ jobs:
           else
             publish=false
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "version=$version publish=$publish"
+          # A semver prerelease (any hyphen: -rc.1, -beta) must not move
+          # the floating "latest" image tags and gets a prerelease-marked
+          # GitHub Release.
+          case "$version" in
+            *-*) stable=false ;;
+            *)   stable=true ;;
+          esac
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+            echo "stable=$stable"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version publish=$publish stable=$stable"
 
       - name: Build and test
         env:
@@ -120,11 +130,14 @@ jobs:
         if: steps.rel.outputs.publish == 'true'
         env:
           VERSION: ${{ steps.rel.outputs.version }}
+          STABLE: ${{ steps.rel.outputs.stable }}
         run: |
           docker push "$IMAGE_NS/jbroker-broker:$VERSION"
-          docker push "$IMAGE_NS/jbroker-broker:latest"
           docker push "$IMAGE_NS/jbroker-admin:$VERSION"
-          docker push "$IMAGE_NS/jbroker-admin:latest"
+          if [ "$STABLE" = "true" ]; then
+            docker push "$IMAGE_NS/jbroker-broker:latest"
+            docker push "$IMAGE_NS/jbroker-admin:latest"
+          fi
 
       - name: Publish client jars to GitHub Packages
         if: steps.rel.outputs.publish == 'true'
@@ -144,9 +157,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.rel.outputs.version }}
+          STABLE: ${{ steps.rel.outputs.stable }}
         run: |
+          extra=""
+          if [ "$STABLE" != "true" ]; then extra="--prerelease"; fi
           gh release create "$GITHUB_REF_NAME" "dist/j-broker-$VERSION.tgz" \
-            --generate-notes --verify-tag
+            --generate-notes --verify-tag $extra
 
       - name: Upload test reports on failure
         if: failure()

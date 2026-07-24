@@ -167,6 +167,81 @@ public class BrokerAdminClientPool {
         throw new IllegalStateException("every broker unreachable", lastExc);
     }
 
+    /**
+     * Controller-routed variant of {@link #firstNonNotLeader}: iterates the
+     * pool, but the first NOT_LEADER answer's {@code suggested_leader_host} /
+     * {@code suggested_leader_port} hints trigger one bounded retry directly
+     * at the hinted broker before falling back to plain iteration. The hint
+     * can name a broker outside the configured pool entirely (a freshly
+     * joined voter that won the election), which blind iteration would never
+     * reach — that is why the cluster-lifecycle endpoints use this instead
+     * of {@code firstNonNotLeader}.
+     *
+     * <p>If every reachable broker still answers NOT_LEADER, the last
+     * response is returned so the REST layer can surface the hint to the
+     * caller.
+     */
+    public <T> T controllerRouted(Function<BrokerAdminClient, T> op, Function<T, jbroker.proto.broker.Error> error) {
+        T last = null;
+        RuntimeException lastExc = null;
+        boolean hintFollowed = false;
+        for (var c : clients) {
+            try {
+                last = op.apply(c);
+            } catch (StatusRuntimeException e) {
+                log.debug("broker {} failed with {}; trying next", c.address(), e.getStatus());
+                lastExc = e;
+                continue;
+            }
+            var err = error.apply(last);
+            if (err.getCode() != jbroker.broker.ErrorCodes.NOT_LEADER) {
+                return last;
+            }
+            if (!hintFollowed) {
+                hintFollowed = true; // one hint hop total, not one per broker
+                T hinted = retryAtHintedLeader(op, err.getHintMap());
+                if (hinted != null) {
+                    last = hinted;
+                    if (error.apply(hinted).getCode() != jbroker.broker.ErrorCodes.NOT_LEADER) {
+                        return hinted;
+                    }
+                }
+            }
+        }
+        if (last != null) return last; // all returned NOT_LEADER — propagate the hint upward
+        throw new IllegalStateException("every broker unreachable", lastExc);
+    }
+
+    /**
+     * The single hint-following retry: null when the hint is absent,
+     * malformed, or the hinted broker is unreachable — callers fall back to
+     * pool iteration. Reuses the pool client when the hinted address is
+     * already configured; otherwise opens a transient channel and closes it
+     * after the call.
+     */
+    private <T> T retryAtHintedLeader(Function<BrokerAdminClient, T> op, java.util.Map<String, String> hints) {
+        String host = hints.get("suggested_leader_host");
+        String port = hints.get("suggested_leader_port");
+        if (host == null || host.isBlank() || port == null || port.isBlank()) return null;
+        String address = host + ":" + port;
+        for (var c : clients) {
+            if (c.address().equals(address)) {
+                try {
+                    return op.apply(c);
+                } catch (StatusRuntimeException e) {
+                    log.debug("hinted leader {} failed with {}; falling back to iteration", address, e.getStatus());
+                    return null;
+                }
+            }
+        }
+        try (var hinted = BrokerAdminClient.parse(address, tls)) {
+            return op.apply(hinted);
+        } catch (StatusRuntimeException | IllegalArgumentException e) {
+            log.debug("hinted leader {} unusable ({}); falling back to iteration", address, e.toString());
+            return null;
+        }
+    }
+
     @PreDestroy
     public void shutdown() {
         for (var c : clients) {

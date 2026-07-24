@@ -181,6 +181,70 @@ public final class BrokerAdminClient implements AutoCloseable {
         return admin.withDeadlineAfter(5, TimeUnit.SECONDS).resetConsumerGroupOffsets(b.build());
     }
 
+    // ---- Cluster lifecycle. All controller-routed (non-leaders answer
+    // NOT_LEADER with suggested_leader_* hints) except listReassignments,
+    // which any broker answers from its replicated cache. ----
+
+    /** Admit a running broker into the cluster: learner first, voter once caught up. */
+    public jbroker.proto.broker.AddBrokerResponse addBroker(int brokerId, String host, int raftPort, int brokerPort) {
+        return admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .addBroker(jbroker.proto.broker.AddBrokerRequest.newBuilder()
+                        .setBrokerId(brokerId)
+                        .setHost(host)
+                        .setRaftPort(raftPort)
+                        .setBrokerPort(brokerPort)
+                        .build());
+    }
+
+    /** Drain every replica off the broker, then remove its Raft vote. */
+    public jbroker.proto.broker.DecommissionBrokerResponse decommissionBroker(int brokerId) {
+        return admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .decommissionBroker(jbroker.proto.broker.DecommissionBrokerRequest.newBuilder()
+                        .setBrokerId(brokerId)
+                        .build());
+    }
+
+    /** Voter set plus join/decommission progress, from the controller. */
+    public jbroker.proto.broker.DescribeMembershipResponse describeMembership() {
+        return admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .describeMembership(jbroker.proto.broker.DescribeMembershipRequest.newBuilder()
+                        .build());
+    }
+
+    /** Reassign one partition's replicas to the target set (expand-then-contract). */
+    public jbroker.proto.broker.ReassignPartitionResponse reassignPartition(
+            String topic, int partition, java.util.List<Integer> replicas) {
+        return admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .reassignPartition(jbroker.proto.broker.ReassignPartitionRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .addAllReplicas(replicas)
+                        .build());
+    }
+
+    /** Pending reassignments, from the responding broker's replicated cache. */
+    public jbroker.proto.broker.ListReassignmentsResponse listReassignments() {
+        return admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .listReassignments(jbroker.proto.broker.ListReassignmentsRequest.newBuilder()
+                        .build());
+    }
+
+    /** Revert a pending reassignment to its original replica set. */
+    public jbroker.proto.broker.CancelReassignmentResponse cancelReassignment(String topic, int partition) {
+        return admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .cancelReassignment(jbroker.proto.broker.CancelReassignmentRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .build());
+    }
+
+    /** Kick a preferred-leader rebalance; the response counts the moves proposed. */
+    public jbroker.proto.broker.RebalanceLeadershipResponse rebalanceLeadership() {
+        return admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .rebalanceLeadership(jbroker.proto.broker.RebalanceLeadershipRequest.newBuilder()
+                        .build());
+    }
+
     @Override
     public void close() {
         channel.shutdown();

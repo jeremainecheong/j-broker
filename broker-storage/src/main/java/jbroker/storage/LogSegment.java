@@ -238,6 +238,20 @@ public final class LogSegment implements AutoCloseable {
                 -1);
     }
 
+    /** Codec-carrying variant of the simple append — used by compaction to keep survivors compressed. */
+    public int append(long firstTimestamp, long maxTimestamp, List<Record> records, Compression codec)
+            throws IOException {
+        return append(
+                firstTimestamp,
+                maxTimestamp,
+                records,
+                /*producerId*/ -1L,
+                /*producerEpoch*/ (short) -1,
+                /*baseSequence*/ -1,
+                /*partitionLeaderEpoch*/ 0,
+                codec);
+    }
+
     /**
      * Audit-finding #1 — append that preserves the caller-supplied idempotent-
      * producer fields (producerId, producerEpoch, baseSequence) in the encoded
@@ -276,6 +290,32 @@ public final class LogSegment implements AutoCloseable {
             int baseSequence,
             int partitionLeaderEpoch)
             throws IOException {
+        return append(
+                firstTimestamp,
+                maxTimestamp,
+                records,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                partitionLeaderEpoch,
+                Compression.NONE);
+    }
+
+    /**
+     * Full append — additionally compresses the records section with
+     * {@code codec}. {@code estimatedSize} still bounds the encoding: the
+     * codec is dropped batch-by-batch when it would not shrink the bytes.
+     */
+    public int append(
+            long firstTimestamp,
+            long maxTimestamp,
+            List<Record> records,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            int partitionLeaderEpoch,
+            Compression codec)
+            throws IOException {
         lock.lock();
         try {
             return appendLocked(
@@ -285,7 +325,8 @@ public final class LogSegment implements AutoCloseable {
                     producerId,
                     producerEpoch,
                     baseSequence,
-                    partitionLeaderEpoch);
+                    partitionLeaderEpoch,
+                    codec);
         } finally {
             lock.unlock();
         }
@@ -298,7 +339,8 @@ public final class LogSegment implements AutoCloseable {
             long producerId,
             short producerEpoch,
             int baseSequence,
-            int partitionLeaderEpoch)
+            int partitionLeaderEpoch,
+            Compression codec)
             throws IOException {
         if (records.isEmpty()) throw new IllegalArgumentException("records must be non-empty");
         long baseOff = nextOffset;
@@ -313,7 +355,8 @@ public final class LogSegment implements AutoCloseable {
                 producerId,
                 producerEpoch,
                 baseSequence,
-                records);
+                records,
+                codec);
         buf.flip();
         int pos = (int) logChannel.size();
         while (buf.hasRemaining()) {

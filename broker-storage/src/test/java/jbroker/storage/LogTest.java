@@ -27,6 +27,32 @@ class LogTest {
     }
 
     @Test
+    void compressedAppendReadsBackAndSurvivesReopen(@TempDir Path dir) throws Exception {
+        var records = List.of(
+                new Record(0, 0L, null, "alpha-".repeat(40).getBytes()),
+                new Record(1, 1L, null, "beta-".repeat(40).getBytes()),
+                new Record(2, 2L, null, "gamma-".repeat(40).getBytes()));
+        try (var log = Log.open(dir, new Log.Config(1_000_000, 0, 4096))) {
+            long last = log.append(records, 1_000L, -1L, (short) -1, -1, 0, Compression.ZSTD);
+            assertThat(last).isEqualTo(2L);
+
+            var batches = log.read(0L, 64 * 1024);
+            assertThat(batches).hasSize(1);
+            assertThat(batches.get(0).codec()).isEqualTo(Compression.ZSTD);
+            assertThat(batches.get(0).records().get(0).value())
+                    .containsExactly("alpha-".repeat(40).getBytes());
+        }
+        // Reopen: the recovery scan CRC-checks and decodes the compressed
+        // batch to restore nextOffset.
+        try (var reopened = Log.open(dir, new Log.Config(1_000_000, 0, 4096))) {
+            assertThat(reopened.nextOffset()).isEqualTo(3L);
+            var batches = reopened.read(0L, 64 * 1024);
+            assertThat(batches.get(0).records().get(2).value())
+                    .containsExactly("gamma-".repeat(40).getBytes());
+        }
+    }
+
+    @Test
     void rollsOverToNewSegmentOnSizeThreshold(@TempDir Path dir) throws Exception {
         try (var log = Log.open(dir, new Log.Config(500, 0, 4096))) {
             for (int i = 0; i < 10; i++) {

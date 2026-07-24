@@ -220,6 +220,25 @@ public final class Log implements AutoCloseable {
             int baseSequence,
             int partitionLeaderEpoch)
             throws IOException {
+        return append(
+                records, nowMillis, producerId, producerEpoch, baseSequence, partitionLeaderEpoch, Compression.NONE);
+    }
+
+    /**
+     * Full append with a records-section codec. The produce path threads
+     * the codec of the client's batch through here so a compressed produce
+     * stays compressed on disk across the decode/re-encode hop that stamps
+     * broker-owned header fields (baseOffset, leader epoch, timestamps).
+     */
+    public long append(
+            List<Record> records,
+            long nowMillis,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            int partitionLeaderEpoch,
+            Compression codec)
+            throws IOException {
         lock.lock();
         try {
             var active = segments.get(segments.size() - 1);
@@ -232,7 +251,8 @@ public final class Log implements AutoCloseable {
                     producerId,
                     producerEpoch,
                     baseSequence,
-                    partitionLeaderEpoch);
+                    partitionLeaderEpoch,
+                    codec);
             long assignedLast = active.nextOffset() - 1;
             if (active.sizeBytes() >= segmentBytes) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
@@ -466,6 +486,8 @@ public final class Log implements AutoCloseable {
         long firstTimestamp = nowMillis;
         long maxTimestamp = nowMillis;
         boolean sawAny = false;
+        // Rewriting survivors of compressed batches keeps them compressed.
+        var codec = Compression.NONE;
         for (var seg : segments) {
             long pos = seg.baseOffset();
             long limit = seg.nextOffset();
@@ -477,6 +499,7 @@ public final class Log implements AutoCloseable {
                         firstTimestamp = b.firstTimestamp();
                         sawAny = true;
                     }
+                    if (b.codec() != Compression.NONE) codec = b.codec();
                     if (b.maxTimestamp() > maxTimestamp) maxTimestamp = b.maxTimestamp();
                     long batchBase = b.baseOffset();
                     for (var r : b.records()) {
@@ -543,7 +566,7 @@ public final class Log implements AutoCloseable {
         }
 
         var fresh = LogSegment.open(dir, firstOff, config.indexIntervalBytes());
-        fresh.append(firstTimestamp, maxTimestamp, encoded);
+        fresh.append(firstTimestamp, maxTimestamp, encoded, codec);
         // Publish only after the survivors are written so a racing reader
         // never observes a half-built segment.
         segments.add(fresh);

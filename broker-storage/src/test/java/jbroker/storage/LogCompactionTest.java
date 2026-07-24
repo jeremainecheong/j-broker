@@ -134,6 +134,43 @@ final class LogCompactionTest {
         assertThat(fromZero.get(0).baseOffset()).isEqualTo(2L);
     }
 
+    @Test
+    void compressedBatchesCompactToCompressedSurvivors() throws Exception {
+        // Keyed, compressible payloads appended as zstd batches — the
+        // compaction rewrite must keep the right survivors AND keep them
+        // compressed rather than silently inflating the log.
+        for (int i = 0; i < 60; i++) {
+            String key = "k" + (i % 6);
+            String value = "v" + i + "-" + "abcdefgh".repeat(20);
+            log.append(
+                    List.of(new Record(
+                            0, 0L, key.getBytes(StandardCharsets.UTF_8), value.getBytes(StandardCharsets.UTF_8))),
+                    1_000L + i,
+                    -1L,
+                    (short) -1,
+                    -1,
+                    0,
+                    Compression.ZSTD);
+        }
+
+        int kept = log.compactByKey();
+        assertThat(kept).isEqualTo(6);
+
+        var batches = log.read(0, 1 << 20);
+        assertThat(batches).hasSize(1);
+        var b = batches.get(0);
+        assertThat(b.codec()).as("survivor batch stays compressed").isEqualTo(Compression.ZSTD);
+        assertThat(b.baseOffset()).isEqualTo(54L);
+        assertThat(b.lastOffset()).isEqualTo(59L);
+        var valueByKey = new java.util.HashMap<String, String>();
+        for (var r : b.records()) {
+            valueByKey.put(new String(r.key(), StandardCharsets.UTF_8), new String(r.value(), StandardCharsets.UTF_8));
+        }
+        assertThat(valueByKey)
+                .containsEntry("k0", "v54-" + "abcdefgh".repeat(20))
+                .containsEntry("k5", "v59-" + "abcdefgh".repeat(20));
+    }
+
     private static Record rec(String key, String value) {
         return new Record(0, 0L, key.getBytes(StandardCharsets.UTF_8), value.getBytes(StandardCharsets.UTF_8));
     }

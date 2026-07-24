@@ -359,6 +359,24 @@ public final class BrokerClient implements AutoCloseable {
      */
     public long idempotentProduceBatchAcksAll(
             String topic, int partition, List<byte[]> values, long producerId, int epoch, int baseSequence) {
+        return idempotentProduceBatchAcksAll(
+                topic, partition, values, producerId, epoch, baseSequence, jbroker.storage.Compression.NONE);
+    }
+
+    /**
+     * Codec-carrying variant: the records section of the wire batch is
+     * compressed client-side with {@code codec}, and the broker preserves
+     * the codec when it re-encodes the batch for its log — compressed on
+     * the wire, compressed on disk, decompressed transparently on fetch.
+     */
+    public long idempotentProduceBatchAcksAll(
+            String topic,
+            int partition,
+            List<byte[]> values,
+            long producerId,
+            int epoch,
+            int baseSequence,
+            jbroker.storage.Compression codec) {
         if (values.isEmpty()) throw new IllegalArgumentException("values must be non-empty");
         var records = new java.util.ArrayList<Record>(values.size());
         for (int i = 0; i < values.size(); i++) {
@@ -366,7 +384,7 @@ public final class BrokerClient implements AutoCloseable {
         }
         var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
         long now = System.currentTimeMillis();
-        RecordBatch.encode(buf, 0L, 0, now, now, producerId, (short) epoch, baseSequence, records);
+        RecordBatch.encode(buf, 0L, 0, now, now, producerId, (short) epoch, baseSequence, records, codec);
         buf.flip();
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);

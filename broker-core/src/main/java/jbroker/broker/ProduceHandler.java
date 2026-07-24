@@ -437,14 +437,17 @@ public final class ProduceHandler {
             // Audit-finding #1 — preserve producer id / epoch / baseSequence in
             // the on-disk batch so followers replicating this batch can observe
             // the dedup state (and a leader rebooting from its own log can
-            // rebuild state without help).
+            // rebuild state without help). The client's codec rides along so
+            // a compressed produce stays compressed on disk across this
+            // decode/re-encode hop.
             long last = log.append(
                     parsed.records(),
                     now,
                     req.getProducerId(),
                     (short) req.getProducerEpoch(),
                     req.getBaseSequence(),
-                    partitionLeaderEpoch);
+                    partitionLeaderEpoch,
+                    parsed.codec());
             long first = last - (parsed.records().size() - 1);
             return Appended.ok(first, last);
         } catch (IllegalArgumentException | IOException e) {

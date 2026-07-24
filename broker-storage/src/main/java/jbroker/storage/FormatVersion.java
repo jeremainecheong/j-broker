@@ -41,7 +41,16 @@ import java.nio.file.StandardOpenOption;
  */
 public final class FormatVersion {
 
-    /** The newest on-disk format this binary reads and writes. */
+    /**
+     * The newest on-disk format this binary reads and writes.
+     *
+     * <p>Format 1 is the v2 record-batch layout, including batches whose
+     * records section is zstd-compressed per the attributes codec bits —
+     * compression shipped in the same release as this marker, so no
+     * binary exists that understands the marker but not the codec. A
+     * future layout change that older format-1 readers would misread
+     * must bump this.
+     */
     public static final int CURRENT = 1;
 
     /** Marker file name at the data-dir root. */

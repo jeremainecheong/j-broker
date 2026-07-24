@@ -7,10 +7,18 @@ import java.util.List;
 import java.util.zip.CRC32C;
 
 /**
- * Kafka v2 record batch, simplified: uncompressed, no transactional fields.
- * Supports encode (for append) and decode (for fetch / recovery). Per-record
+ * Kafka v2 record batch, simplified: no transactional fields. Supports
+ * encode (for append) and decode (for fetch / recovery). Per-record
  * headers are optional — encoded as a varint count followed by
  * {@code (keyLen varint, key bytes, valueLen varint, value bytes)} pairs.
+ *
+ * <p>The low three bits of {@code attributes} carry the {@link Compression}
+ * codec of the records section. Only the records bytes are compressed; the
+ * 61-byte header (offsets, epochs, producer fields, CRC) stays plaintext so
+ * replication, the sparse index and recovery scans keep working on raw
+ * bytes. The CRC covers the bytes as stored — compressed batches replicate
+ * byte-identically without decompression. {@link #decode} decompresses
+ * transparently and rejects codec ids this binary does not implement.
  *
  * <p>Wire format (big-endian):
  *
@@ -20,7 +28,7 @@ import java.util.zip.CRC32C;
  *  [12..15] partitionLeaderEpoch            int32
  *  [16]     magic (= 2)                     int8
  *  [17..20] crc (CRC-32C of bytes [21..])   uint32
- *  [21..22] attributes                      int16
+ *  [21..22] attributes (low 3 bits: codec)  int16
  *  [23..26] lastOffsetDelta                 int32
  *  [27..34] firstTimestamp                  int64
  *  [35..42] maxTimestamp                    int64
@@ -56,7 +64,11 @@ public final class RecordBatch {
 
     private RecordBatch() {}
 
-    /** Parsed batch returned by {@link #decode}. */
+    /**
+     * Parsed batch returned by {@link #decode}. {@code records} are always
+     * decompressed; {@code codec} reports how the batch was stored so
+     * re-encoding paths (produce append, compaction) can preserve it.
+     */
     public record Parsed(
             long baseOffset,
             int batchLength,
@@ -67,6 +79,7 @@ public final class RecordBatch {
             long producerId,
             short producerEpoch,
             int baseSequence,
+            Compression codec,
             List<Record> records) {
 
         public long lastOffset() {
@@ -92,7 +105,89 @@ public final class RecordBatch {
             short producerEpoch,
             int baseSequence,
             List<Record> records) {
+        return encode(
+                out,
+                baseOffset,
+                partitionLeaderEpoch,
+                firstTimestamp,
+                maxTimestamp,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                records,
+                Compression.NONE);
+    }
+
+    /**
+     * Encode a batch, compressing the records section with {@code codec}.
+     * The codec is a request, not a guarantee: the compressed form is
+     * stored only when it is strictly smaller than the uncompressed
+     * encoding, so {@link #estimatedSize} stays a valid upper bound for
+     * every codec (incompressible payloads never inflate the batch).
+     */
+    public static int encode(
+            ByteBuffer out,
+            long baseOffset,
+            int partitionLeaderEpoch,
+            long firstTimestamp,
+            long maxTimestamp,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            List<Record> records,
+            Compression codec) {
         if (records.isEmpty()) throw new IllegalArgumentException("records must be non-empty");
+        int lastOffsetDelta = records.get(records.size() - 1).offsetDelta();
+        if (codec != Compression.NONE) {
+            byte[] raw = encodeRecordsSection(records);
+            byte[] compressed = codec.compress(raw);
+            if (compressed.length < raw.length) {
+                return writeBatch(
+                        out,
+                        baseOffset,
+                        partitionLeaderEpoch,
+                        firstTimestamp,
+                        maxTimestamp,
+                        producerId,
+                        producerEpoch,
+                        baseSequence,
+                        (short) codec.id(),
+                        lastOffsetDelta,
+                        records.size(),
+                        o -> o.put(compressed));
+            }
+            // Compression didn't pay — fall through to the plain layout.
+        }
+        return writeBatch(
+                out,
+                baseOffset,
+                partitionLeaderEpoch,
+                firstTimestamp,
+                maxTimestamp,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                (short) 0,
+                lastOffsetDelta,
+                records.size(),
+                o -> {
+                    for (var r : records) encodeRecord(o, r);
+                });
+    }
+
+    private static int writeBatch(
+            ByteBuffer out,
+            long baseOffset,
+            int partitionLeaderEpoch,
+            long firstTimestamp,
+            long maxTimestamp,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            short attributes,
+            int lastOffsetDelta,
+            int numRecords,
+            java.util.function.Consumer<ByteBuffer> recordsWriter) {
         out.order(ByteOrder.BIG_ENDIAN);
         int startPos = out.position();
 
@@ -104,18 +199,15 @@ public final class RecordBatch {
         int crcPos = out.position();
         out.putInt(0); // crc placeholder
         int crcStart = out.position();
-        out.putShort((short) 0); // attributes
-        int lastOffsetDelta = records.get(records.size() - 1).offsetDelta();
+        out.putShort(attributes);
         out.putInt(lastOffsetDelta);
         out.putLong(firstTimestamp);
         out.putLong(maxTimestamp);
         out.putLong(producerId);
         out.putShort(producerEpoch);
         out.putInt(baseSequence);
-        out.putInt(records.size());
-        for (var r : records) {
-            encodeRecord(out, r);
-        }
+        out.putInt(numRecords);
+        recordsWriter.accept(out);
         int endPos = out.position();
 
         // Fill in batchLength (= bytes after the batchLength field itself, so
@@ -123,7 +215,8 @@ public final class RecordBatch {
         int batchLength = endPos - batchLengthPos - 4;
         out.putInt(batchLengthPos, batchLength);
 
-        // Compute CRC-32C over [crcStart..endPos).
+        // Compute CRC-32C over [crcStart..endPos) — the bytes as stored, so
+        // CRC verification never needs to decompress.
         var crc = new CRC32C();
         out.position(crcStart);
         out.limit(endPos);
@@ -134,6 +227,20 @@ public final class RecordBatch {
 
         out.position(endPos);
         return endPos - startPos;
+    }
+
+    /** Records section (all length-prefixed records, uncompressed) as one array. */
+    private static byte[] encodeRecordsSection(List<Record> records) {
+        int size = 0;
+        for (var r : records) {
+            int inner = sizeOfRecordInner(r);
+            size += Varints.sizeOfVarint(inner) + inner;
+        }
+        var buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
+        for (var r : records) {
+            encodeRecord(buf, r);
+        }
+        return buf.array();
     }
 
     private static void encodeRecord(ByteBuffer out, Record r) {
@@ -210,7 +317,11 @@ public final class RecordBatch {
         return size;
     }
 
-    /** Upper bound on encoded size; useful for buffer sizing. */
+    /**
+     * Upper bound on encoded size; useful for buffer sizing. Valid for
+     * every codec — compression is only applied when it shrinks the
+     * records section, so the uncompressed size bounds the stored size.
+     */
     public static int estimatedSize(List<Record> records) {
         int size = BATCH_OVERHEAD;
         for (var r : records) {
@@ -263,6 +374,11 @@ public final class RecordBatch {
         }
 
         short attributes = in.getShort();
+        // Low bits name the codec; a reserved/unknown id throws here, after
+        // the CRC proved the batch intact — a clean "this binary can't read
+        // that codec" error, never garbage records. Bits above the codec
+        // mask (transactional etc.) stay ignored.
+        var codec = Compression.fromAttributes(attributes);
         int lastOffsetDelta = in.getInt();
         long firstTimestamp = in.getLong();
         long maxTimestamp = in.getLong();
@@ -271,55 +387,59 @@ public final class RecordBatch {
         int baseSequence = in.getInt();
         int numRecords = in.getInt();
 
+        ByteBuffer rec = in;
+        if (codec != Compression.NONE) {
+            byte[] stored = new byte[batchEnd - in.position()];
+            in.get(stored);
+            rec = ByteBuffer.wrap(codec.decompress(stored)).order(ByteOrder.BIG_ENDIAN);
+        }
+
         var records = new ArrayList<Record>(numRecords);
         for (int i = 0; i < numRecords; i++) {
-            int inner = Varints.readVarint(in);
-            int recEnd = in.position() + inner;
-            in.get(); // attributes byte (unused)
-            long timestampDelta = Varints.readVarlong(in);
-            int offsetDelta = Varints.readVarint(in);
-            int keyLen = Varints.readVarint(in);
+            int inner = Varints.readVarint(rec);
+            int recEnd = rec.position() + inner;
+            rec.get(); // attributes byte (unused)
+            long timestampDelta = Varints.readVarlong(rec);
+            int offsetDelta = Varints.readVarint(rec);
+            int keyLen = Varints.readVarint(rec);
             byte[] key = null;
             if (keyLen >= 0) {
                 key = new byte[keyLen];
-                in.get(key);
+                rec.get(key);
             }
-            int valueLen = Varints.readVarint(in);
+            int valueLen = Varints.readVarint(rec);
             byte[] value = null;
             if (valueLen >= 0) {
                 value = new byte[valueLen];
-                in.get(value);
+                rec.get(value);
             }
-            int headerCount = Varints.readVarint(in);
+            int headerCount = Varints.readVarint(rec);
             byte[][] headers;
             if (headerCount <= 0) {
                 headers = Record.NO_HEADERS;
             } else {
                 headers = new byte[headerCount * 2][];
                 for (int h = 0; h < headerCount; h++) {
-                    int hkLen = Varints.readVarint(in);
+                    int hkLen = Varints.readVarint(rec);
                     byte[] hk = null;
                     if (hkLen >= 0) {
                         hk = new byte[hkLen];
-                        in.get(hk);
+                        rec.get(hk);
                     }
-                    int hvLen = Varints.readVarint(in);
+                    int hvLen = Varints.readVarint(rec);
                     byte[] hv = null;
                     if (hvLen >= 0) {
                         hv = new byte[hvLen];
-                        in.get(hv);
+                        rec.get(hv);
                     }
                     headers[h * 2] = hk;
                     headers[h * 2 + 1] = hv;
                 }
             }
-            in.position(recEnd); // skip any unread trailer
+            rec.position(recEnd); // skip any unread trailer
             records.add(new Record(offsetDelta, timestampDelta, key, value, headers));
         }
-        if (attributes != 0) {
-            /* Compression / transactional bits not yet supported; tolerate
-             * zero-valued attributes and ignore non-zero for now. */
-        }
+        in.position(batchEnd);
         return new Parsed(
                 baseOffset,
                 batchLength,
@@ -330,6 +450,7 @@ public final class RecordBatch {
                 producerId,
                 producerEpoch,
                 baseSequence,
+                codec,
                 records);
     }
 }

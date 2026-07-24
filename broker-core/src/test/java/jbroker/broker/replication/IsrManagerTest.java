@@ -92,6 +92,71 @@ class IsrManagerTest {
     }
 
     @Test
+    void neverFetchedFollowerIsNotShrunkWithinFirstFetchGrace(@TempDir Path dir) throws Exception {
+        // Right after a leader promotion the tracker is empty: every
+        // follower looks never-heard-from. It must get lagTimeoutMs to
+        // make its first fetch before it can be called a laggard.
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, SELF, List.of(SELF, 2), List.of(SELF, 2), /* epoch */ 7);
+        var tracker = new FollowerStateTracker();
+        try (var lm = lm(dir)) {
+            var isr = new IsrManager(SELF, tm, lm, tracker, LAG_TIMEOUT_MS);
+
+            assertThat(isr.decideChanges(/* first sight */ 100_000L)).isEmpty();
+            assertThat(isr.decideChanges(/* still within grace */ 100_000L + LAG_TIMEOUT_MS - 1))
+                    .isEmpty();
+        }
+    }
+
+    @Test
+    void neverFetchedFollowerIsShrunkOnceGraceElapses(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, SELF, List.of(SELF, 2, 3), List.of(SELF, 2, 3), /* epoch */ 7);
+        var tracker = new FollowerStateTracker();
+        try (var lm = lm(dir)) {
+            // Broker 2 fetches; broker 3 never does.
+            tracker.record("orders", 0, 2, 0L, 100_000L);
+            var isr = new IsrManager(SELF, tm, lm, tracker, LAG_TIMEOUT_MS);
+
+            assertThat(isr.decideChanges(/* grace starts for 3 */ 100_000L)).isEmpty();
+
+            // Keep broker 2 fresh past the grace horizon; broker 3 still
+            // has no record once its grace elapses — only 3 is shrunk.
+            long later = 100_000L + LAG_TIMEOUT_MS + 1;
+            tracker.record("orders", 0, 2, 0L, later - 1);
+            var proposals = isr.decideChanges(later);
+
+            assertThat(proposals).hasSize(1);
+            var change = MetadataRecord.parseFrom(proposals.get(0)).getPartitionChange();
+            assertThat(change.getIsrList()).containsExactly(SELF, 2);
+        }
+    }
+
+    @Test
+    void followerFetchingDuringGraceHandsOverToNormalStalenessCheck(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, SELF, List.of(SELF, 2), List.of(SELF, 2), /* epoch */ 7);
+        var tracker = new FollowerStateTracker();
+        try (var lm = lm(dir)) {
+            var isr = new IsrManager(SELF, tm, lm, tracker, LAG_TIMEOUT_MS);
+
+            assertThat(isr.decideChanges(/* grace starts */ 100_000L)).isEmpty();
+            tracker.record("orders", 0, 2, 0L, /* first fetch */ 104_000L);
+            assertThat(isr.decideChanges(/* fresh record */ 106_000L)).isEmpty();
+
+            // The record exists now, so the ordinary staleness threshold
+            // applies from its last fetch — no second grace.
+            var proposals = isr.decideChanges(104_000L + LAG_TIMEOUT_MS + 1_000L);
+            assertThat(proposals).hasSize(1);
+            var change = MetadataRecord.parseFrom(proposals.get(0)).getPartitionChange();
+            assertThat(change.getIsrList()).containsExactly(SELF);
+        }
+    }
+
+    @Test
     void decideProposesIsrExpandWhenOutOfIsrReplicaCatchesUp(@TempDir Path dir) throws Exception {
         var tm = new TopicManager();
         tm.onTopicCommitted("orders", 1, 3, 0L);

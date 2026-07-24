@@ -345,6 +345,47 @@ public final class BrokerClient implements AutoCloseable {
         return idempotentProduceWithAcks(topic, partition, value, producerId, epoch, baseSequence, /*acks*/ -1);
     }
 
+    /**
+     * Idempotent batched produce with {@code acks=all} — the building
+     * block for an async batching producer. One RecordBatch wraps all values
+     * (offsets contiguous from 0, like {@link #produceBatch}) and carries the
+     * caller's {@code (producer_id, epoch, base_sequence)}, so a retry of the
+     * SAME base sequence dedupes to the cached offsets instead of
+     * double-appending. Record {@code i} implicitly occupies sequence slot
+     * {@code baseSequence + i}; the caller's next batch for this partition
+     * must therefore start at {@code baseSequence + values.size()}. Returns
+     * the absolute offset of the last record (the cached one on a deduped
+     * retry).
+     */
+    public long idempotentProduceBatchAcksAll(
+            String topic, int partition, List<byte[]> values, long producerId, int epoch, int baseSequence) {
+        if (values.isEmpty()) throw new IllegalArgumentException("values must be non-empty");
+        var records = new java.util.ArrayList<Record>(values.size());
+        for (int i = 0; i < values.size(); i++) {
+            records.add(new Record(i, 0L, null, values.get(i)));
+        }
+        var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(records));
+        long now = System.currentTimeMillis();
+        RecordBatch.encode(buf, 0L, 0, now, now, producerId, (short) epoch, baseSequence, records);
+        buf.flip();
+        byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+        var resp = producer.withDeadlineAfter(10, TimeUnit.SECONDS)
+                .produce(ProduceRequest.newBuilder()
+                        .setTopic(topic)
+                        .setPartition(partition)
+                        .setBatch(ByteString.copyFrom(bytes))
+                        .setProducerId(producerId)
+                        .setProducerEpoch(epoch)
+                        .setBaseSequence(baseSequence)
+                        .setAcks(-1)
+                        .build());
+        if (resp.hasError() && resp.getError().getCode() != 0) {
+            throw new RuntimeException("produce failed: " + resp.getError().getMessage());
+        }
+        return resp.getLastOffset();
+    }
+
     private long idempotentProduceWithAcks(
             String topic, int partition, byte[] value, long producerId, int epoch, int baseSequence, int acks) {
         var records = List.of(new Record(0, 0L, null, value));

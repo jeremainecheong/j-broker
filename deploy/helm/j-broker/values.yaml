@@ -30,6 +30,21 @@ broker:
     limits:
       cpu: 1000m
       memory: 2Gi
+  # Voluntary-eviction guard (node drains, cluster upgrades). Raft loses
+  # write availability the moment a majority of voters is down, so never
+  # let more than one broker be evicted at a time. Disable only for
+  # single-replica dev installs where the PDB would block drains outright.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  # Spread broker pods across nodes so one node failure costs at most
+  # one Raft voter. Soft (preferredDuringScheduling) on purpose: Kind and
+  # minikube single-node clusters must still schedule all replicas.
+  podAntiAffinity:
+    enabled: true
+    # 1-100; higher means the scheduler tries harder to spread.
+    weight: 100
+    topologyKey: kubernetes.io/hostname
   # Port layout inside the pod — these are not externally exposed
   # unless `service.*` toggles are flipped.
   ports:

@@ -25,6 +25,20 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "jbroker.serviceAccountName" . }}
+      {{- if .Values.broker.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          # Soft spread: prefer one broker per node so a node failure
+          # costs at most one Raft voter, but never refuse to schedule
+          # on clusters with fewer nodes than replicas.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: {{ .Values.broker.podAntiAffinity.weight }}
+              podAffinityTerm:
+                topologyKey: {{ .Values.broker.podAntiAffinity.topologyKey }}
+                labelSelector:
+                  matchLabels:
+                    {{- include "jbroker.broker.selectorLabels" . | nindent 20 }}
+      {{- end }}
       securityContext:
         fsGroup: 1001
         runAsUser: 1001

@@ -81,6 +81,8 @@ Highlights:
 |---|---|---|
 | `broker.replicaCount` | `3` | Raft-majority-friendly odd number. |
 | `broker.persistence.size` | `10Gi` | Per-broker PVC size. |
+| `broker.podDisruptionBudget.enabled` | `true` | PDB capping voluntary evictions at `maxUnavailable: 1` so drains never cost Raft its majority. |
+| `broker.podAntiAffinity.enabled` | `true` | Soft anti-affinity spreading brokers across nodes; single-node clusters still schedule. |
 | `broker.advertisedHostTemplate` | `""` | `sprintf`-style template used to build `--advertised-listeners` for external clients. Empty → skip the flag. |
 | `admin.replicaCount` | `1` | Bump + enable Redis for multi-pod SSE fan-out. |
 | `admin.ingress.enabled` | `false` | Stand up an Ingress for the admin UI. |

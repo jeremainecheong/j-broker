@@ -72,6 +72,13 @@ public class PrometheusMetricsBinder {
             m.diskUsableBytes.set(resp.getDiskUsableBytes());
             m.diskHeadroomLow.set(resp.getDiskHeadroomLow() ? 1 : 0);
         }
+        // A broker that failed the fan-out is simply absent from the
+        // snapshot, so its gauges above freeze at their last values.
+        // Flip scrape_ok per known broker so that absence is visible:
+        // 1 = answered this cycle, 0 = did not.
+        for (var e : brokerMeters.entrySet()) {
+            e.getValue().scrapeOk.set(snap.byBroker().containsKey(e.getKey()) ? 1 : 0);
+        }
         var isrRows = new ArrayList<MultiGauge.Row<?>>();
         var hwmRows = new ArrayList<MultiGauge.Row<?>>();
         var leoRows = new ArrayList<MultiGauge.Row<?>>();
@@ -173,6 +180,10 @@ public class PrometheusMetricsBinder {
                 .tag("broker_id", bid)
                 .description("1 while the broker refuses produces because usable space is below the watermark")
                 .register(registry);
+        Gauge.builder("jbroker_broker_scrape_ok", m.scrapeOk, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .description("1 if the broker answered the latest DescribeMetrics fan-out, 0 if it did not")
+                .register(registry);
         return m;
     }
 
@@ -200,5 +211,6 @@ public class PrometheusMetricsBinder {
         final AtomicLong raftLastLogIndex = new AtomicLong();
         final AtomicLong diskUsableBytes = new AtomicLong();
         final AtomicLong diskHeadroomLow = new AtomicLong();
+        final AtomicLong scrapeOk = new AtomicLong();
     }
 }

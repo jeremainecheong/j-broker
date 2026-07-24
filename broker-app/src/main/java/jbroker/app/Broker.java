@@ -922,6 +922,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.DiskHeadroom diskHeadroom;
     private final jbroker.broker.controller.MembershipController membershipController;
     private final jbroker.broker.controller.DecommissionController decommissionController;
+    private final jbroker.broker.controller.PreferredLeaderBalancer preferredBalancer;
     private final int selfBrokerId;
 
     private Broker(
@@ -945,6 +946,7 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.DiskHeadroom diskHeadroom,
             jbroker.broker.controller.MembershipController membershipController,
             jbroker.broker.controller.DecommissionController decommissionController,
+            jbroker.broker.controller.PreferredLeaderBalancer preferredBalancer,
             int selfBrokerId) {
         this.topicManager = tm;
         this.logManager = lm;
@@ -966,6 +968,7 @@ public final class Broker implements AutoCloseable {
         this.diskHeadroom = diskHeadroom;
         this.membershipController = membershipController;
         this.decommissionController = decommissionController;
+        this.preferredBalancer = preferredBalancer;
         this.selfBrokerId = selfBrokerId;
     }
 
@@ -1704,37 +1707,10 @@ public final class Broker implements AutoCloseable {
         balancerTicker.scheduleWithFixedDelay(
                 () -> {
                     try {
-                        for (var proposal : preferredBalancer.proposeRebalances(System.currentTimeMillis())) {
-                            var ps = topicManager
-                                    .partitionState(proposal.topic(), proposal.partition())
-                                    .orElse(null);
-                            if (ps == null) continue;
-                            var record = jbroker.proto.raft.PartitionChangeRecord.newBuilder()
-                                    .setTopic(proposal.topic())
-                                    .setPartition(proposal.partition())
-                                    .setLeader(proposal.newLeader())
-                                    .addAllIsr(ps.isr())
-                                    .addAllReplicas(ps.replicas())
-                                    .setLeaderEpoch(proposal.leaderEpoch())
-                                    .setPartitionEpoch(0)
-                                    // CAS guard: dropped at apply if the
-                                    // partition state moved since ps was
-                                    // read (stale balancer view).
-                                    .setPriorLeaderEpoch(ps.leaderEpoch())
-                                    .setPriorPartitionEpoch(ps.partitionEpoch())
-                                    .build();
-                            var payload = jbroker.proto.raft.MetadataRecord.newBuilder()
-                                    .setPartitionChange(record)
-                                    .build()
-                                    .toByteArray();
-                            raftDriver.propose(payload);
-                            log.info(
-                                    "preferred-leader: {}-{} → broker {} (epoch {})",
-                                    proposal.topic(),
-                                    proposal.partition(),
-                                    proposal.newLeader(),
-                                    proposal.leaderEpoch());
-                        }
+                        proposePreferredMoves(
+                                topicManager,
+                                raftDriver,
+                                preferredBalancer.proposeRebalances(System.currentTimeMillis()));
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                     } catch (Exception e) {
@@ -1797,6 +1773,7 @@ public final class Broker implements AutoCloseable {
                 diskHeadroom,
                 membershipController,
                 decommissionController,
+                preferredBalancer,
                 selfId);
     }
 
@@ -1902,6 +1879,18 @@ public final class Broker implements AutoCloseable {
     }
 
     /**
+     * Operator-requested preferred-leader rebalance: move every partition
+     * whose preferred replica (replicas[0]) is in sync but not leading back
+     * onto it, immediately — the periodic balancer's stability window is
+     * deliberately skipped, the operator has decided now is the moment.
+     * Returns the number of moves proposed (0 on a balanced cluster or when
+     * this broker is not the controller).
+     */
+    public int rebalanceLeadership() throws InterruptedException {
+        return proposePreferredMoves(topicManager, raftDriver, preferredBalancer.proposeRebalancesNow());
+    }
+
+    /**
      * Ask this controller to reassign a partition's replicas to {@code target}.
      * Publishes a reassignment record (target + the current set as the original,
      * so a cancel can revert) and blocks until it commits; the controller's tick
@@ -1913,6 +1902,53 @@ public final class Broker implements AutoCloseable {
     public boolean reassignPartition(String topic, int partition, java.util.List<Integer> target)
             throws InterruptedException {
         return proposeReassignment(raftDriver, waitingSm, topicManager, topic, partition, target);
+    }
+
+    /**
+     * Propose the leadership moves the preferred-leader balancer decided on
+     * — shared by the periodic balancer tick and the on-demand
+     * {@link #rebalanceLeadership()}. Each record carries the epochs it was
+     * derived from, so a proposal computed from a stale view is dropped at
+     * apply. Returns the number of moves proposed.
+     */
+    private static int proposePreferredMoves(
+            TopicManager topicManager,
+            RaftDriver raftDriver,
+            List<jbroker.broker.controller.PreferredLeaderBalancer.Proposal> proposals)
+            throws InterruptedException {
+        int proposed = 0;
+        for (var proposal : proposals) {
+            var ps = topicManager
+                    .partitionState(proposal.topic(), proposal.partition())
+                    .orElse(null);
+            if (ps == null) continue;
+            var record = jbroker.proto.raft.PartitionChangeRecord.newBuilder()
+                    .setTopic(proposal.topic())
+                    .setPartition(proposal.partition())
+                    .setLeader(proposal.newLeader())
+                    .addAllIsr(ps.isr())
+                    .addAllReplicas(ps.replicas())
+                    .setLeaderEpoch(proposal.leaderEpoch())
+                    .setPartitionEpoch(0)
+                    // CAS guard: dropped at apply if the partition state
+                    // moved since ps was read (stale balancer view).
+                    .setPriorLeaderEpoch(ps.leaderEpoch())
+                    .setPriorPartitionEpoch(ps.partitionEpoch())
+                    .build();
+            var payload = jbroker.proto.raft.MetadataRecord.newBuilder()
+                    .setPartitionChange(record)
+                    .build()
+                    .toByteArray();
+            raftDriver.propose(payload);
+            proposed++;
+            log.info(
+                    "preferred-leader: {}-{} → broker {} (epoch {})",
+                    proposal.topic(),
+                    proposal.partition(),
+                    proposal.newLeader(),
+                    proposal.leaderEpoch());
+        }
+        return proposed;
     }
 
     /**

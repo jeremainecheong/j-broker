@@ -148,6 +148,73 @@ class PreferredLeaderBalancerRebalanceIT {
         }
     }
 
+    @Test
+    void onDemandRebalanceMovesLeadershipWithoutWaitingOutTheWindow(
+            @TempDir Path d1, @TempDir Path d2, @TempDir Path d3) throws Exception {
+        var dirs = new Path[] {d1, d2, d3};
+        // A ten-minute stability window: the periodic balancer cannot fire
+        // within this test, so any convergence is the on-demand call's doing.
+        var cluster = TestBrokerCluster.start(3, 2, (i, voters, ports) -> new Broker.Config(
+                        new NodeId(i + 1), dirs[i], ports[i][0], ports[i][1], voters)
+                .withBalancerTiming(FAST_BALANCER_TICK_MS, 600_000L));
+        var allBrokers = new java.util.ArrayList<>(cluster.brokers());
+
+        try {
+            awaitSingleLeader(allBrokers);
+            awaitRegistryConvergence(allBrokers);
+            createTopicWithRetry(allBrokers, "ramp", 3, 3);
+            for (int p = 0; p < 3; p++) {
+                awaitPartitionLeaderOnAll(allBrokers, "ramp", p);
+            }
+
+            var raftLeader = leaderOf(allBrokers);
+            for (int p = 0; p < 3; p++) {
+                var state = raftLeader.topics().partitionState("ramp", p).orElseThrow();
+                raftLeader.proposePartitionChangeForTest(
+                        "ramp",
+                        p,
+                        /*leader*/ 2,
+                        /*isr*/ List.of(1, 2, 3),
+                        /*replicas*/ List.of(1, 2, 3),
+                        state.leaderEpoch() + 1,
+                        state.partitionEpoch() + 1,
+                        5_000);
+            }
+
+            int moved = raftLeader.rebalanceLeadership();
+            assertThat(moved).as("one move proposed per imbalanced partition").isEqualTo(3);
+
+            long deadline = System.currentTimeMillis() + 10_000;
+            boolean converged = false;
+            while (System.currentTimeMillis() < deadline) {
+                boolean all = true;
+                for (int p = 0; p < 3; p++) {
+                    var s = raftLeader.topics().partitionState("ramp", p).orElse(null);
+                    if (s == null || s.leader() != 1) {
+                        all = false;
+                        break;
+                    }
+                }
+                if (all) {
+                    converged = true;
+                    break;
+                }
+                Thread.sleep(50);
+            }
+            assertThat(converged)
+                    .as("on-demand rebalance should converge leadership onto broker 1 without the window")
+                    .isTrue();
+        } finally {
+            for (var b : allBrokers) {
+                try {
+                    b.close();
+                } catch (Exception ignored) {
+                    // best-effort
+                }
+            }
+        }
+    }
+
     private static Broker leaderOf(List<Broker> brokers) {
         return brokers.stream().filter(b -> b.role() == Role.LEADER).findFirst().orElseThrow();
     }

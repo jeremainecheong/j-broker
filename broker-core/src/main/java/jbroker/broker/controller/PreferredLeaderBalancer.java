@@ -42,10 +42,25 @@ public final class PreferredLeaderBalancer {
 
     /** Compute proposals for the current snapshot. Does not mutate state. */
     public List<Proposal> proposeRebalances(long nowMillis) {
-        var proposals = new ArrayList<Proposal>();
-        if (!isActiveController.getAsBoolean()) return proposals;
+        if (!isActiveController.getAsBoolean()) return List.of();
         long since = nowMillis - lastLeaderChangeMillis.getAsLong();
-        if (since < stabilityWindowMillis) return proposals;
+        if (since < stabilityWindowMillis) return List.of();
+        return scan();
+    }
+
+    /**
+     * Operator-requested rebalance: same scan, but without the stability
+     * window — the operator has decided now is the moment (say, right after
+     * a rolling restart finished), so waiting out the churn guard would
+     * only delay what was explicitly asked for. Still controller-only.
+     */
+    public List<Proposal> proposeRebalancesNow() {
+        if (!isActiveController.getAsBoolean()) return List.of();
+        return scan();
+    }
+
+    private List<Proposal> scan() {
+        var proposals = new ArrayList<Proposal>();
         for (var pa : topicManager.allPartitionAssignments()) {
             PartitionState s = pa.state();
             if (s.replicas().isEmpty()) continue;

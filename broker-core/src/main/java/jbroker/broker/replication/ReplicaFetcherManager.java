@@ -20,8 +20,12 @@ import org.slf4j.LoggerFactory;
  *
  * <p>For every partition where {@code self} appears in {@code replicas} but
  * isn't the {@code leader} AND the leader's address is known, a fetcher is
- * active. Otherwise, no fetcher is active. {@link #reconcile()} is safe to
- * call on every metadata event — the "no change" case is a cheap no-op.
+ * active and targets that leader. A fetcher whose target no longer matches
+ * the assignment's leader (or the leader's registered address) is stopped
+ * and replaced, so a follower surviving a leader change re-points instead
+ * of pumping the old leader forever. Otherwise, no fetcher is active.
+ * {@link #reconcile()} is safe to call on every metadata event — the
+ * "no change" case is a cheap no-op.
  *
  * <p>Fetcher construction is delegated to a {@link FetcherFactory} so tests
  * can substitute lightweight stubs for the real {@link ReplicaPeerClient} +
@@ -53,7 +57,10 @@ public final class ReplicaFetcherManager
 
     private record Key(String topic, int partition) {}
 
-    private final ConcurrentHashMap<Key, FetcherHandle> active = new ConcurrentHashMap<>();
+    /** A running fetcher plus the leader it targets, so reconcile can detect staleness. */
+    private record ActiveFetcher(int leaderId, BrokerRegistry.HostPort leaderAddr, FetcherHandle handle) {}
+
+    private final ConcurrentHashMap<Key, ActiveFetcher> active = new ConcurrentHashMap<>();
     private final ExecutorService reconcileExecutor;
     private final AtomicBoolean pending = new AtomicBoolean();
 
@@ -92,10 +99,37 @@ public final class ReplicaFetcherManager
             }
             var key = new Key(assignment.topic(), assignment.partition());
             desired.add(key);
-            active.computeIfAbsent(key, k -> {
-                log.info("starting replica fetcher for {}-{} -> broker {}", k.topic(), k.partition(), state.leader());
-                return factory.start(k.topic(), k.partition(), state.leader(), addr.get());
-            });
+            var current = active.get(key);
+            if (current != null
+                    && (current.leaderId() != state.leader()
+                            || !current.leaderAddr().equals(addr.get()))) {
+                // Same partition, different leader (or a re-registered
+                // leader address): the running fetcher pumps a stale
+                // target and would never catch up. Stop it and start a
+                // fresh one against the current leader.
+                log.info(
+                        "re-pointing replica fetcher for {}-{}: broker {} -> broker {}",
+                        key.topic(),
+                        key.partition(),
+                        current.leaderId(),
+                        state.leader());
+                current.handle().stop();
+                active.remove(key);
+                current = null;
+            }
+            if (current == null) {
+                log.info(
+                        "starting replica fetcher for {}-{} -> broker {}",
+                        key.topic(),
+                        key.partition(),
+                        state.leader());
+                active.put(
+                        key,
+                        new ActiveFetcher(
+                                state.leader(),
+                                addr.get(),
+                                factory.start(key.topic(), key.partition(), state.leader(), addr.get())));
+            }
         }
         active.entrySet().removeIf(e -> {
             if (desired.contains(e.getKey())) return false;
@@ -103,7 +137,7 @@ public final class ReplicaFetcherManager
                     "stopping replica fetcher for {}-{}",
                     e.getKey().topic(),
                     e.getKey().partition());
-            e.getValue().stop();
+            e.getValue().handle().stop();
             return true;
         });
     }
@@ -165,7 +199,7 @@ public final class ReplicaFetcherManager
             Thread.currentThread().interrupt();
         }
         synchronized (this) {
-            active.values().forEach(FetcherHandle::stop);
+            active.values().forEach(a -> a.handle().stop());
             active.clear();
         }
     }

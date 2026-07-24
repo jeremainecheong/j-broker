@@ -198,6 +198,118 @@ class ReplicaFetcherManagerTest {
         throw new AssertionError(msg);
     }
 
+    /** One factory.start invocation: where it pointed and whether its handle was stopped. */
+    private static final class StartedFetcher {
+        final int leaderBrokerId;
+        final BrokerRegistry.HostPort leaderAddr;
+        boolean stopped = false;
+
+        StartedFetcher(int leaderBrokerId, BrokerRegistry.HostPort leaderAddr) {
+            this.leaderBrokerId = leaderBrokerId;
+            this.leaderAddr = leaderAddr;
+        }
+    }
+
+    private ReplicaFetcherManager.FetcherFactory recordingFactory(List<StartedFetcher> starts) {
+        return (topic, partition, leaderBrokerId, leaderAddr) -> {
+            var started = new StartedFetcher(leaderBrokerId, leaderAddr);
+            starts.add(started);
+            return () -> started.stopped = true;
+        };
+    }
+
+    @Test
+    void reconcileRepointsFetcherWhenLeaderChanges(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, /*leader*/ 1, List.of(1, 2, 3), List.of(1, 2, 3), 5, 0);
+        var reg = new BrokerRegistry();
+        reg.onBrokerRegistration(1, "h1", 9001);
+        reg.onBrokerRegistration(3, "h3", 9003);
+        try (var lmgr = lm(dir)) {
+            var starts = new java.util.concurrent.CopyOnWriteArrayList<StartedFetcher>();
+            var mgr = new ReplicaFetcherManager(/*selfId*/ 2, tm, reg, lmgr, recordingFactory(starts));
+
+            mgr.reconcile();
+            assertThat(starts).hasSize(1);
+            assertThat(starts.get(0).leaderBrokerId).isEqualTo(1);
+
+            // Leader fails over from broker 1 to broker 3; self stays a
+            // follower under the same (topic, partition) key.
+            tm.onPartitionChange("orders", 0, /*new leader*/ 3, List.of(3, 2), List.of(1, 2, 3), 6, 0);
+            mgr.reconcile();
+
+            assertThat(starts).hasSize(2);
+            assertThat(starts.get(0).stopped)
+                    .as("fetcher against the old leader is stopped")
+                    .isTrue();
+            assertThat(starts.get(1).leaderBrokerId)
+                    .as("replacement fetcher targets the new leader")
+                    .isEqualTo(3);
+            assertThat(starts.get(1).stopped).isFalse();
+
+            // No-change reconcile stays a no-op for the re-pointed fetcher.
+            mgr.reconcile();
+            assertThat(starts).hasSize(2);
+            assertThat(starts.get(1).stopped).isFalse();
+        }
+    }
+
+    @Test
+    void reconcileRepointsFetcherWhenLeaderAddressChanges(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, 1, List.of(1, 2, 3), List.of(1, 2, 3), 5, 0);
+        var reg = new BrokerRegistry();
+        reg.onBrokerRegistration(1, "h1", 9001);
+        try (var lmgr = lm(dir)) {
+            var starts = new java.util.concurrent.CopyOnWriteArrayList<StartedFetcher>();
+            var mgr = new ReplicaFetcherManager(2, tm, reg, lmgr, recordingFactory(starts));
+
+            mgr.reconcile();
+            assertThat(starts).hasSize(1);
+
+            // Same leader id re-registers at a fresh address (restart with
+            // a new port); the old channel target is dead.
+            reg.onBrokerRegistration(1, "h1", 9101);
+            mgr.reconcile();
+
+            assertThat(starts).hasSize(2);
+            assertThat(starts.get(0).stopped).isTrue();
+            assertThat(starts.get(1).leaderAddr).isEqualTo(new BrokerRegistry.HostPort("h1", 9101));
+        }
+    }
+
+    @Test
+    void reconcileStopsStaleFetcherUntilNewLeaderAddressRegisters(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, 1, List.of(1, 2, 3), List.of(1, 2, 3), 5, 0);
+        var reg = new BrokerRegistry();
+        reg.onBrokerRegistration(1, "h1", 9001);
+        try (var lmgr = lm(dir)) {
+            var starts = new java.util.concurrent.CopyOnWriteArrayList<StartedFetcher>();
+            var mgr = new ReplicaFetcherManager(2, tm, reg, lmgr, recordingFactory(starts));
+
+            mgr.reconcile();
+            assertThat(starts).hasSize(1);
+
+            // Leader moves to broker 3 whose address is not yet known:
+            // the stale fetcher must stop, and nothing starts until the
+            // registration arrives.
+            tm.onPartitionChange("orders", 0, 3, List.of(3, 2), List.of(1, 2, 3), 6, 0);
+            mgr.reconcile();
+            assertThat(starts).hasSize(1);
+            assertThat(starts.get(0).stopped).isTrue();
+
+            reg.onBrokerRegistration(3, "h3", 9003);
+            mgr.reconcile();
+            assertThat(starts).hasSize(2);
+            assertThat(starts.get(1).leaderBrokerId).isEqualTo(3);
+            assertThat(starts.get(1).stopped).isFalse();
+        }
+    }
+
     @Test
     void reconcileDoesNotSpawnWhenSelfIsLeader(@TempDir Path dir) throws Exception {
         var tm = new TopicManager();

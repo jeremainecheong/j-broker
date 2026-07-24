@@ -91,6 +91,46 @@ spec:
               quorum keeps re-electing. Look for crash-looping broker pods, long GC or node
               pressure pauses, and packet loss on the Raft port. Metadata operations
               (topic create, ISR changes) stall while no stable leader holds the term.
+
+        # The admin scraper flips this to 0 for a broker whose
+        # DescribeMetrics fan-out call failed. Distinct from
+        # JBrokerAdminMetricsDown below: Prometheus can still reach the
+        # admin, the admin cannot reach the broker. Every other
+        # per-broker gauge freezes at its last reported value while
+        # this is 0.
+        - alert: JBrokerBrokerUnreachable
+          expr: jbroker_broker_scrape_ok{namespace="{{ $ns }}"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Broker {{ "{{ $labels.broker_id }}" }} stopped answering the metrics fan-out'
+            description: >-
+              The admin app has gotten no DescribeMetrics response from broker
+              {{ "{{ $labels.broker_id }}" }} for 5 minutes — the pod is down, crash-looping,
+              or unreachable on its gRPC port. Its other per-broker gauges are frozen at
+              their last reported values until it answers again, so treat them as stale
+              while this fires.
+
+        # The broker probes its own data volume and, while usable space
+        # sits below its configured headroom watermark (1 GiB default),
+        # refuses client produces with retriable STORAGE_FULL — fetch,
+        # replication, and offset commits keep serving. Keying on the
+        # broker's own flag spares the chart a second threshold that
+        # could drift from the broker config.
+        - alert: JBrokerDiskHeadroomLow
+          expr: jbroker_disk_headroom_low{namespace="{{ $ns }}"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Broker {{ "{{ $labels.broker_id }}" }} is refusing produces — data volume low'
+            description: >-
+              Broker {{ "{{ $labels.broker_id }}" }} has reported usable space below its disk
+              headroom watermark for 5 minutes and is refusing client produces with
+              STORAGE_FULL. Free space — tighten retention, delete topics, or grow the
+              volume — and the broker recovers on its own once usable space clears the
+              watermark. jbroker_disk_usable_bytes has the remaining bytes.
 {{- if .Values.metrics.serviceMonitor.enabled }}
 
         # Only meaningful with the chart's ServiceMonitor: the job label

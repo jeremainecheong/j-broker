@@ -56,6 +56,14 @@ public final class ErrorCodes {
     /** Per-principal quota exceeded on produce or fetch path. Retry after {@code throttleMillis}. */
     public static final int QUOTA_VIOLATED = 86;
 
+    // Cluster lifecycle.
+    /**
+     * A membership change or reassignment is already in flight for the
+     * target — the controller runs one at a time. Retriable: try again
+     * once the in-flight operation completes.
+     */
+    public static final int REASSIGNMENT_IN_PROGRESS = 87;
+
     // Admin surface placeholders.
     /** Skeleton placeholder: RPC is wired but the body has not yet been implemented. */
     public static final int UNIMPLEMENTED = 99;

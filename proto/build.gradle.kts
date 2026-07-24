@@ -2,8 +2,11 @@ import com.google.protobuf.gradle.id
 
 plugins {
     id("jbroker.java-conventions")
+    id("jbroker.publishing-conventions")
     id("com.google.protobuf") version "0.9.4"
 }
+
+description = "Protobuf + gRPC wire contract for j-broker (generated stubs)"
 
 dependencies {
     api("com.google.protobuf:protobuf-java:3.25.5")

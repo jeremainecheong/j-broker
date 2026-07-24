@@ -1,6 +1,9 @@
 plugins {
     id("jbroker.java-conventions")
+    id("jbroker.publishing-conventions")
 }
+
+description = "Segmented log storage engine for j-broker"
 
 dependencies {
     implementation("com.github.luben:zstd-jni:1.5.7-4")

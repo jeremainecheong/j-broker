@@ -1,6 +1,9 @@
 plugins {
     id("jbroker.java-conventions")
+    id("jbroker.publishing-conventions")
 }
+
+description = "gRPC transport + TLS wiring for j-broker Raft peers"
 
 dependencies {
     api(project(":raft-core"))

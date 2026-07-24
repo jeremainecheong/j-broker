@@ -7,7 +7,10 @@ import org.gradle.process.ExecOperations
 
 plugins {
     id("jbroker.java-conventions")
+    id("jbroker.publishing-conventions")
 }
+
+description = "j-broker core: broker runtime plus the Java client (jbroker.broker.client)"
 
 dependencies {
     api(project(":proto"))

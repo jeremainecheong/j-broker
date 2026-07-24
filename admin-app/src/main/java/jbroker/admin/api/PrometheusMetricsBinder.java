@@ -69,6 +69,15 @@ public class PrometheusMetricsBinder {
             m.raftCommitIndex.set(resp.getRaftCommitIndex());
             m.raftLastApplied.set(resp.getRaftLastApplied());
             m.raftLastLogIndex.set(resp.getRaftLastLogIndex());
+            m.diskUsableBytes.set(resp.getDiskUsableBytes());
+            m.diskHeadroomLow.set(resp.getDiskHeadroomLow() ? 1 : 0);
+        }
+        // A broker that failed the fan-out is simply absent from the
+        // snapshot, so its gauges above freeze at their last values.
+        // Flip scrape_ok per known broker so that absence is visible:
+        // 1 = answered this cycle, 0 = did not.
+        for (var e : brokerMeters.entrySet()) {
+            e.getValue().scrapeOk.set(snap.byBroker().containsKey(e.getKey()) ? 1 : 0);
         }
         var isrRows = new ArrayList<MultiGauge.Row<?>>();
         var hwmRows = new ArrayList<MultiGauge.Row<?>>();
@@ -163,6 +172,18 @@ public class PrometheusMetricsBinder {
         Gauge.builder("jbroker_raft_last_log_index", m.raftLastLogIndex, AtomicLong::doubleValue)
                 .tag("broker_id", bid)
                 .register(registry);
+        Gauge.builder("jbroker_disk_usable_bytes", m.diskUsableBytes, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .description("Usable bytes on the broker's data volume at its last headroom probe")
+                .register(registry);
+        Gauge.builder("jbroker_disk_headroom_low", m.diskHeadroomLow, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .description("1 while the broker refuses produces because usable space is below the watermark")
+                .register(registry);
+        Gauge.builder("jbroker_broker_scrape_ok", m.scrapeOk, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .description("1 if the broker answered the latest DescribeMetrics fan-out, 0 if it did not")
+                .register(registry);
         return m;
     }
 
@@ -188,5 +209,8 @@ public class PrometheusMetricsBinder {
         final AtomicLong raftCommitIndex = new AtomicLong();
         final AtomicLong raftLastApplied = new AtomicLong();
         final AtomicLong raftLastLogIndex = new AtomicLong();
+        final AtomicLong diskUsableBytes = new AtomicLong();
+        final AtomicLong diskHeadroomLow = new AtomicLong();
+        final AtomicLong scrapeOk = new AtomicLong();
     }
 }

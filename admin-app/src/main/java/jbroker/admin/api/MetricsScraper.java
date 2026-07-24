@@ -24,9 +24,10 @@ import org.springframework.stereotype.Component;
  * brokers and exposes the latest snapshot to {@link PrometheusMetricsBinder}.
  *
  * <p>Each cycle pulls every reachable broker; unreachable brokers drop
- * out of the snapshot for that cycle, which makes their Prometheus
- * gauges "go stale" — Grafana can show this as a data gap, which is the
- * desired behaviour for alerting.
+ * out of the snapshot for that cycle. Their per-broker Prometheus
+ * gauges freeze at their last values, so the binder derives
+ * {@code jbroker_broker_scrape_ok} from the absence and alerts key on
+ * that rather than on the frozen values.
  */
 @Component
 public class MetricsScraper {

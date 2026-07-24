@@ -1,0 +1,11 @@
+# Config for `buf breaking` (see the proto-compat job in ci.yml).
+# WIRE_JSON guards what a mixed-version cluster actually depends on:
+# field numbers, wire types, cardinality, and JSON names. Renaming a
+# field or moving a message between files is fine; deleting a field
+# without reserving its number, or changing its type, is not.
+version: v2
+modules:
+  - path: proto/src/main/proto
+breaking:
+  use:
+    - WIRE_JSON

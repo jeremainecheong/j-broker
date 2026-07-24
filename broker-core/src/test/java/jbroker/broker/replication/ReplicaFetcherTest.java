@@ -35,6 +35,23 @@ class ReplicaFetcherTest {
     }
 
     @Test
+    void pollDefaultsToTheFullByteCeilingAndHonorsAnExplicitOne(@TempDir Path dir) throws Exception {
+        try (var lm = lm(dir)) {
+            var peer = new StubPeer();
+            peer.enqueue(ByteString.EMPTY, 0L, 0);
+            peer.enqueue(ByteString.EMPTY, 0L, 0);
+            var fetcher = new ReplicaFetcher(lm, "orders", 0, 2, peer);
+
+            fetcher.pollOnce(0);
+            assertThat(peer.lastRequest.getMaxBytes()).isEqualTo(ReplicaFetcher.DEFAULT_MAX_FETCH_BYTES);
+
+            // A throttle passes a smaller ceiling for an adding replica.
+            fetcher.pollOnce(0, 64 * 1024);
+            assertThat(peer.lastRequest.getMaxBytes()).isEqualTo(64 * 1024);
+        }
+    }
+
+    @Test
     void pollIsNoOpWhenLeaderReturnsEmpty(@TempDir Path dir) throws Exception {
         try (var lm = lm(dir)) {
             var peer = new StubPeer();
@@ -261,8 +278,11 @@ class ReplicaFetcherTest {
 
         private final java.util.Deque<Long> offsetResponses = new java.util.ArrayDeque<>();
 
+        ReplicaFetchRequest lastRequest;
+
         @Override
         public ReplicaFetchResponse fetch(ReplicaFetchRequest req) {
+            lastRequest = req;
             var resp = queue.poll();
             if (resp == null) throw new IllegalStateException("no canned response");
             return resp;

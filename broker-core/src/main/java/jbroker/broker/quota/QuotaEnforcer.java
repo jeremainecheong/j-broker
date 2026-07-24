@@ -32,13 +32,35 @@ public interface QuotaEnforcer {
                 ? new RedisQuotaEnforcer(redisUrl, produceBytesPerSec, fetchBytesPerSec)
                 : new InMemoryQuotaEnforcer(produceBytesPerSec, fetchBytesPerSec);
         if (produceOn && fetchOn) return delegate;
-        // One op has no quota configured: it must stay unlimited, not
-        // inherit the other op's rate, so its checks never reach the
-        // delegate (whose constructors clamp a zero rate up to 1 B/s).
-        return (principal, op, bytes) -> {
+        return new SingleOpGate(delegate, produceOn, fetchOn);
+    }
+
+    /**
+     * Gate for the case where only one op has a configured rate: the
+     * disabled op must stay unlimited, not inherit the other op's rate,
+     * so its checks never reach the delegate (whose constructors clamp a
+     * zero rate up to 1 B/s). AutoCloseable so a Redis-backed delegate's
+     * socket is not stranded behind the gate at broker shutdown.
+     */
+    record SingleOpGate(QuotaEnforcer delegate, boolean produceOn, boolean fetchOn)
+            implements QuotaEnforcer, AutoCloseable {
+
+        @Override
+        public Decision check(String principal, Op op, long bytes) {
             boolean enabled = op == Op.PRODUCE ? produceOn : fetchOn;
             return enabled ? delegate.check(principal, op, bytes) : Decision.allowed();
-        };
+        }
+
+        @Override
+        public void close() {
+            if (delegate instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception ignored) {
+                    // best-effort socket release during shutdown
+                }
+            }
+        }
     }
 
     enum Op {

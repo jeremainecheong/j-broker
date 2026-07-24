@@ -2460,7 +2460,15 @@ public final class Broker implements AutoCloseable {
         fencerTicker.shutdownNow();
         balancerTicker.shutdownNow();
         diskHeadroom.close();
-        if (quotaEnforcer instanceof jbroker.broker.quota.RedisQuotaEnforcer redisQuota) redisQuota.close();
+        // AutoCloseable, not the Redis type: a single-op quota config wraps
+        // the Redis enforcer in a gate, and the socket must close either way.
+        if (quotaEnforcer instanceof AutoCloseable closeableQuota) {
+            try {
+                closeableQuota.close();
+            } catch (Exception ignored) {
+                // best-effort socket release during shutdown
+            }
+        }
         brokerServer.shutdownNow();
         raftDriver.close();
         heartbeatSender.close();
@@ -2491,7 +2499,15 @@ public final class Broker implements AutoCloseable {
         }
         if (chaosHttp != null) chaosHttp.close();
         diskHeadroom.close();
-        if (quotaEnforcer instanceof jbroker.broker.quota.RedisQuotaEnforcer redisQuota) redisQuota.close();
+        // AutoCloseable, not the Redis type: a single-op quota config wraps
+        // the Redis enforcer in a gate, and the socket must close either way.
+        if (quotaEnforcer instanceof AutoCloseable closeableQuota) {
+            try {
+                closeableQuota.close();
+            } catch (Exception ignored) {
+                // best-effort socket release during shutdown
+            }
+        }
         // Stop heartbeat sender before its peer channels race against
         // the peer brokers shutting down their gRPC servers.
         heartbeatSender.close();

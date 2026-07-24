@@ -42,6 +42,32 @@ final class QuotaEnforcerConfiguredTest {
     }
 
     @Test
+    void singleOpSelectionStaysCloseable() {
+        // A one-op config may wrap a Redis delegate whose socket the
+        // broker releases via AutoCloseable at shutdown.
+        assertThat(QuotaEnforcer.configured(100, 0, "")).isInstanceOf(AutoCloseable.class);
+        assertThat(QuotaEnforcer.configured(0, 100, "")).isInstanceOf(AutoCloseable.class);
+    }
+
+    @Test
+    void singleOpGateClosesItsDelegate() {
+        var closed = new java.util.concurrent.atomic.AtomicBoolean();
+        record ClosingDelegate(java.util.concurrent.atomic.AtomicBoolean flag) implements QuotaEnforcer, AutoCloseable {
+            @Override
+            public Decision check(String principal, Op op, long bytes) {
+                return Decision.allowed();
+            }
+
+            @Override
+            public void close() {
+                flag.set(true);
+            }
+        }
+        new QuotaEnforcer.SingleOpGate(new ClosingDelegate(closed), true, false).close();
+        assertThat(closed).isTrue();
+    }
+
+    @Test
     void disabledProduceRateLeavesProduceUnlimited() {
         var enforcer = QuotaEnforcer.configured(0, 100, "");
         for (int i = 0; i < 5; i++) {

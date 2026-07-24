@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
  * {@code redis://host:port/db} (db ignored — we use SELECT 0 implicitly).
  * Any other scheme throws on connect and we fail-open.
  */
-public final class RedisQuotaEnforcer implements QuotaEnforcer {
+public final class RedisQuotaEnforcer implements QuotaEnforcer, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(RedisQuotaEnforcer.class);
     private static final int CONNECT_TIMEOUT_MS = 500;
@@ -214,6 +214,7 @@ public final class RedisQuotaEnforcer implements QuotaEnforcer {
     }
 
     /** For tests and shutdown hooks. */
+    @Override
     public void close() {
         connLock.lock();
         try {

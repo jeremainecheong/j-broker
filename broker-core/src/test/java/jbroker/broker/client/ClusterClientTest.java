@@ -735,4 +735,105 @@ class ClusterClientTest {
         assertThat(h.world.calls).contains("3:heartbeat");
     }
 
+    // ---- protocol-version handshake ----
+
+    @Test
+    void handshakeRunsOncePerEndpointBeforeAnyOtherRpc() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 2);
+        var client = h.client();
+
+        produceOne(client, "t");
+        produceOne(client, "t");
+
+        var firstOpByBroker = new LinkedHashMap<String, String>();
+        var handshakesByBroker = new HashMap<String, Integer>();
+        for (var call : h.world.calls) {
+            var id = call.substring(0, call.indexOf(':'));
+            var op = call.substring(call.indexOf(':') + 1);
+            firstOpByBroker.putIfAbsent(id, op);
+            if (op.equals("apiVersions")) handshakesByBroker.merge(id, 1, Integer::sum);
+        }
+        assertThat(firstOpByBroker.values())
+                .as("every channel handshakes before its first real RPC")
+                .allMatch("apiVersions"::equals);
+        assertThat(handshakesByBroker.values())
+                .as("the handshake runs once per endpoint, not per call")
+                .allMatch(n -> n == 1);
+    }
+
+    @Test
+    void disjointBrokerRangeFailsFastWithBothRangesInTheError() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        h.world.script(
+                1,
+                "apiVersions",
+                ApiVersionsResponse.newBuilder()
+                        .setError(ErrorCode.OK)
+                        .setMinProtocolVersion(ProtocolVersion.CURRENT + 1)
+                        .setMaxProtocolVersion(ProtocolVersion.CURRENT + 3)
+                        .build());
+        var client = h.client();
+
+        assertThatThrownBy(() -> produceOne(client, "t"))
+                .isInstanceOfSatisfying(UnsupportedBrokerException.class, ex -> {
+                    assertThat(ex.endpoint()).isEqualTo(B1.toString());
+                    assertThat(ex.brokerMin()).isEqualTo(ProtocolVersion.CURRENT + 1);
+                    assertThat(ex.brokerMax()).isEqualTo(ProtocolVersion.CURRENT + 3);
+                    assertThat(ex.clientMin()).isEqualTo(ProtocolVersion.MIN_SUPPORTED);
+                    assertThat(ex.clientMax()).isEqualTo(ProtocolVersion.CURRENT);
+                })
+                .hasMessageContaining("[" + (ProtocolVersion.CURRENT + 1) + ", " + (ProtocolVersion.CURRENT + 3) + "]")
+                .hasMessageContaining("[" + ProtocolVersion.MIN_SUPPORTED + ", " + ProtocolVersion.CURRENT + "]")
+                .hasMessageContaining(B1.toString());
+        assertThat(h.ticker.sleepsMs).as("version mismatch never retries").isEmpty();
+        assertThat(h.transports.get(B1).closed)
+                .as("failed handshake closes the channel")
+                .isTrue();
+
+        // Nothing was cached for the endpoint: once the broker answers a
+        // compatible range (script exhausted, default answer), the same
+        // endpoint works without a client restart.
+        assertThat(produceOne(client, "t")).isEqualTo(0L);
+    }
+
+    @Test
+    void brokerWithoutApiVersionsRpcIsRejectedWithClearError() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        h.world.script(
+                1,
+                "apiVersions",
+                io.grpc.Status.UNIMPLEMENTED
+                        .withDescription("Method not found: jbroker.broker.Metadata/ApiVersions")
+                        .asRuntimeException());
+        var client = h.client();
+
+        assertThatThrownBy(() -> produceOne(client, "t"))
+                .isInstanceOf(UnsupportedBrokerException.class)
+                .hasMessageContaining("predates protocol version discovery")
+                .hasMessageContaining(B1.toString());
+        assertThat(h.ticker.sleepsMs).as("a missing handshake never retries").isEmpty();
+    }
+
+    @Test
+    void versionIncompatibleCandidateFailsTheCallInsteadOfRotating() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 2);
+        h.world.script(
+                1,
+                "apiVersions",
+                ApiVersionsResponse.newBuilder()
+                        .setError(ErrorCode.OK)
+                        .setMinProtocolVersion(ProtocolVersion.CURRENT + 1)
+                        .setMaxProtocolVersion(ProtocolVersion.CURRENT + 1)
+                        .build());
+        var client = h.client(List.of(B1, B2), config(30_000));
+
+        assertThatThrownBy(() -> produceOne(client, "t")).isInstanceOf(UnsupportedBrokerException.class);
+        // The compatible candidate B2 was never consulted: incompatibility
+        // surfaces to the caller instead of being masked by rotation.
+        assertThat(h.world.calls).noneMatch(c -> c.startsWith("2:"));
+    }
 }

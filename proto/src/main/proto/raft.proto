@@ -263,6 +263,22 @@ message RemoveAclRecord {
   string operation = 5;
 }
 
+// Sets or clears a pending partition reassignment. The controller's
+// reassignment driver expands the partition's replica set to include the
+// target, waits for the new replicas to catch up and join the ISR, then
+// contracts the set to the target (moving leadership into it if the current
+// leader is leaving). target_replicas is the desired final set;
+// original_replicas is the set that was current when the reassignment began,
+// so a cancel can revert to it. An empty target_replicas clears any pending
+// reassignment — the driver emits it to mark completion, and apply removes
+// the entry (idempotent under replay).
+message PartitionReassignmentRecord {
+  string topic = 1;
+  int32 partition = 2;
+  repeated int32 target_replicas = 3;
+  repeated int32 original_replicas = 4;
+}
+
 // Tagged union of metadata records; the Raft state machine tags payloads
 // with this wrapper so it can dispatch.
 message MetadataRecord {
@@ -277,5 +293,6 @@ message MetadataRecord {
     UpdateTopicConfigRecord update_topic_config = 8;
     AclRecord acl = 9;
     RemoveAclRecord remove_acl = 10;
+    PartitionReassignmentRecord partition_reassignment = 11;
   }
 }

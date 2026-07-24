@@ -140,6 +140,29 @@ tls:
   # admin-app reuses the same secret as the brokers.
   adminClientSecretName: ""
 
+# Opt-in ingress lockdown. Off by default because enforcement needs a
+# CNI that implements NetworkPolicy (Calico, Cilium, ...) — Kind's
+# stock kindnet accepts the objects but enforces nothing. Enabled:
+#   broker pods — Raft + gRPC from broker peers; gRPC (+ chaos port
+#                 when bound) from the admin app; gRPC from clientFrom
+#                 peers (empty list keeps the client port open to any
+#                 peer — the Raft port stays broker-only regardless)
+#   admin pods  — UI/API port from adminFrom peers (empty → any peer,
+#                 e.g. an ingress controller in another namespace)
+#   redis pod   — 6379 from the admin app only (when redis.enabled)
+# All other inbound traffic to those pods is denied. Egress is left
+# unrestricted.
+networkPolicy:
+  enabled: false
+  # NetworkPolicyPeer list for the broker gRPC client port, e.g.:
+  #   clientFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: my-producers
+  clientFrom: []
+  # NetworkPolicyPeer list for the admin UI/API port.
+  adminFrom: []
+
 # Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
 # Off by default — the admin-app and broker both degrade gracefully
 # (in-memory quota + single-pod SSE) without it.

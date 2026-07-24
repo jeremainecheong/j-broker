@@ -89,6 +89,7 @@ Highlights:
 | `tls.enabled` | `false` | Turn on mTLS on every gRPC hop. |
 | `tls.secretName` | `jbroker-tls` | Kubernetes Secret carrying `ca.crt` + `tls.crt` + `tls.key` PEM files. |
 | `redis.enabled` | `false` | Bundled Redis Deployment for quota + SSE fan-out. |
+| `networkPolicy.enabled` | `false` | Ingress lockdown: Raft stays broker-only, chaos/redis ports admin-only, client + UI ports scoped by `clientFrom`/`adminFrom`. Needs a NetworkPolicy-enforcing CNI. |
 
 ## Enabling mTLS
 

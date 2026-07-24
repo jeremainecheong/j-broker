@@ -87,6 +87,19 @@ public final class ReplicaFetcher {
      * returned. Called repeatedly by a driver thread (or by tests).
      */
     public PollResult pollOnce(int expectedLeaderEpoch) throws IOException {
+        return pollOnce(expectedLeaderEpoch, DEFAULT_MAX_FETCH_BYTES);
+    }
+
+    /** Default per-fetch byte ceiling for an unthrottled follower. */
+    public static final int DEFAULT_MAX_FETCH_BYTES = 1024 * 1024;
+
+    /**
+     * As {@link #pollOnce(int)} but with an explicit per-fetch byte ceiling.
+     * A reassignment throttle passes a smaller ceiling for an "adding" replica
+     * so its catch-up fetch cannot saturate the link; the leader returns at
+     * most {@code maxBytes} of records per fetch.
+     */
+    public PollResult pollOnce(int expectedLeaderEpoch, int maxBytes) throws IOException {
         var local = logManager.logFor(topic, partition);
         long fetchOffset = local.nextOffset();
         var reqBuilder = ReplicaFetchRequest.newBuilder()
@@ -95,7 +108,7 @@ public final class ReplicaFetcher {
                 .setFollowerBrokerId(selfBrokerId)
                 .setLeaderEpoch(expectedLeaderEpoch)
                 .setFetchOffset(fetchOffset)
-                .setMaxBytes(1024 * 1024);
+                .setMaxBytes(maxBytes);
         // Advertise the epoch owning our last local batch (log LINEAGE, not
         // metadata) so the leader can fence a diverged tail before we glue
         // its records on top of one. Absent for empty logs and logs

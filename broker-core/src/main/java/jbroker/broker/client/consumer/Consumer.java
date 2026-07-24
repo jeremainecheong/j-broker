@@ -13,6 +13,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import jbroker.proto.broker.CommitOffsetsRequest;
 import jbroker.proto.broker.ConsumerGroupHeartbeatRequest;
@@ -49,8 +52,9 @@ import jbroker.tls.TlsContexts;
  *       {@link RebalanceListener#onPartitionsRevoked} /
  *       {@link RebalanceListener#onPartitionsAssigned} when the
  *       coordinator hands back a changed assignment.</li>
- *   <li>{@link #commitSync()} to persist the current offsets, or
- *       {@link #commitSync(Map)} to commit a custom set.</li>
+ *   <li>{@link #commitSync()} to persist the current offsets,
+ *       {@link #commitSync(Map)} to commit a custom set, or the
+ *       {@link #commitAsync()} variants to commit off the poll thread.</li>
  *   <li>{@link #close} to leave the group cleanly (sends
  *       {@code member_epoch=-1}) and release the gRPC channel.</li>
  * </ol>
@@ -103,6 +107,9 @@ public final class Consumer<K, V> implements AutoCloseable {
     private final FetchState<K, V> fetchState = new FetchState<>();
     // Lazy ProducerGrpc stub over the bootstrap channel for DLT routing.
     private ProducerGrpc.ProducerBlockingStub dltProducerStub;
+    // Lazy single-thread executor behind commitAsync. One thread keeps
+    // overlapping async commits in submission order.
+    private ExecutorService commitExecutor;
     // Incremental fetch session. 0 = no session; any positive value
     // is echoed on subsequent Fetch requests so the broker can reuse cached
     // per-partition state. Reset to 0 on FETCH_SESSION_ID_NOT_FOUND (LRU
@@ -375,6 +382,51 @@ public final class Consumer<K, V> implements AutoCloseable {
         return snapshot;
     }
 
+    /**
+     * Commit the consumer's current positions without blocking the caller.
+     * The position snapshot is taken now, synchronously — records returned
+     * by later polls can't leak into it — and the commit itself runs on a
+     * single background thread, so overlapping {@code commitAsync} calls
+     * reach the coordinator in submission order. The future completes when
+     * the coordinator acks, or exceptionally on any failure — a failed
+     * commit is never swallowed. Completes immediately when there is
+     * nothing to commit.
+     */
+    public synchronized CompletableFuture<Void> commitAsync() {
+        if (closed) throw new IllegalStateException("consumer is closed");
+        var snapshot = positionSnapshot();
+        if (snapshot.isEmpty()) return CompletableFuture.completedFuture(null);
+        return commitAsync(snapshot);
+    }
+
+    /** {@link #commitAsync()} for an explicit offset map. */
+    public synchronized CompletableFuture<Void> commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets) {
+        if (closed) throw new IllegalStateException("consumer is closed");
+        if (offsets.isEmpty()) return CompletableFuture.completedFuture(null);
+        var copy = Map.copyOf(offsets);
+        var future = new CompletableFuture<Void>();
+        lazyCommitExecutor().execute(() -> {
+            try {
+                commitSync(copy);
+                future.complete(null);
+            } catch (Throwable t) {
+                future.completeExceptionally(t);
+            }
+        });
+        return future;
+    }
+
+    private ExecutorService lazyCommitExecutor() {
+        if (commitExecutor == null) {
+            commitExecutor = Executors.newSingleThreadExecutor(r -> {
+                var t = new Thread(r, "consumer-commit-" + cfg.groupId());
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        return commitExecutor;
+    }
+
     public synchronized void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets) {
         if (offsets.isEmpty()) return;
         var stub = ensureCoordinator();
@@ -449,6 +501,9 @@ public final class Consumer<K, V> implements AutoCloseable {
         }
         shutdownChannel(coordinatorChannel);
         shutdownChannel(bootstrapChannel);
+        // Async commits still queued now run against the closed channels and
+        // complete exceptionally — loud, never dropped.
+        if (commitExecutor != null) commitExecutor.shutdown();
     }
 
     // ---------- internals ----------

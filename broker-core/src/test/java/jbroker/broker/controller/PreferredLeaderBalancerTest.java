@@ -53,6 +53,25 @@ final class PreferredLeaderBalancerTest {
     }
 
     @Test
+    void onDemandRebalanceIgnoresTheStabilityWindow() {
+        var tm = new TopicManager();
+        tm.onPartitionChange("orders", 0, 2, List.of(1, 2, 3), List.of(1, 2, 3), 0, 0);
+        // Same churn the periodic pass would skip — the operator asked now.
+        var balancer = new PreferredLeaderBalancer(tm, () -> true, () -> 90_000L, 30_000L);
+        var proposals = balancer.proposeRebalancesNow();
+        assertThat(proposals).hasSize(1);
+        assertThat(proposals.get(0).newLeader()).isEqualTo(1);
+    }
+
+    @Test
+    void onDemandRebalanceStillRequiresTheController() {
+        var tm = new TopicManager();
+        tm.onPartitionChange("orders", 0, 2, List.of(1, 2, 3), List.of(1, 2, 3), 0, 0);
+        var balancer = new PreferredLeaderBalancer(tm, () -> false, () -> 0L, 0L);
+        assertThat(balancer.proposeRebalancesNow()).isEmpty();
+    }
+
+    @Test
     void proposesAcrossMultipleImbalancedPartitions() {
         var tm = new TopicManager();
         tm.onPartitionChange("orders", 0, 2, List.of(1, 2, 3), List.of(1, 2, 3), 0, 0);

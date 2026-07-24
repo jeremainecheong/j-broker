@@ -177,6 +177,11 @@ service Metadata {
   rpc DescribeConsumerGroup(DescribeConsumerGroupRequest)
       returns (DescribeConsumerGroupResponse);
   rpc DescribeRaft(DescribeRaftRequest) returns (DescribeRaftResponse);
+  // Protocol-version handshake. Clients call this first to learn the
+  // responding broker's supported protocol range and pick a version
+  // before issuing anything else. Any broker answers — no leadership
+  // requirement and no ACL grant needed.
+  rpc ApiVersions(ApiVersionsRequest) returns (ApiVersionsResponse);
   // Rolling throughput + latency snapshot for the admin metrics UI.
   rpc DescribeMetrics(DescribeMetricsRequest) returns (DescribeMetricsResponse);
   // Server streams broker-side events (leader changes, broker
@@ -203,6 +208,12 @@ service Cluster {
 message BrokerHeartbeatRequest {
   int32 broker_id = 1;
   int64 current_metadata_offset = 2;
+  // Supported protocol range, piggybacked on the liveness signal so
+  // every peer can report each broker's range from DescribeCluster.
+  // Senders predating version discovery leave these at 0; receivers
+  // treat supported_protocol_max == 0 as "range unknown".
+  int32 supported_protocol_min = 3;
+  int32 supported_protocol_max = 4;
 }
 
 message BrokerHeartbeatResponse {
@@ -658,6 +669,27 @@ message BrokerInfo {
   string role = 4;
   bool alive = 5;
   int64 last_seen_millis = 6;
+  // Supported protocol range: the responding broker's own constants for
+  // its self entry, the range the peer advertised on its last heartbeat
+  // otherwise. Absent (explicit presence) for peers whose range has not
+  // been heard yet — never-heard-from brokers and senders predating
+  // version discovery.
+  optional int32 supported_protocol_min = 7;
+  optional int32 supported_protocol_max = 8;
+}
+
+// ===== ApiVersions =====
+
+message ApiVersionsRequest {}
+
+message ApiVersionsResponse {
+  jbroker.common.ErrorCode error = 1;
+  // Inclusive range of protocol versions the responding broker accepts.
+  int32 min_protocol_version = 2;
+  int32 max_protocol_version = 3;
+  // Broker semantic version, e.g. "0.1.0-SNAPSHOT". Informational only —
+  // compatibility decisions belong to the protocol range above.
+  string broker_version = 4;
 }
 
 message DescribeTopicPartitionsRequest {

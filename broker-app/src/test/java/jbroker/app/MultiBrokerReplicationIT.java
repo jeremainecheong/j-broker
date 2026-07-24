@@ -20,6 +20,12 @@ import org.junit.jupiter.api.io.TempDir;
  */
 class MultiBrokerReplicationIT {
 
+    // Shared CI runners replicate and elect several times slower than a
+    // laptop; scale every wall-clock wait like the sibling lifecycle ITs
+    // do, so the test validates convergence rather than runner speed.
+    private static final int CI_MULT =
+            "1".equals(System.getenv("JBROKER_CI")) || "true".equalsIgnoreCase(System.getenv("CI")) ? 4 : 1;
+
     @Test
     void threeBrokerReplicatedTopicConvergesByteIdentically(@TempDir Path d1, @TempDir Path d2, @TempDir Path d3)
             throws Exception {
@@ -54,7 +60,7 @@ class MultiBrokerReplicationIT {
             }
 
             // Poll until all 3 logs report nextOffset == 200.
-            long deadline = System.currentTimeMillis() + 15_000;
+            long deadline = System.currentTimeMillis() + 15_000L * CI_MULT;
             while (System.currentTimeMillis() < deadline) {
                 long o1 = br1.logManager().logFor("replicated", 0).nextOffset();
                 long o2 = br2.logManager().logFor("replicated", 0).nextOffset();
@@ -76,7 +82,7 @@ class MultiBrokerReplicationIT {
     }
 
     private static void awaitSingleLeader(List<Broker> brokers) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 10_000;
+        long deadline = System.currentTimeMillis() + 10_000L * CI_MULT;
         while (System.currentTimeMillis() < deadline) {
             long leaders = brokers.stream().filter(b -> b.role() == Role.LEADER).count();
             if (leaders == 1) return;
@@ -86,7 +92,7 @@ class MultiBrokerReplicationIT {
     }
 
     private static void awaitRegistryConvergence(List<Broker> brokers) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 5_000;
+        long deadline = System.currentTimeMillis() + 5_000L * CI_MULT;
         while (System.currentTimeMillis() < deadline) {
             boolean allKnowAll = brokers.stream()
                     .allMatch(b -> b.brokerRegistry().knownBrokerIds().containsAll(List.of(1, 2, 3)));

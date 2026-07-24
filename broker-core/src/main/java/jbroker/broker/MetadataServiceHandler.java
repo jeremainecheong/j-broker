@@ -5,6 +5,8 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import jbroker.proto.broker.ApiVersionsRequest;
+import jbroker.proto.broker.ApiVersionsResponse;
 import jbroker.proto.broker.BrokerInfo;
 import jbroker.proto.broker.ConsumerGroupSummary;
 import jbroker.proto.broker.DescribeClusterRequest;
@@ -288,6 +290,20 @@ public final class MetadataServiceHandler {
                 null);
     }
 
+    /**
+     * Protocol-version handshake. Answers from any broker — no leadership
+     * requirement and no ACL check, because a client negotiates a version
+     * before it is in a position to do anything else.
+     */
+    public ApiVersionsResponse apiVersions(ApiVersionsRequest req) {
+        return ApiVersionsResponse.newBuilder()
+                .setError(ErrorCode.OK)
+                .setMinProtocolVersion(ProtocolVersion.MIN_SUPPORTED)
+                .setMaxProtocolVersion(ProtocolVersion.CURRENT)
+                .setBrokerVersion(ProtocolVersion.BROKER_VERSION)
+                .build();
+    }
+
     public DescribeClusterResponse describeCluster(DescribeClusterRequest req) {
         var builder = DescribeClusterResponse.newBuilder()
                 .setError(ErrorCode.OK)
@@ -327,14 +343,27 @@ public final class MetadataServiceHandler {
                     lastSeenMillis = System.currentTimeMillis() - TimeUnit.NANOSECONDS.toMillis(ageNanos);
                 }
             }
-            builder.addNodes(BrokerInfo.newBuilder()
+            var node = BrokerInfo.newBuilder()
                     .setBrokerId(bid)
                     .setHost(host)
                     .setPort(port)
                     .setRole(role)
                     .setAlive(alive)
-                    .setLastSeenMillis(lastSeenMillis)
-                    .build());
+                    .setLastSeenMillis(lastSeenMillis);
+            // Supported protocol range: own constants for self, the range
+            // the peer last advertised on its heartbeat otherwise. Left
+            // absent for peers that have never been heard from — the
+            // client can fall back to calling ApiVersions on that broker.
+            if (bid == selfBrokerId) {
+                node.setSupportedProtocolMin(ProtocolVersion.MIN_SUPPORTED);
+                node.setSupportedProtocolMax(ProtocolVersion.CURRENT);
+            } else {
+                brokerLiveness.protocolRange(bid).ifPresent(r -> {
+                    node.setSupportedProtocolMin(r.min());
+                    node.setSupportedProtocolMax(r.max());
+                });
+            }
+            builder.addNodes(node.build());
         }
         return builder.build();
     }

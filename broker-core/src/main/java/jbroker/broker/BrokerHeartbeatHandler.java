@@ -26,6 +26,12 @@ public final class BrokerHeartbeatHandler {
 
     public BrokerHeartbeatResponse handle(BrokerHeartbeatRequest req) {
         liveness.recordSignal(req.getBrokerId(), req.getCurrentMetadataOffset(), clockNanos.getAsLong());
+        // max == 0 means the sender predates protocol-version discovery —
+        // leave the peer's range unknown rather than record a bogus 0/0.
+        if (req.getSupportedProtocolMax() > 0) {
+            liveness.recordProtocolRange(
+                    req.getBrokerId(), req.getSupportedProtocolMin(), req.getSupportedProtocolMax());
+        }
         return BrokerHeartbeatResponse.newBuilder().build();
     }
 }

@@ -21,7 +21,11 @@ public final class BrokerLiveness {
 
     public record Signal(long wallClockNanos, long metadataOffset) {}
 
+    /** Supported protocol range a peer advertised on its last heartbeat. */
+    public record ProtocolRange(int min, int max) {}
+
     private final ConcurrentHashMap<Integer, Signal> entries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, ProtocolRange> protocolRanges = new ConcurrentHashMap<>();
 
     public void recordSignal(int brokerId, long metadataOffset, long nowNanos) {
         entries.merge(brokerId, new Signal(nowNanos, metadataOffset), (existing, proposed) -> {
@@ -30,8 +34,23 @@ public final class BrokerLiveness {
         });
     }
 
+    /**
+     * Records the protocol range {@code brokerId} advertised. A range is
+     * fixed for the life of a broker process, so plain last-writer-wins is
+     * fine — the out-of-order wall-clock guard on {@link #recordSignal}
+     * has nothing to protect here.
+     */
+    public void recordProtocolRange(int brokerId, int min, int max) {
+        protocolRanges.put(brokerId, new ProtocolRange(min, max));
+    }
+
     public Optional<Signal> lastSignal(int brokerId) {
         return Optional.ofNullable(entries.get(brokerId));
+    }
+
+    /** Range from the peer's last heartbeat; empty until one carrying a range arrives. */
+    public Optional<ProtocolRange> protocolRange(int brokerId) {
+        return Optional.ofNullable(protocolRanges.get(brokerId));
     }
 
     public Set<Integer> knownBrokerIds() {

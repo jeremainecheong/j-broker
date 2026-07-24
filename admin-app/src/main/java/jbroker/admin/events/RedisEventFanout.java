@@ -14,8 +14,6 @@ import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 
 /**
  * Redis pub/sub bridge for multi-admin-pod deployments.
@@ -37,19 +35,19 @@ import org.springframework.stereotype.Component;
  *       SSE subscribers.</li>
  * </ol>
  *
- * <p>Opt-in via {@code jbroker.redis.url}; when empty the component
- * initialises as a no-op and the bus runs pure in-process. Redis is never
- * the source of truth for events — if the publisher socket errors, the
- * call logs once-per-minute and returns so the SSE pipeline is never
- * blocked by an unreachable Redis.
+ * <p>Selected by {@link EventFanoutConfig} only when
+ * {@code jbroker.redis.url} is set; the default deployment runs
+ * {@link InProcessEventFanout} instead. Redis is never the source of
+ * truth for events — if the publisher socket errors, the call logs
+ * once-per-minute and returns so the SSE pipeline is never blocked by an
+ * unreachable Redis.
  *
  * <p>Hand-rolled RESP (pattern mirrors
  * {@link jbroker.broker.quota.RedisQuotaEnforcer}) rather than pulling in
  * Jedis / Lettuce — the functionality we need (PUBLISH + SUBSCRIBE on
  * a single channel) is ~100 lines of protocol handling.
  */
-@Component
-public class RedisEventFanout {
+public class RedisEventFanout implements EventFanout {
 
     private static final Logger log = LoggerFactory.getLogger(RedisEventFanout.class);
     private static final int CONNECT_TIMEOUT_MS = 500;
@@ -69,17 +67,13 @@ public class RedisEventFanout {
     private volatile Thread subscriberThread;
     private volatile boolean running = true;
 
-    public RedisEventFanout(AdminEventBus bus, @Value("${jbroker.redis.url:}") String redisUrl) {
+    public RedisEventFanout(AdminEventBus bus, String redisUrl) {
         this.bus = bus;
         this.redisUrl = redisUrl;
     }
 
     @PostConstruct
     void start() {
-        if (redisUrl == null || redisUrl.isBlank()) {
-            log.info("jbroker.redis.url not set; Redis admin event fan-out disabled");
-            return;
-        }
         log.info("Redis admin event fan-out enabled (pod_id={}, channel={})", selfPodId, CHANNEL);
         bus.setExternalPublisher(this::publish);
         subscriberThread = Thread.ofVirtual().name("redis-event-subscriber").start(this::subscriberLoop);
@@ -99,7 +93,8 @@ public class RedisEventFanout {
         if (subscriberThread != null) subscriberThread.interrupt();
     }
 
-    private void publish(AdminEventBus.LocalEvent e) {
+    @Override
+    public void publish(AdminEventBus.LocalEvent e) {
         String payload = encode(e);
         publisherLock.lock();
         try {

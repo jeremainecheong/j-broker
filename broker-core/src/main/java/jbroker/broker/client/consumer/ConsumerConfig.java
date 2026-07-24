@@ -13,6 +13,7 @@ public final class ConsumerConfig {
     public static final int DEFAULT_SESSION_TIMEOUT_MS = 45_000;
     public static final int DEFAULT_REBALANCE_TIMEOUT_MS = 60_000;
     public static final int DEFAULT_FETCH_MAX_BYTES = 1 << 20; // 1 MiB
+    public static final int DEFAULT_MAX_POLL_RECORDS = 500;
 
     private final String bootstrapHost;
     private final int bootstrapPort;
@@ -21,6 +22,7 @@ public final class ConsumerConfig {
     private final int sessionTimeoutMs;
     private final int rebalanceTimeoutMs;
     private final int fetchMaxBytes;
+    private final int maxPollRecords;
     private final Duration pollFetchDeadline;
     private final DeadLetterPolicy deadLetterPolicy;
     private final TlsConfig tls;
@@ -33,6 +35,7 @@ public final class ConsumerConfig {
         this.sessionTimeoutMs = b.sessionTimeoutMs;
         this.rebalanceTimeoutMs = b.rebalanceTimeoutMs;
         this.fetchMaxBytes = b.fetchMaxBytes;
+        this.maxPollRecords = b.maxPollRecords;
         this.pollFetchDeadline = b.pollFetchDeadline;
         this.deadLetterPolicy = b.deadLetterPolicy;
         this.tls = b.tls == null ? TlsConfig.DISABLED : b.tls;
@@ -71,6 +74,10 @@ public final class ConsumerConfig {
         return fetchMaxBytes;
     }
 
+    public int maxPollRecords() {
+        return maxPollRecords;
+    }
+
     public Duration pollFetchDeadline() {
         return pollFetchDeadline;
     }
@@ -92,6 +99,7 @@ public final class ConsumerConfig {
         private int sessionTimeoutMs = DEFAULT_SESSION_TIMEOUT_MS;
         private int rebalanceTimeoutMs = DEFAULT_REBALANCE_TIMEOUT_MS;
         private int fetchMaxBytes = DEFAULT_FETCH_MAX_BYTES;
+        private int maxPollRecords = DEFAULT_MAX_POLL_RECORDS;
         private Duration pollFetchDeadline = Duration.ofSeconds(5);
         private DeadLetterPolicy deadLetterPolicy;
         private TlsConfig tls;
@@ -120,6 +128,17 @@ public final class ConsumerConfig {
 
         public Builder fetchMaxBytes(int v) {
             this.fetchMaxBytes = v;
+            return this;
+        }
+
+        /**
+         * Upper bound on records a single {@code poll} returns. Surplus
+         * records already fetched stay buffered client-side, in order, for
+         * the next poll — never dropped.
+         */
+        public Builder maxPollRecords(int v) {
+            if (v <= 0) throw new IllegalArgumentException("max.poll.records must be positive: " + v);
+            this.maxPollRecords = v;
             return this;
         }
 

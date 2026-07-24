@@ -53,6 +53,12 @@ import jbroker.tls.TlsContexts;
  *       {@code member_epoch=-1}) and release the gRPC channel.</li>
  * </ol>
  *
+ * <p>Flow control: {@link #pause}/{@link #resume} stop and restart
+ * fetching per partition without touching group membership (heartbeats
+ * keep flowing), and {@code max.poll.records} bounds how many records a
+ * single poll hands back — surplus already fetched waits client-side for
+ * the next poll.
+ *
  * <p>Cooperative incremental rebalance is honoured automatically:
  * the consumer reports {@code owned_partitions} on each heartbeat, the
  * coordinator advances stages, and the listener fires on the actual diffs.
@@ -82,9 +88,10 @@ public final class Consumer<K, V> implements AutoCloseable {
     private String memberId = "";
     private int memberEpoch = 0;
     private List<TopicPartition> currentAssignment = List.of();
-    // per-(topic,partition) next fetch offset; populated lazily on first
-    // assignment via FetchOffsets, then advanced as records arrive.
-    private final Map<TopicPartition, Long> fetchOffsets = new HashMap<>();
+    // Per-partition positions, pause flags, and the fetched-but-unreturned
+    // buffer. Positions are populated lazily on first assignment via
+    // FetchOffsets, then advanced as records are returned from poll.
+    private final FetchState<K, V> fetchState = new FetchState<>();
     // Lazy ProducerGrpc stub over the bootstrap channel for DLT routing.
     private ProducerGrpc.ProducerBlockingStub dltProducerStub;
     // Incremental fetch session. 0 = no session; any positive value
@@ -130,6 +137,25 @@ public final class Consumer<K, V> implements AutoCloseable {
 
     public synchronized Set<TopicPartition> assignment() {
         return Set.copyOf(currentAssignment);
+    }
+
+    /**
+     * Stop fetching from an assigned partition until {@link #resume}. Polls
+     * keep heartbeating and the partition stays owned — only the fetch is
+     * skipped, and any already-buffered records are held back until resume.
+     */
+    public synchronized void pause(String topic, int partition) {
+        fetchState.pause(assignedTp(topic, partition));
+    }
+
+    /** Undo {@link #pause}; the next poll fetches the partition again. */
+    public synchronized void resume(String topic, int partition) {
+        fetchState.resume(assignedTp(topic, partition));
+    }
+
+    /** Partitions currently held back by {@link #pause}. */
+    public synchronized Set<TopicPartition> paused() {
+        return fetchState.paused();
     }
 
     /**
@@ -196,7 +222,7 @@ public final class Consumer<K, V> implements AutoCloseable {
      * final {@link RetryableException} is wrapped and thrown.
      *
      * <p>After the tick completes, the consumer auto-commits the resulting
-     * per-partition fetch offsets — handled-successfully, handled-then-DLT'd,
+     * per-partition positions — handled-successfully, handled-then-DLT'd,
      * and anything pre-existing — via one synchronous {@code CommitOffsets}.
      */
     public synchronized ConsumerRecords<K, V> poll(Duration maxWait, RecordHandler<K, V> handler) {
@@ -296,16 +322,25 @@ public final class Consumer<K, V> implements AutoCloseable {
         return dltProducerStub;
     }
 
-    /** Commit the consumer's current per-partition fetch offsets. */
+    /** Commit the consumer's current per-partition positions. */
     public synchronized Map<TopicPartition, OffsetAndMetadata> commitSync() {
-        var snapshot = new HashMap<TopicPartition, OffsetAndMetadata>(currentAssignment.size());
-        for (var tp : currentAssignment) {
-            var off = fetchOffsets.get(tp);
-            if (off == null) continue;
-            snapshot.put(tp, new OffsetAndMetadata(off));
-        }
+        var snapshot = positionSnapshot();
         if (snapshot.isEmpty()) return Map.of();
         commitSync(snapshot);
+        return snapshot;
+    }
+
+    /**
+     * Positions to commit: one entry per assigned partition that has been
+     * primed. A position only ever covers records the application has seen —
+     * buffered-but-unreturned records don't advance it (see {@link FetchState}).
+     */
+    private Map<TopicPartition, OffsetAndMetadata> positionSnapshot() {
+        var snapshot = new HashMap<TopicPartition, OffsetAndMetadata>(currentAssignment.size());
+        for (var tp : currentAssignment) {
+            if (!fetchState.hasPosition(tp)) continue;
+            snapshot.put(tp, new OffsetAndMetadata(fetchState.position(tp)));
+        }
         return snapshot;
     }
 
@@ -437,18 +472,29 @@ public final class Consumer<K, V> implements AutoCloseable {
         }
         if (!revoked.isEmpty()) {
             listener.onPartitionsRevoked(revoked);
-            for (var tp : revoked) fetchOffsets.remove(tp);
+            for (var tp : revoked) fetchState.forget(tp);
         }
         currentAssignment = List.copyOf(newAssignment);
         if (!added.isEmpty()) {
             listener.onPartitionsAssigned(added);
-            // Prime fetch offsets for newly-added partitions from the
+            // Prime positions for newly-added partitions from the
             // coordinator's committed view (or 0 if never committed).
             for (var tp : added) {
                 var committed = committedQuiet(tp);
-                fetchOffsets.put(tp, committed.offset() < 0 ? 0L : committed.offset());
+                fetchState.position(tp, committed.offset() < 0 ? 0L : committed.offset());
             }
         }
+    }
+
+    private TopicPartition assignedTp(String topic, int partition) {
+        var tp = TopicPartition.newBuilder()
+                .setTopic(topic)
+                .setPartition(partition)
+                .build();
+        if (!currentAssignment.contains(tp)) {
+            throw new IllegalStateException("no current assignment for " + topic + "-" + partition);
+        }
+        return tp;
     }
 
     private OffsetAndMetadata committedQuiet(TopicPartition tp) {
@@ -460,9 +506,11 @@ public final class Consumer<K, V> implements AutoCloseable {
     }
 
     private ConsumerRecords<K, V> fetchAssignedPartitions(ConsumerGrpc.ConsumerBlockingStub stub) {
-        var perTp = new LinkedHashMap<TopicPartition, List<ConsumerRecord<K, V>>>();
         for (var tp : currentAssignment) {
-            long offset = fetchOffsets.getOrDefault(tp, 0L);
+            // Paused partitions and partitions still carrying surplus from a
+            // previous poll issue no fetch this tick.
+            if (!fetchState.fetchable(tp)) continue;
+            long offset = fetchState.position(tp);
             var resp = stub.withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
                     .fetch(FetchRequest.newBuilder()
                             .setTopic(tp.getTopic())
@@ -490,14 +538,11 @@ public final class Consumer<K, V> implements AutoCloseable {
                 }
                 fetchSessionEpoch++;
             }
-            var records = decodeBatch(resp.getRecords(), tp, offset);
-            if (!records.isEmpty()) {
-                perTp.put(tp, records);
-                long lastOffset = records.get(records.size() - 1).offset();
-                fetchOffsets.put(tp, lastOffset + 1);
-            }
+            fetchState.buffer(tp, decodeBatch(resp.getRecords(), tp, offset));
         }
-        return new ConsumerRecords<>(perTp);
+        // Hand back at most max.poll.records; anything fetched beyond the
+        // bound stays buffered (positions advance only for returned records).
+        return new ConsumerRecords<>(fetchState.drain(cfg.maxPollRecords()));
     }
 
     private List<ConsumerRecord<K, V>> decodeBatch(ByteString bytes, TopicPartition tp, long startOffset) {

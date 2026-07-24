@@ -52,7 +52,12 @@ public final class IsrManager {
      */
     public List<byte[]> decideChanges(long nowMillis) {
         var out = new ArrayList<byte[]>();
-        for (var topic : topicManager.list()) {
+        // listAll, not list: internal topics (__consumer_offsets) need ISR
+        // housekeeping like any other — list() filters them for the admin
+        // surface, and using it here left their ISR frozen at creation:
+        // laggards never shrank out, and a replica added by reassignment
+        // could never join, wedging any drain that touched them.
+        for (var topic : topicManager.listAll()) {
             for (int p = 0; p < topic.partitions(); p++) {
                 var state = topicManager.partitionState(topic.topic(), p).orElse(null);
                 if (state == null) continue;

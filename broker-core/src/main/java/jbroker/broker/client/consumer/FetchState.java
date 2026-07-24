@@ -46,6 +46,16 @@ final class FetchState<K, V> {
         positions.put(tp, offset);
     }
 
+    /**
+     * Reposition and drop any records buffered from the old position —
+     * they precede the new cursor and must never be returned. The pause
+     * flag, if set, survives.
+     */
+    void seek(TopicPartition tp, long offset) {
+        positions.put(tp, offset);
+        buffered.remove(tp);
+    }
+
     void pause(TopicPartition tp) {
         paused.add(tp);
     }

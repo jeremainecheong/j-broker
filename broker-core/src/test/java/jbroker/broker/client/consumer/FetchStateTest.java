@@ -109,6 +109,35 @@ class FetchStateTest {
     }
 
     @Test
+    void seekRepositionsAndDiscardsTheStaleBuffer() {
+        var state = new FetchState<String, String>();
+        state.position(P0, 0L);
+        state.buffer(P0, records(P0, 0, 10));
+        state.drain(4);
+
+        state.seek(P0, 50L);
+
+        assertThat(state.position(P0)).isEqualTo(50L);
+        // Records 4..9 were fetched from the pre-seek position — gone, and
+        // the partition is immediately fetchable from the new cursor.
+        assertThat(state.bufferedCount()).isZero();
+        assertThat(state.drain(10)).isEmpty();
+        assertThat(state.fetchable(P0)).isTrue();
+    }
+
+    @Test
+    void seekKeepsThePauseFlag() {
+        var state = new FetchState<String, String>();
+        state.pause(P0);
+
+        state.seek(P0, 5L);
+
+        assertThat(state.position(P0)).isEqualTo(5L);
+        assertThat(state.paused()).containsExactly(P0);
+        assertThat(state.fetchable(P0)).isFalse();
+    }
+
+    @Test
     void forgetLeavesNoResidue() {
         var state = new FetchState<String, String>();
         state.position(P0, 7L);

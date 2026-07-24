@@ -20,6 +20,8 @@ import jbroker.proto.broker.ConsumerGrpc;
 import jbroker.proto.broker.FetchOffsetsRequest;
 import jbroker.proto.broker.FetchRequest;
 import jbroker.proto.broker.FindCoordinatorRequest;
+import jbroker.proto.broker.ListOffsetsPartition;
+import jbroker.proto.broker.ListOffsetsRequest;
 import jbroker.proto.broker.OffsetCommit;
 import jbroker.proto.broker.ProduceRequest;
 import jbroker.proto.broker.ProducerGrpc;
@@ -57,7 +59,9 @@ import jbroker.tls.TlsContexts;
  * fetching per partition without touching group membership (heartbeats
  * keep flowing), and {@code max.poll.records} bounds how many records a
  * single poll hands back — surplus already fetched waits client-side for
- * the next poll.
+ * the next poll. {@link #seek} repositions the fetch cursor;
+ * {@link #seekToBeginning}/{@link #seekToEnd} resolve the log's actual
+ * bounds from the broker via {@code ListOffsets} first.
  *
  * <p>Cooperative incremental rebalance is honoured automatically:
  * the consumer reports {@code owned_partitions} on each heartbeat, the
@@ -73,6 +77,11 @@ import jbroker.tls.TlsContexts;
  * surface.
  */
 public final class Consumer<K, V> implements AutoCloseable {
+
+    // ListOffsets timestamp sentinels (see broker.proto): -1 = latest,
+    // -2 = earliest.
+    private static final long LATEST_TIMESTAMP = -1L;
+    private static final long EARLIEST_TIMESTAMP = -2L;
 
     private final ConsumerConfig cfg;
     private final Deserializer<K> keyDe;
@@ -137,6 +146,28 @@ public final class Consumer<K, V> implements AutoCloseable {
 
     public synchronized Set<TopicPartition> assignment() {
         return Set.copyOf(currentAssignment);
+    }
+
+    /**
+     * Reposition the fetch cursor of an assigned partition. The next poll
+     * fetches from {@code offset}; records already fetched from the old
+     * position are discarded, never returned. Pause state survives a seek.
+     */
+    public synchronized void seek(String topic, int partition, long offset) {
+        if (offset < 0) throw new IllegalArgumentException("offset must be >= 0: " + offset);
+        fetchState.seek(assignedTp(topic, partition), offset);
+    }
+
+    /** Seek to the log's start offset, as the broker reports it via {@code ListOffsets}. */
+    public synchronized void seekToBeginning(String topic, int partition) {
+        var tp = assignedTp(topic, partition);
+        fetchState.seek(tp, resolveOffset(tp, EARLIEST_TIMESTAMP));
+    }
+
+    /** Seek to the log's end offset — the offset the next produced record will take. */
+    public synchronized void seekToEnd(String topic, int partition) {
+        var tp = assignedTp(topic, partition);
+        fetchState.seek(tp, resolveOffset(tp, LATEST_TIMESTAMP));
     }
 
     /**
@@ -484,6 +515,30 @@ public final class Consumer<K, V> implements AutoCloseable {
                 fetchState.position(tp, committed.offset() < 0 ? 0L : committed.offset());
             }
         }
+    }
+
+    /**
+     * Ask the broker serving our fetches where the log starts or ends.
+     * Same {@code ListOffsets} sentinel convention as the wire protocol:
+     * {@code -2} earliest, {@code -1} latest.
+     */
+    private long resolveOffset(TopicPartition tp, long timestamp) {
+        var stub = ensureCoordinator();
+        if (stub == null) throw new IllegalStateException("coordinator not available");
+        var resp = stub.withDeadlineAfter(cfg.pollFetchDeadline().toMillis(), TimeUnit.MILLISECONDS)
+                .listOffsets(ListOffsetsRequest.newBuilder()
+                        .setReplicaId(-1)
+                        .addPartitions(ListOffsetsPartition.newBuilder()
+                                .setTp(tp)
+                                .setTimestamp(timestamp)
+                                .build())
+                        .build());
+        var r = resp.getResults(0);
+        if (r.getError() != ErrorCode.OK) {
+            throw new RuntimeException(
+                    "listOffsets for " + tp.getTopic() + "-" + tp.getPartition() + " failed: " + r.getError());
+        }
+        return r.getOffset();
     }
 
     private TopicPartition assignedTp(String topic, int partition) {

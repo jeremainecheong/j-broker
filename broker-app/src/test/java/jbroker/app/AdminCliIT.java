@@ -105,6 +105,98 @@ class AdminCliIT {
         assertThat(lastPath.get()).isEqualTo("/api/v1/raft");
     }
 
+    @Test
+    void clusterMembershipDispatchesGet() {
+        captureStdout(
+                () -> AdminCli.run(new String[] {"--admin", "http://localhost:" + port, "cluster", "membership"}));
+        assertThat(lastMethod.get()).isEqualTo("GET");
+        assertThat(lastPath.get()).isEqualTo("/api/v1/cluster/membership");
+    }
+
+    @Test
+    void clusterAddBrokerDispatchesPostWithSnakeCaseBody() {
+        captureStdout(() -> AdminCli.run(new String[] {
+            "--admin",
+            "http://localhost:" + port,
+            "cluster",
+            "add-broker",
+            "--id",
+            "4",
+            "--host",
+            "broker-4",
+            "--raft-port",
+            "7001",
+            "--broker-port",
+            "9092"
+        }));
+        assertThat(lastMethod.get()).isEqualTo("POST");
+        assertThat(lastPath.get()).isEqualTo("/api/v1/cluster/add-broker");
+        assertThat(lastBody.get()).contains("\"broker_id\":4");
+        assertThat(lastBody.get()).contains("\"host\":\"broker-4\"");
+        assertThat(lastBody.get()).contains("\"raft_port\":7001");
+        assertThat(lastBody.get()).contains("\"broker_port\":9092");
+    }
+
+    @Test
+    void clusterDecommissionDispatchesPost() {
+        captureStdout(() -> AdminCli.run(
+                new String[] {"--admin", "http://localhost:" + port, "cluster", "decommission", "--id", "2"}));
+        assertThat(lastMethod.get()).isEqualTo("POST");
+        assertThat(lastPath.get()).isEqualTo("/api/v1/cluster/decommission/2");
+        assertThat(lastBody.get()).isEmpty();
+    }
+
+    @Test
+    void clusterReassignDispatchesPostWithReplicaArray() {
+        captureStdout(() -> AdminCli.run(new String[] {
+            "--admin",
+            "http://localhost:" + port,
+            "cluster",
+            "reassign",
+            "--topic",
+            "orders",
+            "--partition",
+            "1",
+            "--replicas",
+            "1, 2,3"
+        }));
+        assertThat(lastMethod.get()).isEqualTo("POST");
+        assertThat(lastPath.get()).isEqualTo("/api/v1/cluster/reassignments");
+        assertThat(lastBody.get()).isEqualTo("{\"topic\":\"orders\",\"partition\":1,\"replicas\":[1,2,3]}");
+    }
+
+    @Test
+    void clusterReassignmentsDispatchesGet() {
+        captureStdout(
+                () -> AdminCli.run(new String[] {"--admin", "http://localhost:" + port, "cluster", "reassignments"}));
+        assertThat(lastMethod.get()).isEqualTo("GET");
+        assertThat(lastPath.get()).isEqualTo("/api/v1/cluster/reassignments");
+    }
+
+    @Test
+    void clusterCancelReassignmentDispatchesDelete() {
+        captureStdout(() -> AdminCli.run(new String[] {
+            "--admin",
+            "http://localhost:" + port,
+            "cluster",
+            "cancel-reassignment",
+            "--topic",
+            "orders",
+            "--partition",
+            "1"
+        }));
+        assertThat(lastMethod.get()).isEqualTo("DELETE");
+        assertThat(lastPath.get()).isEqualTo("/api/v1/cluster/reassignments/orders/1");
+    }
+
+    @Test
+    void clusterRebalanceLeadersDispatchesPost() {
+        captureStdout(() ->
+                AdminCli.run(new String[] {"--admin", "http://localhost:" + port, "cluster", "rebalance-leaders"}));
+        assertThat(lastMethod.get()).isEqualTo("POST");
+        assertThat(lastPath.get()).isEqualTo("/api/v1/cluster/rebalance-leadership");
+    }
+
     private void captureStdout(Runnable r) {
         var original = System.out;
         System.setOut(new PrintStream(new ByteArrayOutputStream()));

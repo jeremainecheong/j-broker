@@ -3,7 +3,7 @@
   <head th:replace="~{fragments/shell :: head ('j-broker admin — Overview')}"></head>
   <body>
     <nav th:replace="~{fragments/shell :: topnav}"></nav>
-    <main>
+    <main x-data="{ showAddBroker: false }">
       <h1>Overview</h1>
 
       <!--/*
@@ -16,6 +16,28 @@
            th:classappend="${badge.status()}">
         <strong th:text="${badge.status() == 'red' ? '⚠ Critical' : '⚠ Degraded'}">⚠</strong>
         <span th:text="${badge.reason()}">…</span>
+      </div>
+
+      <!--/*
+        Membership progress chips. Rendered only while a join or
+        decommission has something to report — MembershipView hides the
+        quiet IDLE/DONE states, so a settled cluster shows no chips at all
+        (same philosophy as the alert strip above). FAILED/REFUSED phases
+        stay visible in red until the next attempt replaces them; the
+        refusal reason rides in the chip's title.
+      */-->
+      <div th:if="${membership != null and (membership.join().active() or membership.decommission().active())}"
+           style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.75rem;">
+        <span class="pill"
+              th:if="${membership.join().active()}"
+              th:classappend="${membership.join().phase() == 'FAILED' ? 'dead' : 'follower'}"
+              th:attr="data-join-phase=${membership.join().phase()}"
+              th:text="|join b${membership.join().brokerId()} — ${membership.join().phase()}${membership.join().lag() >= 0 ? ' (lag ' + membership.join().lag() + ')' : ''}|">join b4 — CATCHING_UP</span>
+        <span class="pill"
+              th:if="${membership.decommission().active()}"
+              th:classappend="${membership.decommission().phase() == 'FAILED' or membership.decommission().phase() == 'REFUSED' ? 'dead' : 'follower'}"
+              th:attr="data-decommission-phase=${membership.decommission().phase()}, title=${membership.decommission().detail()}"
+              th:text="|decommission b${membership.decommission().brokerId()} — ${membership.decommission().phase()} (${membership.decommission().remainingPartitions()} partitions left)|">decommission b4 — DRAINING</span>
       </div>
 
       <!--/*
@@ -112,10 +134,20 @@
       </div>
 
       <div class="card">
-        <h2 style="margin-top:0; font-size:1.05rem;">Nodes</h2>
+        <div class="kv-row" style="margin-bottom: 0.5rem;">
+          <h2 style="margin:0; font-size:1.05rem;">Nodes</h2>
+          <span class="spacer"></span>
+          <!-- Preferred-leader rebalance: safe no-op on a balanced
+               cluster (the broker answers moves_proposed = 0). -->
+          <form method="post" action="/ui/cluster/rebalance-leaders" style="display:inline;">
+            <button class="btn secondary" type="submit" data-rebalance-leaders
+                    title="Move partition leadership back to each partition's preferred leader">Rebalance leaders</button>
+          </form>
+          <button class="btn" type="button" @click="showAddBroker = true">+ Add broker</button>
+        </div>
         <table>
           <thead>
-            <tr><th>ID</th><th>Host:Port</th><th>Role</th><th>Alive</th><th>Last seen</th></tr>
+            <tr><th>ID</th><th>Host:Port</th><th>Role</th><th>Alive</th><th>Last seen</th><th></th></tr>
           </thead>
           <tbody>
             <tr th:each="n : ${cluster.nodes()}"
@@ -137,9 +169,93 @@
                 <time th:attr="data-epoch=${n.lastSeenMillis()}"
                       th:text="${n.lastSeenMillis()}">-</time>
               </td>
+              <td>
+                <!-- No button on the controller row: the broker refuses
+                     self-decommission, so don't offer it. Decommission
+                     another broker and leadership stays put. -->
+                <form th:if="${cluster.controllerId() != n.brokerId()}"
+                      method="post"
+                      th:action="@{/ui/cluster/decommission/{id}(id=${n.brokerId()})}">
+                  <button class="btn danger" type="submit"
+                          th:attr="data-decommission=${n.brokerId()},
+                                   onclick=|return confirm('Decommission broker ${n.brokerId()}? Its replicas drain to the remaining brokers, then its Raft vote is removed.');|">Decommission</button>
+                </form>
+              </td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!--/*
+        Pending reassignments — the replicated cache every broker serves.
+        Cancel reverts to the original replica set; the broker only honours
+        it while the pending entry exists (before the leader switch), so a
+        vanished row simply means the reassignment finished.
+      */-->
+      <div class="card" data-testid="reassignments">
+        <h2 style="margin-top:0; font-size:1.05rem;">Reassignments</h2>
+        <table>
+          <thead>
+            <tr><th>Topic</th><th>Partition</th><th>Replicas</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr th:each="r : ${reassignments}"
+                th:attr="data-reassignment=|${r.topic()}-${r.partition()}|">
+              <td th:text="${r.topic()}">-</td>
+              <td th:text="${r.partition()}">-</td>
+              <td>
+                <span th:text="${r.originalReplicas()}">[1, 2]</span>
+                <span class="muted">→</span>
+                <span th:text="${r.targetReplicas()}">[2, 3]</span>
+              </td>
+              <td>
+                <form method="post"
+                      th:action="@{/ui/cluster/reassignments/{t}/{p}/cancel(t=${r.topic()}, p=${r.partition()})}">
+                  <button class="btn danger" type="submit"
+                          onclick="return confirm('Cancel this reassignment? The partition reverts to its original replica set.');">Cancel</button>
+                </form>
+              </td>
+            </tr>
+            <tr th:if="${reassignments.isEmpty()}">
+              <td colspan="4" style="color: var(--muted);">No reassignments in flight.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!--
+        Alpine.js-powered add-broker modal, same skeleton as the
+        create-topic modal on topics.html. x-cloak is REQUIRED — see the
+        app.css [x-cloak] rule and AlpineCloakIT for why the modal must not
+        flash on first paint.
+      -->
+      <div class="modal-overlay" x-show="showAddBroker" x-cloak>
+        <div class="card" style="width:400px;">
+          <h2 style="margin-top:0; font-size:1.05rem;">Add broker</h2>
+          <p class="muted" style="margin-top:0; font-size:0.85rem;">
+            The broker must already be running, booted with the current voter
+            list. It joins as a learner and is promoted to voter once its log
+            catches up — watch the join chip on this page.
+          </p>
+          <form method="post" action="/ui/cluster/add-broker">
+            <label style="display:block; margin-bottom:0.5rem;">
+              Broker id <input type="number" name="brokerId" required min="1" style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:0.5rem;">
+              Host <input type="text" name="host" required style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:0.5rem;">
+              Raft port <input type="number" name="raftPort" required min="1" style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <label style="display:block; margin-bottom:1rem;">
+              Broker port <input type="number" name="brokerPort" required min="1" style="width:100%; padding:0.4rem; border:1px solid var(--border); border-radius:4px;" />
+            </label>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+              <button type="button" class="btn secondary" @click="showAddBroker = false">Cancel</button>
+              <button type="submit" class="btn">Add broker</button>
+            </div>
+          </form>
+        </div>
       </div>
     </main>
     <footer th:replace="~{fragments/shell :: footer}"></footer>

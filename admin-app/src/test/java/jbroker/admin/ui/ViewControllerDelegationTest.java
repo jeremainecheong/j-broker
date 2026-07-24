@@ -44,6 +44,7 @@ final class ViewControllerDelegationTest {
         var cluster = mock(ClusterController.class);
         var topics = mock(TopicsController.class);
         var groups = mock(ConsumerGroupsController.class);
+        var lifecycle = mock(jbroker.admin.api.ClusterLifecycleController.class);
         var merged = new ClusterSummary(
                 1,
                 2L,
@@ -55,8 +56,10 @@ final class ViewControllerDelegationTest {
         when(cluster.cluster()).thenReturn(merged);
         when(topics.list()).thenReturn(new ArrayList<>());
         when(groups.list()).thenReturn(new ArrayList<>());
+        when(lifecycle.membershipView()).thenReturn(Optional.empty());
+        when(lifecycle.reassignmentViews()).thenReturn(List.of());
 
-        var view = new ClusterViewController(cluster, topics, groups);
+        var view = new ClusterViewController(cluster, topics, groups, lifecycle);
         var model = new ExtendedModelMap();
         var tpl = view.index(model);
 

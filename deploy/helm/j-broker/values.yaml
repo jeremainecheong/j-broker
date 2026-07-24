@@ -212,12 +212,6 @@ metrics:
     #   - min-ISR produce rejections: NOT_ENOUGH_REPLICAS rejections go
     #     back to clients but are never counted; needs a rejection
     #     counter in DescribeMetrics.
-    #   - disk headroom low: DescribeMetrics already carries
-    #     disk_usable_bytes + disk_headroom_low, but the admin
-    #     exposition does not bind them to gauges yet.
-    #   - single broker down: a broker that drops out of the admin's
-    #     scrape keeps its last-reported per-broker gauge values, so
-    #     its absence is invisible; needs a per-broker liveness gauge.
 
 # Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
 # Off by default — a single admin replica serves SSE from its in-process

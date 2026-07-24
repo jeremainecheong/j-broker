@@ -41,6 +41,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     private final TlsConfig tls;
     private final ProducerStateManager producerState;
     private final java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory;
+    private volatile FetchThrottle throttle = FetchThrottle.UNTHROTTLED;
 
     public DefaultFetcherFactory(
             int selfBrokerId,
@@ -110,6 +111,15 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
         });
     }
 
+    /**
+     * Install a per-fetch byte-budget policy (default: unthrottled). The broker
+     * uses this to meter reassignment catch-up fetches. Applied to every
+     * fetcher's next poll.
+     */
+    public void setFetchThrottle(FetchThrottle throttle) {
+        this.throttle = throttle == null ? FetchThrottle.UNTHROTTLED : throttle;
+    }
+
     @Override
     public ReplicaFetcherManager.FetcherHandle start(
             String topic, int partition, int leaderBrokerId, BrokerRegistry.HostPort leaderAddr) {
@@ -130,11 +140,15 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
         ScheduledFuture<?> task = pump.scheduleWithFixedDelay(
                 () -> {
                     try {
+                        int maxBytes = throttle.maxBytes(topic, partition);
+                        // 0 means the reassignment throttle has no budget this
+                        // tick — skip the fetch and retry on the next one.
+                        if (maxBytes <= 0) return;
                         int expectedEpoch = topicManager
                                 .partitionState(topic, partition)
                                 .map(PartitionState::leaderEpoch)
                                 .orElse(0);
-                        fetcher.pollOnce(expectedEpoch);
+                        fetcher.pollOnce(expectedEpoch, maxBytes);
                     } catch (IOException e) {
                         log.debug("fetcher tick for {}-{} failed: {}", topic, partition, e.getMessage());
                     } catch (Exception e) {

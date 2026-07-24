@@ -1,5 +1,9 @@
 package jbroker.broker;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Properties;
+
 /**
  * The broker's supported protocol range, exchanged with clients via
  * {@code Metadata.ApiVersions} at connect time and piggybacked on broker
@@ -19,13 +23,35 @@ public final class ProtocolVersion {
     /** Newest protocol version this broker speaks. */
     public static final int CURRENT = 1;
 
+    /** Classpath location of the properties file the build stamps into the jar. */
+    static final String VERSION_RESOURCE = "/jbroker/broker/broker-version.properties";
+
+    /** Used only when the stamped resource is absent, e.g. IDE runs against raw class dirs. */
+    static final String FALLBACK_VERSION = "2.0.0-SNAPSHOT";
+
     /**
-     * Semantic version of the broker build. Mirrors the Gradle project
-     * version (root build.gradle.kts) by hand — the build stamps neither
-     * a manifest Implementation-Version nor a resource, so this constant
-     * is the only version string visible at runtime.
+     * Semantic version of the broker build. Gradle stamps the project
+     * version into {@value #VERSION_RESOURCE} at build time, so this
+     * always mirrors the version the jar was actually built as.
      */
-    public static final String BROKER_VERSION = "0.1.0-SNAPSHOT";
+    public static final String BROKER_VERSION = load("version", FALLBACK_VERSION);
+
+    /** Commit id the broker was built from, or {@code "unknown"} outside a git checkout. */
+    public static final String BUILD_COMMIT = load("commit", "unknown");
+
+    private static String load(String key, String fallback) {
+        try (InputStream in = ProtocolVersion.class.getResourceAsStream(VERSION_RESOURCE)) {
+            if (in == null) {
+                return fallback;
+            }
+            var props = new Properties();
+            props.load(in);
+            String value = props.getProperty(key, "").trim();
+            return value.isEmpty() ? fallback : value;
+        } catch (IOException e) {
+            return fallback;
+        }
+    }
 
     private ProtocolVersion() {}
 }

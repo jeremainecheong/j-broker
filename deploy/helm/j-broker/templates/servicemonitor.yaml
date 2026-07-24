@@ -1,0 +1,28 @@
+{{- if .Values.metrics.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "jbroker.admin.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+    {{- with .Values.metrics.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # Targets the admin Service. Per-broker metrics arrive through it:
+  # the admin app fans DescribeMetrics across brokers and serves the
+  # merged snapshot from /actuator/prometheus, so one target covers
+  # the whole cluster.
+  selector:
+    matchLabels:
+      {{- include "jbroker.admin.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}

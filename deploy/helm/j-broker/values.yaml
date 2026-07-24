@@ -163,6 +163,29 @@ networkPolicy:
   # NetworkPolicyPeer list for the admin UI/API port.
   adminFrom: []
 
+# Prometheus-operator integration. Off by default: these toggles render
+# monitoring.coreos.com/v1 objects, and the CRDs only exist on clusters
+# running prometheus-operator / kube-prometheus.
+#
+# The admin app is the single scrape point. Its MetricsScraper pulls
+# DescribeMetrics from every broker over gRPC and re-exposes the merged
+# snapshot at /actuator/prometheus on the admin port; broker pods have
+# no metrics port of their own. The actuator path stays open even when
+# admin auth (admin.auth.existingSecret) is enabled. When
+# networkPolicy.enabled is true and adminFrom is non-empty, add the
+# Prometheus pods to adminFrom or scrapes will be dropped.
+metrics:
+  serviceMonitor:
+    enabled: false
+    # Prometheus-side scrape cadence. Keep it >= the admin app's own
+    # broker-scrape cadence (jbroker.metrics.scrape.intervalSeconds,
+    # 5s default) — scraping faster only re-reads the same snapshot.
+    interval: 15s
+    scrapeTimeout: 10s
+    # Extra labels so the object matches your operator's
+    # serviceMonitorSelector, e.g. release: kube-prometheus-stack.
+    additionalLabels: {}
+
 # Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
 # Off by default — the admin-app and broker both degrade gracefully
 # (in-memory quota + single-pod SSE) without it.

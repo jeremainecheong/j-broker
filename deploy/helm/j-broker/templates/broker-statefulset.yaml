@@ -113,6 +113,16 @@ spec:
             - name: raft
               containerPort: {{ .Values.broker.ports.raft }}
               protocol: TCP
+          # The broker exposes no dedicated health endpoint — the gRPC
+          # port only binds after segment recovery and Raft init, so a
+          # TCP accept is the truthful "process is serving" signal.
+          # The startup probe gives recovery up to 5 minutes (large data
+          # dirs replay logs on boot) before liveness may kill the pod.
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             tcpSocket:
               port: grpc

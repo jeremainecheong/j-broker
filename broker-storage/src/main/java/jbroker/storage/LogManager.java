@@ -15,7 +15,9 @@ import java.util.concurrent.TimeUnit;
  * it themselves.
  *
  * <p>Layout: {@code <rootDir>/<topic>-<partition>/00000...log} per standard
- * Kafka convention.
+ * Kafka convention, plus a {@link FormatVersion#FILE_NAME} marker at the
+ * root recording the on-disk format. Opening a root written by a newer
+ * broker throws — see {@link FormatVersion}.
  */
 public final class LogManager implements AutoCloseable {
 
@@ -123,6 +125,9 @@ public final class LogManager implements AutoCloseable {
         this.rootDir = rootDir;
         this.config = config;
         Files.createDirectories(rootDir);
+        // Refuse before spawning anything: a data dir written by a newer
+        // broker must fail the open, not be reinterpreted.
+        FormatVersion.check(rootDir);
         this.cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = Thread.ofVirtual().unstarted(r);
             t.setName("log-cleaner");

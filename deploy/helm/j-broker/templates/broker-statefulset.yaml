@@ -25,6 +25,20 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "jbroker.serviceAccountName" . }}
+      {{- if .Values.broker.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          # Soft spread: prefer one broker per node so a node failure
+          # costs at most one Raft voter, but never refuse to schedule
+          # on clusters with fewer nodes than replicas.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: {{ .Values.broker.podAntiAffinity.weight }}
+              podAffinityTerm:
+                topologyKey: {{ .Values.broker.podAntiAffinity.topologyKey }}
+                labelSelector:
+                  matchLabels:
+                    {{- include "jbroker.broker.selectorLabels" . | nindent 20 }}
+      {{- end }}
       securityContext:
         fsGroup: 1001
         runAsUser: 1001
@@ -99,6 +113,16 @@ spec:
             - name: raft
               containerPort: {{ .Values.broker.ports.raft }}
               protocol: TCP
+          # The broker exposes no dedicated health endpoint — the gRPC
+          # port only binds after segment recovery and Raft init, so a
+          # TCP accept is the truthful "process is serving" signal.
+          # The startup probe gives recovery up to 5 minutes (large data
+          # dirs replay logs on boot) before liveness may kill the pod.
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             tcpSocket:
               port: grpc

@@ -54,7 +54,7 @@ run_template() {
     helm template "$RELEASE" "$CHART_DIR" "$@" 2>&1
 }
 
-echo "==> [1/5] defaults produce a 3-broker StatefulSet + admin Deployment"
+echo "==> [1/7] defaults produce a 3-broker StatefulSet + admin Deployment"
 defaults=$(run_template)
 must_match 'kind: StatefulSet' "$defaults" "StatefulSet exists"
 must_match 'kind: Deployment' "$defaults" "Deployment exists"
@@ -64,19 +64,33 @@ must_match 'volumeClaimTemplates:' "$defaults" "PVCs rendered by default"
 must_match 'accessModes' "$defaults" "PVC accessModes present"
 must_match 'storage: "10Gi"' "$defaults" "default PVC size 10Gi"
 must_match 'podManagementPolicy: Parallel' "$defaults" "parallel pod management"
+must_match 'kind: PodDisruptionBudget' "$defaults" "broker PDB rendered by default"
+must_match 'maxUnavailable: 1' "$defaults" "PDB caps evictions at 1"
+must_match 'startupProbe' "$defaults" "broker startup probe present"
+must_match '"helm.sh/hook": test' "$defaults" "helm test hook pod rendered"
+must_match 'preferredDuringSchedulingIgnoredDuringExecution' "$defaults" "soft anti-affinity by default"
+must_match 'topologyKey: kubernetes.io/hostname' "$defaults" "anti-affinity spreads across nodes"
 must_not_match 'kind: Ingress' "$defaults" "no ingress by default"
+must_not_match 'kind: NetworkPolicy' "$defaults" "no NetworkPolicy by default"
 must_not_match 'kind: Secret' "$defaults" "no secret created by default (bring your own)"
 must_not_match 'JBROKER_REDIS_URL' "$defaults" "no redis wiring when disabled"
 must_not_match 'tls-enabled' "$defaults" "no --tls flags when tls disabled"
 must_not_match 'mountPath: /etc/jbroker/tls' "$defaults" "no TLS volume when disabled"
 
-echo "==> [2/5] replica count override propagates into voters + admin brokers"
+echo "==> [2/7] PDB + anti-affinity toggles remove their resources"
+bare=$(run_template \
+    --set broker.podDisruptionBudget.enabled=false \
+    --set broker.podAntiAffinity.enabled=false)
+must_not_match 'kind: PodDisruptionBudget' "$bare" "PDB gone when disabled"
+must_not_match 'podAntiAffinity' "$bare" "anti-affinity gone when disabled"
+
+echo "==> [3/7] replica count override propagates into voters + admin brokers"
 five=$(run_template --set broker.replicaCount=5)
 must_match 'replicas: 5' "$five" "broker replicas=5 override"
 must_match '5@test-j-broker-broker-4' "$five" "5th voter present in JBROKER_VOTERS"
 must_match 'test-j-broker-broker-4.test-j-broker-broker-headless' "$five" "5th admin broker URL present"
 
-echo "==> [3/5] TLS enabled wires cert paths + mounts TLS secret"
+echo "==> [4/7] TLS enabled wires cert paths + mounts TLS secret"
 tls=$(run_template --set tls.enabled=true --set tls.secretName=my-bundle)
 must_match 'name: JBROKER_ADMIN_TLS_ENABLED' "$tls" "admin TLS enabled env var"
 must_match 'mountPath: /etc/jbroker/tls' "$tls" "TLS volume mounted into containers"
@@ -86,17 +100,30 @@ must_match '\-\-tls-cert /etc/jbroker/tls/tls.crt' "$tls" "broker --tls-cert fla
 must_match '\-\-tls-key /etc/jbroker/tls/tls.key' "$tls" "broker --tls-key flag"
 must_match '\-\-tls-trust /etc/jbroker/tls/ca.crt' "$tls" "broker --tls-trust flag"
 
-echo "==> [4/5] advertised-listeners template renders from sprintf"
+echo "==> [5/7] advertised-listeners template renders from sprintf"
 adv=$(run_template --set broker.advertisedHostTemplate='broker%d.example.com' --set broker.advertisedPort=9443)
 must_match '1=broker1.example.com:9443' "$adv" "advertised listener id=1"
 must_match '2=broker2.example.com:9443' "$adv" "advertised listener id=2"
 must_match '3=broker3.example.com:9443' "$adv" "advertised listener id=3"
 must_match '\-\-advertised-listeners' "$adv" "--advertised-listeners CLI flag emitted"
 
-echo "==> [5/5] Redis toggle emits Deployment + admin URL env var"
+echo "==> [6/7] Redis toggle emits Deployment + admin URL env var"
 redis=$(run_template --set redis.enabled=true)
 must_match 'name: test-j-broker-redis' "$redis" "redis Deployment rendered"
 must_match 'value: "redis://test-j-broker-redis:6379"' "$redis" "admin sees redis URL"
+
+echo "==> [7/7] NetworkPolicy toggle locks broker/admin/redis ingress"
+netpol=$(run_template --set networkPolicy.enabled=true --set redis.enabled=true \
+    --set broker.chaosPort=9100 --set broker.chaosTokenSecret=chaos-token)
+count=$(grep -c 'kind: NetworkPolicy' <<<"$netpol" || true)
+[ "$count" -eq 3 ] || fail "expected 3 NetworkPolicies (broker/admin/redis), got $count"
+pass "3 NetworkPolicies rendered"
+must_match 'port: 9192' "$netpol" "raft port allowed between brokers"
+must_match 'port: 9100' "$netpol" "chaos port opened to admin when bound"
+must_match 'port: 6379' "$netpol" "redis locked to admin app"
+restricted=$(run_template --set networkPolicy.enabled=true \
+    --set 'networkPolicy.clientFrom[0].namespaceSelector.matchLabels.team=data')
+must_match 'team: data' "$restricted" "clientFrom peers propagate into the broker policy"
 
 echo
 echo "All helm smoke-test assertions passed."

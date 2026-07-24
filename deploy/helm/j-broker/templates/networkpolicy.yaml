@@ -1,0 +1,96 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "jbroker.broker.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "jbroker.broker.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Broker peers: Raft consensus plus follower fetch over gRPC.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "jbroker.broker.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.broker.ports.raft }}
+          protocol: TCP
+        - port: {{ .Values.broker.ports.grpc }}
+          protocol: TCP
+    # Admin app: metadata + admin RPCs, and the chaos control plane
+    # when a chaos port is bound.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "jbroker.admin.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.broker.ports.grpc }}
+          protocol: TCP
+        {{- if ge (int .Values.broker.chaosPort) 0 }}
+        - port: {{ .Values.broker.chaosPort }}
+          protocol: TCP
+        {{- end }}
+    # Clients: produce/consume gRPC. Without clientFrom peers the
+    # client port stays reachable from anywhere; the Raft port is
+    # broker-only either way.
+    - ports:
+        - port: {{ .Values.broker.ports.grpc }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.clientFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "jbroker.admin.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "jbroker.admin.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.admin.service.port }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.adminFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.redis.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "jbroker.redis.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "jbroker.redis.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Only the admin app talks to Redis (quota state + SSE fan-out).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "jbroker.admin.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 6379
+          protocol: TCP
+{{- end }}
+{{- end }}

@@ -81,12 +81,15 @@ Highlights:
 |---|---|---|
 | `broker.replicaCount` | `3` | Raft-majority-friendly odd number. |
 | `broker.persistence.size` | `10Gi` | Per-broker PVC size. |
+| `broker.podDisruptionBudget.enabled` | `true` | PDB capping voluntary evictions at `maxUnavailable: 1` so drains never cost Raft its majority. |
+| `broker.podAntiAffinity.enabled` | `true` | Soft anti-affinity spreading brokers across nodes; single-node clusters still schedule. |
 | `broker.advertisedHostTemplate` | `""` | `sprintf`-style template used to build `--advertised-listeners` for external clients. Empty → skip the flag. |
 | `admin.replicaCount` | `1` | Bump + enable Redis for multi-pod SSE fan-out. |
 | `admin.ingress.enabled` | `false` | Stand up an Ingress for the admin UI. |
 | `tls.enabled` | `false` | Turn on mTLS on every gRPC hop. |
 | `tls.secretName` | `jbroker-tls` | Kubernetes Secret carrying `ca.crt` + `tls.crt` + `tls.key` PEM files. |
 | `redis.enabled` | `false` | Bundled Redis Deployment for quota + SSE fan-out. |
+| `networkPolicy.enabled` | `false` | Ingress lockdown: Raft stays broker-only, chaos/redis ports admin-only, client + UI ports scoped by `clientFrom`/`adminFrom`. Needs a NetworkPolicy-enforcing CNI. |
 
 ## Enabling mTLS
 
@@ -118,3 +121,7 @@ deploy/helm/j-broker/tests/render-smoke.sh
 Runs `helm template` across the default, TLS-enabled, Redis-enabled, and
 advertised-listener value matrices and grep-asserts structural
 invariants. No Kubernetes cluster required.
+
+Against a live release, `helm test <release>` runs a hook pod (reusing
+the broker image) that TCP-connects to every broker pod and the admin
+service and fails if any port does not answer.

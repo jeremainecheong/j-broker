@@ -1,0 +1,56 @@
+{{- $fullname := include "jbroker.broker.fullname" . -}}
+{{- $headless := include "jbroker.broker.headless" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $grpc := int .Values.broker.ports.grpc -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "jbroker.fullname" . }}-test-connection
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1001
+    runAsGroup: 1001
+    runAsNonRoot: true
+  containers:
+    - name: probe
+      # Reuses the broker image (Ubuntu-based JRE) purely for bash and
+      # its /dev/tcp redirection — no extra image to ship or pull.
+      image: "{{ .Values.broker.image.repository }}:{{ .Values.broker.image.tag }}"
+      imagePullPolicy: {{ .Values.broker.image.pullPolicy }}
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -u
+          check() {
+            local host=$1 port=$2 i
+            for i in $(seq 1 30); do
+              if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+                echo "ok: ${host}:${port} answers"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "FAIL: ${host}:${port} did not answer within 60s" >&2
+            return 1
+          }
+          rc=0
+          {{- range $i := until (int .Values.broker.replicaCount) }}
+          check "{{ $fullname }}-{{ $i }}.{{ $headless }}.{{ $ns }}.svc.cluster.local" {{ $grpc }} || rc=1
+          {{- end }}
+          check "{{ include "jbroker.admin.fullname" . }}" {{ .Values.admin.service.port }} || rc=1
+          exit $rc
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi

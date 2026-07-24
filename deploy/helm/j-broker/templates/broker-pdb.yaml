@@ -1,0 +1,17 @@
+{{- if .Values.broker.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "jbroker.broker.fullname" . }}
+  labels:
+    {{- include "jbroker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  # Caps voluntary evictions only — a crashed node still takes its pod
+  # down. maxUnavailable 1 keeps a Raft majority alive through rolling
+  # node drains for the recommended 3- and 5-voter layouts.
+  maxUnavailable: {{ .Values.broker.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "jbroker.broker.selectorLabels" . | nindent 6 }}
+{{- end }}

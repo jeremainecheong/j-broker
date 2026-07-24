@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import jbroker.storage.Compression;
 import jbroker.storage.Record;
 import jbroker.storage.RecordBatch;
 
@@ -48,15 +49,28 @@ public final class BatchingProducer implements AutoCloseable {
 
     /**
      * Tuning knobs. {@link #defaults()} gives 64 KiB batches, 5 ms linger,
-     * a 120 s delivery deadline, and 100 ms initial retry backoff.
+     * a 120 s delivery deadline, 100 ms initial retry backoff, and no
+     * compression.
+     *
+     * <p>{@code compression} is applied when a batch is encoded for the
+     * wire; {@code batchSizeBytes} accounts UNCOMPRESSED encoded bytes
+     * (compressed size isn't known until send time), so a compressed
+     * batch ships at or below the configured threshold.
      */
-    public record Config(int batchSizeBytes, long lingerMs, long deliveryTimeoutMs, long retryBackoffMs) {
+    public record Config(
+            int batchSizeBytes, long lingerMs, long deliveryTimeoutMs, long retryBackoffMs, Compression compression) {
 
         public Config {
             if (batchSizeBytes < 1) throw new IllegalArgumentException("batchSizeBytes must be positive");
             if (lingerMs < 0) throw new IllegalArgumentException("lingerMs must be non-negative");
             if (deliveryTimeoutMs < 1) throw new IllegalArgumentException("deliveryTimeoutMs must be positive");
             if (retryBackoffMs < 1) throw new IllegalArgumentException("retryBackoffMs must be positive");
+            Objects.requireNonNull(compression, "compression");
+        }
+
+        /** Compression-free variant — the pre-codec tuning surface. */
+        public Config(int batchSizeBytes, long lingerMs, long deliveryTimeoutMs, long retryBackoffMs) {
+            this(batchSizeBytes, lingerMs, deliveryTimeoutMs, retryBackoffMs, Compression.NONE);
         }
 
         public static Config defaults() {
@@ -137,7 +151,13 @@ public final class BatchingProducer implements AutoCloseable {
                             int baseSequence,
                             List<byte[]> values) {
                         return client.idempotentProduceBatchAcksAll(
-                                topic, partition, values, producerId, producerEpoch, baseSequence);
+                                topic,
+                                partition,
+                                values,
+                                producerId,
+                                producerEpoch,
+                                baseSequence,
+                                config.compression());
                     }
                 },
                 config);

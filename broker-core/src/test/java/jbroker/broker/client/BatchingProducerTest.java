@@ -215,6 +215,16 @@ class BatchingProducerTest {
         }
     }
 
+    @Test
+    void configDefaultsToNoCompressionAndRejectsNull() {
+        assertThat(BatchingProducer.Config.defaults().compression()).isEqualTo(jbroker.storage.Compression.NONE);
+        // The pre-codec constructor keeps its meaning: no compression.
+        assertThat(new BatchingProducer.Config(1, 0, 1, 1).compression()).isEqualTo(jbroker.storage.Compression.NONE);
+        assertThatThrownBy(() -> new BatchingProducer.Config(1, 0, 1, 1, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("compression");
+    }
+
     // ---- helpers ----
 
     private static byte[] value(int size) {

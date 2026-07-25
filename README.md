@@ -67,6 +67,18 @@ The success metric was never feature count — it was *being able to explain eve
 
 ---
 
+## What this is not
+
+Deliberate boundaries, not gaps waiting for a fix:
+
+- **Kafka wire-protocol compatibility** — the founding constraint is no Kafka libraries, and speaking Kafka's frame format would make `kafka-clients` the de-facto test suite for this codebase. The gRPC clients in this repo are the interface.
+- **Cross-cluster replication** — one Raft-replicated cluster is the consistency domain this project set out to get right; asynchronous mirroring between clusters is a second, different consistency problem.
+- **Tiered storage** — the storage engine is built around local segment files, the page cache, and zero-copy `transferTo`; offloading cold segments to object storage would replace that read path rather than extend it.
+- **A schema registry** — records are opaque bytes from producer to consumer; serialization contracts belong to the applications at either end.
+- **A stream-processing layer** — the broker stores and moves records; joins, windows, and aggregations live in consumers, where the client API leaves them.
+
+---
+
 ## Tech stack
 
 | Layer | Technology | Role |

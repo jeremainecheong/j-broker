@@ -61,6 +61,7 @@ The success metric was never feature count — it was *being able to explain eve
 - Admin REST + Thymeleaf UI (RabbitMQ-management flavour): topics, partitions with live HWM/LEO, consumer-group lag, Raft state, cluster lifecycle actions, chaos controls, SSE events rail ([admin-app/README.md](admin-app/README.md)).
 - Prometheus metrics through a single admin-side scrape point, two auto-provisioned Grafana dashboards, and an opt-in alert pack (seven rules) for Kubernetes.
 - [Operator runbooks](deploy/runbooks/README.md) for the six failure modes an operator actually meets.
+- Per-principal produce and fetch byte-rate quotas — off by default, denied requests carry a retry-after hint, replication traffic is never charged, and a Redis URL makes the buckets cluster-wide.
 - Six custom JFR events on the hot paths.
 - A tag-triggered release pipeline: container images to GHCR, the Helm chart as an OCI artifact, client jars to GitHub Packages.
 
@@ -78,7 +79,7 @@ The success metric was never feature count — it was *being able to explain eve
 | Admin frontend | Thymeleaf + htmx + Alpine.js + Chart.js | Server-rendered pages with partial swaps; no SPA, no bundler, no npm; vendor scripts self-hosted (< 50 KB total client JS). |
 | Metrics | Micrometer → Prometheus → Grafana | Broker metrics scraped over gRPC every 5 s and republished as `jbroker_*` gauges; two auto-provisioned dashboards; opt-in PrometheusRule alert pack in the Helm chart. |
 | Profiling | JFR custom events, async-profiler | Six hot-path events gated by `event.shouldCommit()` so they cost ~nothing when not recording. |
-| Event fan-out | Redis (hand-rolled RESP client) | Optional pub/sub bridge so multi-replica admin deployments share one SSE stream; the default single-replica install never dials Redis. |
+| Event fan-out / quotas | Redis (hand-rolled RESP client) | Optional: pub/sub bridge so multi-replica admin deployments share one SSE stream, and shared byte-rate quota buckets so per-principal caps hold cluster-wide. The default install never dials Redis — SSE stays in-process and quota buckets stay per-broker. |
 | Testing | JUnit 5, jqwik, ArchUnit, Testcontainers, HdrHistogram | Property tests on index math, enforced module boundaries, real-Redis ITs, bench percentiles. |
 | Build / CI | Gradle 8.7 (wrapper SHA-verified), GitHub Actions | Every PR runs the full build (unit + integration + two 10,000-seed simulator corpora + VT-pinning checks), perf gates, proto wire-compatibility, and a secured Helm install on a real Kind cluster. |
 | Packaging | Docker multi-stage builds, docker compose, Helm, tag-triggered releases | One-command 3-broker cluster; K8s chart with StatefulSet brokers, PDB, anti-affinity, opt-in NetworkPolicy; releases publish GHCR images, an OCI chart, and GitHub Packages jars. |
@@ -340,9 +341,11 @@ CI installs this secured configuration on a real Kind cluster on every pull requ
 - **Runbooks**: [`deploy/runbooks/README.md`](deploy/runbooks/README.md) covers broker down, disk full, offline partition, lagging consumer group, certificate expiry, and full-cluster cold start — every alert, metric, command, and endpoint in them exists in this repo.
 - **Alerts**: opt-in PrometheusRule (`metrics.prometheusRule.enabled` in the [chart values](deploy/helm/j-broker/values.yaml)) with seven rules: under-replicated partitions, replication lag, stalled high watermark, Raft term flapping, unreachable broker, low disk headroom, metrics endpoint down. Failure modes with no backing metric are listed in `values.yaml` as gaps rather than shipped as alerts that can never fire.
 - **Dashboards**: two Grafana dashboards (cluster overview, partitions) auto-provisioned by the monitoring compose profile, reusable from [`scripts/monitoring/grafana/dashboards/`](scripts/monitoring/grafana/dashboards/).
-- **Cluster lifecycle** from the CLI (`j-broker admin` = `broker-app admin`; the same operations are on the REST API and the admin UI):
+- **Cluster lifecycle** from the CLI (the same operations are on the REST API and the admin UI):
 
 ```bash
+alias j-broker=./broker-app/build/install/broker-app/bin/broker-app
+
 j-broker admin cluster add-broker --id 4 --host broker4 --raft-port 9192 --broker-port 9092
 j-broker admin cluster decommission --id 4
 j-broker admin cluster reassign --topic orders --partition 0 --replicas 3,2,1

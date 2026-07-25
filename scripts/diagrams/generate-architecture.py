@@ -180,9 +180,9 @@ cell("browser", "🌐  Browser", app_box(OPS_FILL, OPS_STROKE, OPS_FG),
 # Tightened height: ends shortly after CLI (no wasted space).
 cell("clients", "Service clients & tooling",
      panel("#f8fafc", "#94a3b8"),
-     LEFT_X, 240, LEFT_W, 460)
+     LEFT_X, 240, LEFT_W, 520)
 
-PROD_Y, CONS_Y, JAVA_Y, CLI_Y = 290, 390, 490, 590
+PROD_Y, CONS_Y, JAVA_Y, PY_Y, CLI_Y = 290, 385, 480, 575, 670
 
 # Service-client boxes: width 240 (was 220) — fixes BrokerClient truncation
 BOX_W = LEFT_W - 40
@@ -190,26 +190,36 @@ BOX_W = LEFT_W - 40
 cell("prod_svc", "PROD  ·  Producer service",
      app_box(SVC_FILL, SVC_STROKE, SVC_FG),
      LEFT_X + 20, PROD_Y, BOX_W, 50)
-cell("prod_svc_lbl", "BrokerClient · idempotent",
+cell("prod_svc_lbl", "BatchingProducer · idempotent",
      SMALL, LEFT_X + 20, PROD_Y + 52, BOX_W, 16)
 
 cell("cons_svc", "CONS  ·  Consumer service",
      app_box(SVC_FILL, SVC_STROKE, SVC_FG),
      LEFT_X + 20, CONS_Y, BOX_W, 50)
-cell("cons_svc_lbl", "FindCoordinator · Fetch · Commit",
-     SMALL, LEFT_X + 15, CONS_Y + 52, BOX_W + 10, 16)
+cell("cons_svc_lbl", "Fetch · Commit · read_committed (LSO)",
+     SMALL, LEFT_X + 10, CONS_Y + 52, BOX_W + 20, 16)
 
-# BrokerClient SDK — same blue family + Java icon
+# Java SDK — same blue family + Java icon. ClusterClient is the routing
+# layer under every high-level client; it does the protocol-version
+# handshake at first use of each connection.
 cell("javacli_box", "", app_box(SVC_FILL, SVC_STROKE, SVC_FG),
      LEFT_X + 20, JAVA_Y, BOX_W, 50)
 cell("javacli_icon", "", icon_style(JAVA),
      LEFT_X + 30, JAVA_Y + 5, 40, 40)
-cell("javacli_text", "BrokerClient (Java SDK)",
+cell("javacli_text", "Java SDK",
      "text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;"
      f"{FONT};fontColor={SVC_FG};",
      LEFT_X + 70, JAVA_Y, BOX_W - 50, 50)
-cell("javacli_lbl", "gRPC · Protobuf · acks={0,1,all}",
-     SMALL, LEFT_X + 15, JAVA_Y + 52, BOX_W + 10, 16)
+cell("javacli_lbl",
+     "BatchingProducer · Consumer · TransactionalProducer"
+     "<br/>ClusterClient routing · version handshake",
+     SMALL, LEFT_X, JAVA_Y + 52, LEFT_W, 28)
+
+# Python reference client — same blue family (service traffic)
+cell("pycli", "🐍  Python client", app_box(SVC_FILL, SVC_STROKE, SVC_FG),
+     LEFT_X + 20, PY_Y, BOX_W, 50)
+cell("pycli_lbl", "jbroker-client · produce · consume · admin",
+     SMALL, LEFT_X + 10, PY_Y + 52, BOX_W + 20, 16)
 
 # CLI — same purple family as Browser (operator tool, not service traffic)
 cell("cli", "⌨  j-broker CLI", app_box(OPS_FILL, OPS_STROKE, OPS_FG),
@@ -296,9 +306,11 @@ cell("graf_lbl", ":3000  dashboards", SMALL,
 
 # ---- Data plane sub-panel
 DATA_Y = ADMIN_Y + ADMIN_H + 30
-DATA_H = 350  # taller to fit broker box (now 280 high) + JFR pill
+DATA_H = 385  # broker boxes (280) + coordinators note below them
 
-cell("data_panel", "Data plane  ·  3-broker combined-mode cluster",
+cell("data_panel",
+     "Data plane  ·  3-broker combined-mode cluster  ·  "
+     "rack-aware replica placement",
      panel("#ffffff", "#94a3b8", left=True),
      CL_X + 20, DATA_Y, CL_W - 40, DATA_H)
 
@@ -313,9 +325,9 @@ broker_xs = [
     CL_X + 50 + 2 * (BROKER_W + BROKER_GAP),
 ]
 titles = [
-    "Broker 1  ·  voter",
-    "Broker 2  ·  controller (Raft leader)",
-    "Broker 3  ·  voter",
+    "Broker 1  ·  voter  ·  rack a",
+    "Broker 2  ·  controller (Raft leader)  ·  rack b",
+    "Broker 3  ·  voter  ·  rack c",
 ]
 fills = ["#ecfdf5", "#fef3c7", "#ecfdf5"]
 strokes = ["#10b981", "#f59e0b", "#10b981"]
@@ -360,10 +372,11 @@ for i, (bx, title, fill, stroke) in enumerate(zip(broker_xs, titles, fills, stro
          SMALL, bx + 10, SY + 32, BROKER_W - 20, 14)
 
     if i == 1:
-        cell(f"{bid}_offsets", "+ __consumer_offsets (compacted)",
+        cell(f"{bid}_offsets",
+             "+ __consumer_offsets · __transaction_state  (compacted)",
              "text;html=1;align=center;verticalAlign=middle;fontSize=11;"
              f"fontStyle=1;{FONT};fontColor=#92400e;",
-             bx + 10, SY + 48, BROKER_W - 20, 16)
+             bx + 5, SY + 48, BROKER_W - 10, 16)
 
     cell(f"{bid}_disk", "fsync · zero-copy transferTo",
          "rounded=1;arcSize=30;fillColor=#0f172a;strokeColor=none;"
@@ -378,6 +391,19 @@ for i, (bx, title, fill, stroke) in enumerate(zip(broker_xs, titles, fills, stro
          f"fontColor=#ffffff;fontSize=10;fontStyle=1;{FONT};html=1;"
          "align=center;verticalAlign=middle;",
          bx + 100, SY + 104, 200, 24)
+
+
+# Coordinators note — group + txn coordinators are per-internal-topic-
+# partition and run on that partition's leader. EndTxn fans control-batch
+# markers out to the partition leaders over the TxnMarkers RPC.
+cell("coord_note",
+     "Group + Txn coordinators — one per __consumer_offsets / "
+     "__transaction_state partition, on its leader  ·  "
+     "EndTxn ⇒ control-batch markers via TxnMarkers RPC",
+     "rounded=1;arcSize=30;fillColor=#fef3c7;strokeColor=#f59e0b;"
+     f"strokeWidth=1.5;fontColor=#92400e;fontSize=11;fontStyle=1;{FONT};"
+     "html=1;align=center;verticalAlign=middle;",
+     CL_X + 50, BROKER_Y + BROKER_H + 12, CL_W - 100, 26)
 
 
 # ---- Persistence sub-panel — narrower so it wraps the Redis content
@@ -417,8 +443,9 @@ FOOTER_Y = PERS_Y + PERS_H + 12
 cell("docker_logo", "", icon_style(DOCKER),
      CL_X + 30, FOOTER_Y, 28, 28)
 cell("docker_text",
-     "<b>Build &amp; deploy:</b>  Docker images  ·  docker compose up  ·  "
-     "Helm chart for Kubernetes  ·  GitHub Actions CI  ·  perf-gate",
+     "<b>Build &amp; release:</b>  GHCR images  ·  docker compose up  ·  "
+     "OCI Helm chart (Kubernetes)  ·  GitHub Packages jars  ·  "
+     "GitHub Actions CI  ·  perf-gate",
      "text;html=1;align=left;verticalAlign=middle;fontSize=11;fontStyle=0;"
      f"{FONT};fontColor=#1e3a8a;",
      CL_X + 70, FOOTER_Y, CL_W - 130, 28)
@@ -470,78 +497,90 @@ edge("e1", "browser", "admin_app",
      label=numbered_label(1, "HTTP + SSE"))
 
 # Each client below has a unique entry_y in the data_panel
-# (height 320, top y=DATA_Y).
-# Source mid-Y values: PROD=335, CONS=435, JAVA=535, CLI=635
-# Target entry-Y: 0.10=DATA_Y+32, 0.34=DATA_Y+109, 0.62=DATA_Y+198, 0.90=DATA_Y+288
+# (height 385, top y=DATA_Y=310).
+# Source mid-Y values: PROD=315, CONS=410, JAVA=505, PY=600, CLI=695
+# Target entry-Y: 0.20=387, 0.34=441, 0.51=506, 0.75=599, 0.95=676
+# Labels stay short so they land in the rail→panel gap; the folded
+# detail (zstd, quotas, read_committed, handshake) lives in the client
+# captions and the Redis box.
 
 # (2) Producer service → data plane
 edge("e2", "prod_svc", "data_panel",
      style=ARROW,
      exit_x=1, exit_y=0.5,
-     entry_x=0, entry_y=0.10,
-     label=numbered_label(2, "Produce · gRPC"))
+     entry_x=0, entry_y=0.20,
+     label=numbered_label(2, "Produce · zstd · quotas"))
 
 # (3) Consumer service → data plane
 edge("e3", "cons_svc", "data_panel",
      style=ARROW,
      exit_x=1, exit_y=0.5,
      entry_x=0, entry_y=0.34,
-     label=numbered_label(3, "Fetch · Commit · gRPC"))
+     label=numbered_label(3, "Fetch · Commit · quotas"))
 
-# (4) BrokerClient → data plane
+# (4) Java SDK → data plane
 edge("e4", "javacli_box", "data_panel",
      style=ARROW,
      exit_x=1, exit_y=0.5,
-     entry_x=0, entry_y=0.62,
-     label=numbered_label(4, "Idempotent produce"))
+     entry_x=0, entry_y=0.51,
+     label=numbered_label(4, "Idempotent · txn produce"))
 
-# (5) CLI → data plane
-edge("e5", "cli", "data_panel",
+# (5) Python client → data plane
+edge("e5", "pycli", "data_panel",
      style=ARROW,
      exit_x=1, exit_y=0.5,
-     entry_x=0, entry_y=0.90,
-     label=numbered_label(5, "Admin CLI · chaos HTTP"))
+     entry_x=0, entry_y=0.75,
+     label=numbered_label(5, "Produce · Fetch · gRPC"))
 
-# (6) Admin → data plane (single vertical at admin-app center)
-edge("e6", "admin_app", "data_panel",
+# (6) CLI → data plane
+edge("e6", "cli", "data_panel",
+     style=ARROW,
+     exit_x=1, exit_y=0.5,
+     entry_x=0, entry_y=0.95,
+     label=numbered_label(6, "Admin CLI · chaos HTTP"))
+
+# (7) Admin → data plane (single vertical at admin-app center)
+edge("e7", "admin_app", "data_panel",
      style=ARROW,
      exit_x=0.5, exit_y=1,
      entry_x=0.45, entry_y=0,
-     label=numbered_label(6, "Admin RPC · Metrics · Events"))
+     label=numbered_label(7, "Admin RPC · Metrics · Events"))
 
-# (7) Prometheus → admin-app (horizontal scrape)
-edge("e7", "prom_box", "admin_app",
+# (8) Prometheus → admin-app (horizontal scrape)
+edge("e8", "prom_box", "admin_app",
      style=DASHED_ARROW,
      exit_x=0, exit_y=0.5,
      entry_x=1, entry_y=0.5,
-     label=numbered_label(7, "scrape /actuator/prometheus"))
+     label=numbered_label(8, "scrape /actuator/prometheus"))
 
-# (8) Grafana → Prometheus
-edge("e8", "graf_box", "prom_box",
+# (9) Grafana → Prometheus
+edge("e9", "graf_box", "prom_box",
      style=ARROW,
      exit_x=0, exit_y=0.5,
      entry_x=1, entry_y=0.5,
-     label=numbered_label(8, "PromQL"))
+     label=numbered_label(9, "PromQL"))
 
-# (9) Data plane → Redis (vertical down)
-edge("e9", "data_panel", "redis_box",
+# (10) Data plane → Redis (vertical down)
+edge("e10", "data_panel", "redis_box",
      style=ARROW,
      exit_x=0.10, exit_y=1,
      entry_x=0.20, entry_y=0,
-     label=numbered_label(9, "RESP"))
+     label=numbered_label(10, "RESP"))
 
-# Replication arrows — short labels fit in the 60-px gaps
+# Replication arrows — run along the empty bottom strip of the broker
+# boxes (y=0.95) so the label clears the module pills. The same links
+# carry the inter-broker WriteTxnMarkers fan-out.
 edge("rep_12", "b1", "b2",
      style=BIDI_ARROW,
-     exit_x=1, exit_y=0.5,
-     entry_x=0, entry_y=0.5,
-     label="↔ replicate")
+     exit_x=1, exit_y=0.95,
+     entry_x=0, entry_y=0.95,
+     label="↔ replicate · txn markers")
 
 edge("rep_23", "b2", "b3",
      style=BIDI_ARROW,
-     exit_x=1, exit_y=0.5,
-     entry_x=0, entry_y=0.5,
-     label="↔ replicate")
+     exit_x=1, exit_y=0.95,
+     entry_x=0, entry_y=0.95,
+     label="↔ replicate · txn markers")
 
 
 # ---------- assemble file --------------------------------------------------

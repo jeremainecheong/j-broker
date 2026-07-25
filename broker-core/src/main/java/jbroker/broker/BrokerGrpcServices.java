@@ -157,6 +157,24 @@ public final class BrokerGrpcServices {
         };
     }
 
+    /**
+     * Inter-broker marker delivery: a remote transaction coordinator fans a
+     * decided transaction's control-batch markers out to the partitions
+     * this broker leads.
+     */
+    public static jbroker.proto.txn.TxnMarkersGrpc.TxnMarkersImplBase txnMarkers(
+            jbroker.broker.txn.TxnMarkersHandler handler) {
+        return new jbroker.proto.txn.TxnMarkersGrpc.TxnMarkersImplBase() {
+            @Override
+            public void writeTxnMarkers(
+                    jbroker.proto.txn.WriteTxnMarkersRequest req,
+                    StreamObserver<jbroker.proto.txn.WriteTxnMarkersResponse> out) {
+                out.onNext(handler.handle(req));
+                out.onCompleted();
+            }
+        };
+    }
+
     public static ClusterGrpc.ClusterImplBase cluster(BrokerHeartbeatHandler handler) {
         return new ClusterGrpc.ClusterImplBase() {
             @Override

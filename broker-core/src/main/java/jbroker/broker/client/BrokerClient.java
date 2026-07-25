@@ -116,6 +116,17 @@ public final class BrokerClient implements AutoCloseable {
                 .describeMetrics(jbroker.proto.broker.DescribeMetricsRequest.getDefaultInstance());
     }
 
+    /**
+     * This broker's replicated cluster view ({@code Metadata.DescribeCluster}):
+     * broker id → advertised endpoint, controller id, liveness. Any broker
+     * can answer — the view is metadata-log state, not leader-only.
+     */
+    public jbroker.proto.broker.DescribeClusterResponse describeCluster() {
+        return metadata()
+                .withDeadlineAfter(5, TimeUnit.SECONDS)
+                .describeCluster(jbroker.proto.broker.DescribeClusterRequest.getDefaultInstance());
+    }
+
     // ---- Admin ----
 
     public void createTopic(String topic, int partitions, int replicationFactor) {

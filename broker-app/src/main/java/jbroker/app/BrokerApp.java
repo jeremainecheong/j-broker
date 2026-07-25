@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import jbroker.broker.client.BrokerClient;
+import jbroker.broker.client.ClusterClient;
 import jbroker.raft.core.NodeId;
 import jbroker.tls.TlsConfig;
 
@@ -280,25 +281,54 @@ public final class BrokerApp {
         var sub = args[0];
         var rest = Arrays.copyOfRange(args, 1, args.length);
         String brokerAddr = flag(rest, "--broker", "127.0.0.1:9092");
-        try (var client = clientFor(brokerAddr)) {
-            switch (sub) {
-                case "create" -> {
-                    var topic = flag(rest, "--topic", null);
-                    int partitions = Integer.parseInt(flag(rest, "--partitions", "1"));
-                    int rf = Integer.parseInt(flag(rest, "--replication-factor", "1"));
-                    client.createTopic(topic, partitions, rf);
-                    System.out.println("created topic " + topic);
+        switch (sub) {
+            case "create" -> {
+                var topic = flag(rest, "--topic", null);
+                int partitions = Integer.parseInt(flag(rest, "--partitions", "1"));
+                int rf = Integer.parseInt(flag(rest, "--replication-factor", "1"));
+                createTopicFollowingHint(brokerAddr, topic, partitions, rf);
+                System.out.println("created topic " + topic);
+            }
+            case "list" -> {
+                try (var client = clientFor(brokerAddr)) {
+                    client.listTopics()
+                            .forEach(t -> System.out.println(t.getTopic() + " (" + t.getPartitions()
+                                    + " partitions, rf=" + t.getReplicationFactor() + ")"));
                 }
-                case "list" -> client.listTopics()
-                        .forEach(t -> System.out.println(t.getTopic() + " (" + t.getPartitions() + " partitions, rf="
-                                + t.getReplicationFactor() + ")"));
-                case "describe" -> {
+            }
+            case "describe" -> {
+                try (var client = clientFor(brokerAddr)) {
                     var topic = flag(rest, "--topic", null);
                     var t = client.describeTopic(topic);
                     System.out.println(t.getTopic() + ": partitions=" + t.getPartitions() + " rf="
                             + t.getReplicationFactor() + " created=" + t.getCreatedMillis());
                 }
-                default -> System.err.println("unknown subcommand: " + sub);
+            }
+            default -> System.err.println("unknown subcommand: " + sub);
+        }
+    }
+
+    /**
+     * Topic creation must reach the controller. When the named broker
+     * answers "not the controller; leader is broker N", retry once against
+     * broker N (resolved through {@link #suggestedLeader}) instead of making
+     * the user re-run the command against the port the error names. One hop
+     * only, mirroring the admin REST pool's single hinted retry; a failed or
+     * unresolvable hop surfaces the original error untouched.
+     */
+    static void createTopicFollowingHint(String brokerAddr, String topic, int partitions, int rf) {
+        try (var client = clientFor(brokerAddr)) {
+            try {
+                client.createTopic(topic, partitions, rf);
+            } catch (RuntimeException original) {
+                var hinted = suggestedLeader(client, original);
+                if (hinted == null) throw original;
+                System.err.println(original.getMessage() + "; retrying against " + hinted);
+                try (var redirected = new BrokerClient(hinted.host(), hinted.port())) {
+                    redirected.createTopic(topic, partitions, rf);
+                } catch (RuntimeException retryFailed) {
+                    throw original;
+                }
             }
         }
     }
@@ -307,15 +337,96 @@ public final class BrokerApp {
         String brokerAddr = flag(args, "--broker", "127.0.0.1:9092");
         String topic = flag(args, "--topic", null);
         int partition = Integer.parseInt(flag(args, "--partition", "0"));
-        try (var client = clientFor(brokerAddr);
-                var reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                long off = client.produce(topic, partition, line.getBytes(StandardCharsets.UTF_8));
-                System.out.println("produced offset " + off);
-            }
+        try (var reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+            produceLines(brokerAddr, topic, partition, reader);
         }
     }
+
+    /**
+     * Produce must reach the partition leader. On the first "leader is
+     * broker N" refusal, redial broker N once (resolved through
+     * {@link #suggestedLeader}), retry the failed line there, and keep the
+     * redirected client for the remaining lines. One hop per invocation;
+     * a failed or unresolvable hop surfaces the original error untouched.
+     * Extracted from {@link #runProduce} so tests can drive it without
+     * owning {@code System.in}.
+     */
+    static void produceLines(String brokerAddr, String topic, int partition, BufferedReader reader) throws Exception {
+        var client = clientFor(brokerAddr);
+        boolean hintFollowed = false;
+        try {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                byte[] value = line.getBytes(StandardCharsets.UTF_8);
+                long off;
+                try {
+                    off = client.produce(topic, partition, value);
+                } catch (RuntimeException original) {
+                    if (hintFollowed) throw original;
+                    hintFollowed = true;
+                    var hinted = suggestedLeader(client, original);
+                    if (hinted == null) throw original;
+                    System.err.println(original.getMessage() + "; retrying against " + hinted);
+                    var redirected = new BrokerClient(hinted.host(), hinted.port());
+                    try {
+                        off = redirected.produce(topic, partition, value);
+                    } catch (RuntimeException retryFailed) {
+                        redirected.close();
+                        throw original;
+                    }
+                    client.close();
+                    client = redirected;
+                }
+                System.out.println("produced offset " + off);
+            }
+        } finally {
+            client.close();
+        }
+    }
+
+    /**
+     * Resolve the broker a NOT_LEADER-shaped failure points at, or null
+     * when the failure carries no usable hint. The broker names the leader
+     * id in the error ("leader is broker N" — the same id its
+     * {@code suggested_leader_*} envelope hints carry; {@link BrokerClient}
+     * folds the envelope into the exception message); the reached broker's
+     * cluster view supplies that id's advertised host:port — the same
+     * address book the envelope hints are filled from.
+     */
+    private static ClusterClient.Endpoint suggestedLeader(BrokerClient reached, RuntimeException failure) {
+        if (failure.getMessage() == null) return null;
+        jbroker.proto.broker.DescribeClusterResponse view;
+        try {
+            view = reached.describeCluster();
+        } catch (RuntimeException e) {
+            return null;
+        }
+        return suggestedLeader(failure.getMessage(), view);
+    }
+
+    /** Pure part of {@link #suggestedLeader(BrokerClient, RuntimeException)}; static for tests. */
+    static ClusterClient.Endpoint suggestedLeader(
+            String failureMessage, jbroker.proto.broker.DescribeClusterResponse view) {
+        var m = LEADER_HINT.matcher(failureMessage);
+        if (!m.find()) return null;
+        int leaderId = Integer.parseInt(m.group(1));
+        for (var node : view.getNodesList()) {
+            if (node.getBrokerId() == leaderId && !node.getHost().isEmpty() && node.getPort() > 0) {
+                return new ClusterClient.Endpoint(node.getHost(), node.getPort());
+            }
+        }
+        return null;
+    }
+
+    /**
+     * How the broker names the right destination in a NOT_LEADER error:
+     * "not the controller; leader is broker 2" (controller mutations) and
+     * "leader is broker 2 for orders-0" (produce). Anything else — election
+     * in flight, unknown topic, auth failure — carries no id and never
+     * triggers a redial.
+     */
+    private static final java.util.regex.Pattern LEADER_HINT =
+            java.util.regex.Pattern.compile("leader is broker (\\d+)");
 
     private static void runConsumer(String[] args) throws Exception {
         String brokerAddr = flag(args, "--broker", "127.0.0.1:9092");

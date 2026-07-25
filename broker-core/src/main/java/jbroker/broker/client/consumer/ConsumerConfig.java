@@ -15,6 +15,31 @@ public final class ConsumerConfig {
     public static final int DEFAULT_FETCH_MAX_BYTES = 1 << 20; // 1 MiB
     public static final int DEFAULT_MAX_POLL_RECORDS = 500;
 
+    /**
+     * {@code isolation.level}: what the consumer may see of transactional
+     * data. {@link #READ_UNCOMMITTED} (the default) returns every produced
+     * record, decided or not; {@link #READ_COMMITTED} asks the broker to cap
+     * fetches at the last stable offset and additionally drops records of
+     * aborted transactions client-side using the ranges the broker attaches.
+     * Control batches (transaction markers) are never surfaced in either
+     * mode. {@code wireId} is the value carried in
+     * {@code FetchRequest.isolation_level}.
+     */
+    public enum IsolationLevel {
+        READ_UNCOMMITTED(0),
+        READ_COMMITTED(1);
+
+        private final int wireId;
+
+        IsolationLevel(int wireId) {
+            this.wireId = wireId;
+        }
+
+        public int wireId() {
+            return wireId;
+        }
+    }
+
     private final String bootstrapHost;
     private final int bootstrapPort;
     private final String groupId;
@@ -26,6 +51,7 @@ public final class ConsumerConfig {
     private final Duration pollFetchDeadline;
     private final DeadLetterPolicy deadLetterPolicy;
     private final TlsConfig tls;
+    private final IsolationLevel isolationLevel;
 
     private ConsumerConfig(Builder b) {
         this.bootstrapHost = b.bootstrapHost;
@@ -39,6 +65,12 @@ public final class ConsumerConfig {
         this.pollFetchDeadline = b.pollFetchDeadline;
         this.deadLetterPolicy = b.deadLetterPolicy;
         this.tls = b.tls == null ? TlsConfig.DISABLED : b.tls;
+        this.isolationLevel = b.isolationLevel;
+    }
+
+    /** Isolation level for fetches; defaults to {@link IsolationLevel#READ_UNCOMMITTED}. */
+    public IsolationLevel isolationLevel() {
+        return isolationLevel;
     }
 
     /** TLS / mTLS configuration; defaults to {@link TlsConfig#DISABLED} (plaintext). */
@@ -112,6 +144,7 @@ public final class ConsumerConfig {
         private Duration pollFetchDeadline = Duration.ofSeconds(5);
         private DeadLetterPolicy deadLetterPolicy;
         private TlsConfig tls;
+        private IsolationLevel isolationLevel = IsolationLevel.READ_UNCOMMITTED;
 
         private Builder(String groupId, String bootstrapHost, int bootstrapPort) {
             this.groupId = groupId;
@@ -168,6 +201,15 @@ public final class ConsumerConfig {
         /** Supply a TLS config; defaults to {@link TlsConfig#DISABLED} (plaintext). */
         public Builder tls(TlsConfig t) {
             this.tls = t;
+            return this;
+        }
+
+        /**
+         * Set {@code isolation.level}. {@code null} keeps the default
+         * ({@link IsolationLevel#READ_UNCOMMITTED}).
+         */
+        public Builder isolationLevel(IsolationLevel v) {
+            this.isolationLevel = v == null ? IsolationLevel.READ_UNCOMMITTED : v;
             return this;
         }
 

@@ -182,6 +182,31 @@ public final class BrokerGrpcServices {
                 out.onNext(handler.endTxn(req));
                 out.onCompleted();
             }
+
+            @Override
+            public void addOffsetsToTxn(
+                    jbroker.proto.txn.AddOffsetsToTxnRequest req,
+                    StreamObserver<jbroker.proto.txn.AddOffsetsToTxnResponse> out) {
+                out.onNext(handler.addOffsetsToTxn(req));
+                out.onCompleted();
+            }
+        };
+    }
+
+    /**
+     * Consumer-group half of transactional offsets: {@code TxnOffsetCommit}
+     * routes on group_id to the group coordinator, which stages the offsets
+     * against the transaction ({@link ConsumerHandler#txnOffsetCommit}).
+     */
+    public static jbroker.proto.txn.TxnOffsetsGrpc.TxnOffsetsImplBase txnOffsets(ConsumerHandler handler) {
+        return new jbroker.proto.txn.TxnOffsetsGrpc.TxnOffsetsImplBase() {
+            @Override
+            public void txnOffsetCommit(
+                    jbroker.proto.txn.TxnOffsetCommitRequest req,
+                    StreamObserver<jbroker.proto.txn.TxnOffsetCommitResponse> out) {
+                out.onNext(handler.txnOffsetCommit(req));
+                out.onCompleted();
+            }
         };
     }
 

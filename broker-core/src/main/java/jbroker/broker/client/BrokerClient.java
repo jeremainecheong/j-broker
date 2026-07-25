@@ -499,34 +499,15 @@ public final class BrokerClient implements AutoCloseable {
     /**
      * Fetch records starting at {@code offset}; returns the list of values in
      * offset order. {@code maxBytes} bounds the server-side response size.
+     * Control batches (transaction markers) ship inline in the raw bytes —
+     * the broker's zero-copy path never strips them — and are skipped here,
+     * never surfaced as application records.
      */
     public List<byte[]> fetch(String topic, int partition, long offset, int maxBytes) {
-        var resp = consumer()
-                .withDeadlineAfter(5, TimeUnit.SECONDS)
-                .fetch(FetchRequest.newBuilder()
-                        .setTopic(topic)
-                        .setPartition(partition)
-                        .setOffset(offset)
-                        .setMaxBytes(maxBytes)
-                        .build());
-        if (resp.hasError() && resp.getError().getCode() != 0) {
-            throw new RuntimeException("fetch failed: " + resp.getError().getMessage());
-        }
-        var buf = ByteBuffer.wrap(resp.getRecords().toByteArray());
         var out = new java.util.ArrayList<byte[]>();
-        while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
-            int mark = buf.position();
-            try {
-                var parsed = RecordBatch.decode(buf);
-                for (var rec : parsed.records()) {
-                    if (parsed.baseOffset() + rec.offsetDelta() >= offset) {
-                        out.add(rec.value());
-                    }
-                }
-            } catch (IllegalArgumentException e) {
-                buf.position(mark);
-                break;
-            }
+        for (var rec :
+                decodePage(fetchRaw(topic, partition, offset, maxBytes), offset).records()) {
+            out.add(rec.value());
         }
         return out;
     }
@@ -536,9 +517,41 @@ public final class BrokerClient implements AutoCloseable {
      * surfaces each record's absolute offset and key alongside its value,
      * which integration tests (in particular the post-compaction sparse-
      * offset assertion) need to prove log-layer guarantees
-     * survive the gRPC hop.
+     * survive the gRPC hop. Control batches are skipped like {@link #fetch}.
      */
     public List<FetchedRecord> fetchRecords(String topic, int partition, long offset, int maxBytes) {
+        return decodePage(fetchRaw(topic, partition, offset, maxBytes), offset).records();
+    }
+
+    /** Offset + key + value tuple from {@link #fetchRecords}. */
+    public record FetchedRecord(long offset, byte[] key, byte[] value) {}
+
+    /**
+     * Fetch everything starting from offset 0 until no new records arrive.
+     * Pages by the last DECODED batch's end offset — not the last returned
+     * record — because retention and sparse compaction leave gaps, and a
+     * page consisting only of control batches (transaction markers) still
+     * has to advance past them instead of ending the walk.
+     */
+    public List<byte[]> fetchAll(String topic, int partition, int maxBytes) {
+        var all = new java.util.ArrayList<byte[]>();
+        long offset = 0;
+        while (true) {
+            var page = decodePage(fetchRaw(topic, partition, offset, maxBytes), offset);
+            // Progress guard: a fetch at (or past) the log end may re-serve
+            // the window below it — the broker reads from an index floor —
+            // so "no batch past the requested offset" is the log-end
+            // signal, not just an empty response.
+            if (page.nextOffset() <= offset) break;
+            for (var rec : page.records()) {
+                all.add(rec.value());
+            }
+            offset = page.nextOffset();
+        }
+        return all;
+    }
+
+    private byte[] fetchRaw(String topic, int partition, long offset, int maxBytes) {
         var resp = consumer()
                 .withDeadlineAfter(5, TimeUnit.SECONDS)
                 .fetch(FetchRequest.newBuilder()
@@ -550,15 +563,25 @@ public final class BrokerClient implements AutoCloseable {
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("fetch failed: " + resp.getError().getMessage());
         }
-        var buf = ByteBuffer.wrap(resp.getRecords().toByteArray());
+        return resp.getRecords().toByteArray();
+    }
+
+    /** {@code nextOffset} is one past the last decoded batch (control included), or -1 when none decoded. */
+    private record DecodedPage(List<FetchedRecord> records, long nextOffset) {}
+
+    private static DecodedPage decodePage(byte[] raw, long requestOffset) {
+        var buf = ByteBuffer.wrap(raw);
         var out = new java.util.ArrayList<FetchedRecord>();
+        long nextOffset = -1L;
         while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
             int mark = buf.position();
             try {
                 var parsed = RecordBatch.decode(buf);
+                nextOffset = Math.max(nextOffset, parsed.lastOffset() + 1);
+                if (parsed.control()) continue; // transaction marker, not payload
                 for (var rec : parsed.records()) {
                     long abs = parsed.baseOffset() + rec.offsetDelta();
-                    if (abs >= offset) {
+                    if (abs >= requestOffset) {
                         out.add(new FetchedRecord(abs, rec.key(), rec.value()));
                     }
                 }
@@ -567,30 +590,7 @@ public final class BrokerClient implements AutoCloseable {
                 break;
             }
         }
-        return out;
-    }
-
-    /** Offset + key + value tuple from {@link #fetchRecords}. */
-    public record FetchedRecord(long offset, byte[] key, byte[] value) {}
-
-    /**
-     * Fetch everything starting from offset 0 until no new records arrive.
-     * Pages by the last record's actual offset — retention and sparse
-     * compaction leave gaps, so counting records would re-request (and
-     * re-receive) the same page forever once the log no longer starts at 0.
-     */
-    public List<byte[]> fetchAll(String topic, int partition, int maxBytes) {
-        var all = new java.util.ArrayList<byte[]>();
-        long offset = 0;
-        while (true) {
-            var batch = fetchRecords(topic, partition, offset, maxBytes);
-            if (batch.isEmpty()) break;
-            for (var rec : batch) {
-                all.add(rec.value());
-            }
-            offset = batch.get(batch.size() - 1).offset() + 1;
-        }
-        return all;
+        return new DecodedPage(List.copyOf(out), nextOffset);
     }
 
     @Override

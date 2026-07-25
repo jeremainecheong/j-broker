@@ -1650,6 +1650,14 @@ public final class Broker implements AutoCloseable {
         final int selfIdForTxn = config.selfId().value();
         var txnMarkerWriter = new jbroker.broker.txn.TxnMarkerWriter(
                 logManager, topicManager, followerTracker, selfIdForTxn, config.minInsyncReplicas(), txnEpochs);
+        // Markers landing on __consumer_offsets decide staged transactional
+        // offset commits: fold into the committed view + durable re-append
+        // of the folded records (see ConsumerHandler.onTxnMarker).
+        txnMarkerWriter.setMarkerListener((topic, partition, pid, epoch, commit) -> {
+            if (jbroker.broker.ConsumerOffsetsTopic.NAME.equals(topic)) {
+                consumerHandler.onTxnMarker(partition, pid, epoch, commit);
+            }
+        });
         var txnMarkersHandler = new jbroker.broker.txn.TxnMarkersHandler(txnMarkerWriter);
         // Marker fan-out to peers rides the internal addresses, like
         // replication; chaos partitions apply to it like any inter-broker
@@ -1772,6 +1780,7 @@ public final class Broker implements AutoCloseable {
                 .addService(BrokerGrpcServices.admin(admin, consumerHandler))
                 .addService(BrokerGrpcServices.metadata(metadataHandler))
                 .addService(BrokerGrpcServices.txn(txnHandler))
+                .addService(BrokerGrpcServices.txnOffsets(consumerHandler))
                 .addService(BrokerGrpcServices.txnMarkers(txnMarkersHandler));
         try {
             var sslCtx = TlsContexts.serverContext(config.tls());
@@ -2530,7 +2539,16 @@ public final class Broker implements AutoCloseable {
             if (recovered.containsKey(p)) continue;
             var ps = topicManager.partitionState(jbroker.broker.ConsumerOffsetsTopic.NAME, p);
             if (ps.isEmpty() || ps.get().leader() != selfBrokerId) continue;
-            int offsetsApplied = jbroker.broker.group.OffsetCacheRecovery.rebuild(logManager, p, offsetCache);
+            // Staging-aware walk: transactional offset batches replay into
+            // the coordinator's live staging (so a marker arriving after
+            // activation still decides them), markers fold/discard in log
+            // order, plain records apply directly.
+            int offsetsApplied = jbroker.broker.group.OffsetCacheRecovery.rebuild(
+                    logManager,
+                    jbroker.broker.ConsumerOffsetsTopic.NAME,
+                    p,
+                    offsetCache,
+                    groupCoordinator.txnOffsetStaging());
             jbroker.broker.group.GroupMetadataRecovery.rebuild(logManager, p, groupCoordinator, System.nanoTime());
             recovered.put(p, Boolean.TRUE);
             log.info(
@@ -2564,10 +2582,18 @@ public final class Broker implements AutoCloseable {
         var buf = java.nio.ByteBuffer.allocate(jbroker.storage.RecordBatch.estimatedSize(records));
         long base = log.nextOffset();
         long now = System.currentTimeMillis();
+        // Stamp the current leader epoch: the partition's epoch lineage
+        // must stay non-decreasing (transaction markers stamp the true
+        // epoch, and a 0-stamped batch after a post-failover marker would
+        // livelock follower reconciliation).
+        int leaderEpoch = topicManager
+                .partitionState(jbroker.broker.ConsumerOffsetsTopic.NAME, partition)
+                .map(ps -> ps.leaderEpoch())
+                .orElse(0);
         jbroker.storage.RecordBatch.encode(
                 buf,
-                base, /*partitionLeaderEpoch*/
-                0,
+                base,
+                leaderEpoch,
                 now,
                 now, /*producerId*/
                 -1L, /*producerEpoch*/

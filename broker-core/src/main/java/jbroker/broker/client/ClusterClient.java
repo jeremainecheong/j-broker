@@ -149,6 +149,28 @@ public final class ClusterClient implements AutoCloseable {
     }
 
     /**
+     * A broker answered a routed call with a non-retriable envelope error.
+     * Carries the numeric {@link ErrorCodes} value so state machines
+     * layered on this client (e.g. {@link TransactionalProducer}
+     * distinguishing PRODUCER_FENCED from abortable failures) can branch
+     * without parsing the message.
+     */
+    public static final class BrokerErrorException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        private final int code;
+
+        BrokerErrorException(String message, int code) {
+            super(message);
+            this.code = code;
+        }
+
+        /** The envelope's numeric error code; see {@link ErrorCodes}. */
+        public int code() {
+            return code;
+        }
+    }
+
+    /**
      * Live counters over the client's failure-handling machinery,
      * readable any time via {@link #stats()}. Plain {@link LongAdder}s
      * behind long accessors — the client stays free of any metrics
@@ -221,6 +243,24 @@ public final class ClusterClient implements AutoCloseable {
 
         CreateTopicResponse createTopic(CreateTopicRequest req, long timeoutMs);
 
+        // Transactional surface. The first four route on transactional_id
+        // to the leader of the id's __transaction_state partition;
+        // TxnOffsetCommit routes on group_id to the GROUP coordinator.
+
+        jbroker.proto.txn.InitTransactionsResponse initTransactions(
+                jbroker.proto.txn.InitTransactionsRequest req, long timeoutMs);
+
+        jbroker.proto.txn.AddPartitionsToTxnResponse addPartitionsToTxn(
+                jbroker.proto.txn.AddPartitionsToTxnRequest req, long timeoutMs);
+
+        jbroker.proto.txn.EndTxnResponse endTxn(jbroker.proto.txn.EndTxnRequest req, long timeoutMs);
+
+        jbroker.proto.txn.AddOffsetsToTxnResponse addOffsetsToTxn(
+                jbroker.proto.txn.AddOffsetsToTxnRequest req, long timeoutMs);
+
+        jbroker.proto.txn.TxnOffsetCommitResponse txnOffsetCommit(
+                jbroker.proto.txn.TxnOffsetCommitRequest req, long timeoutMs);
+
         @Override
         void close();
     }
@@ -276,6 +316,11 @@ public final class ClusterClient implements AutoCloseable {
     private final Map<Endpoint, Transport> transports = new ConcurrentHashMap<>();
     private final Map<Tp, PartitionInfo> leaders = new ConcurrentHashMap<>();
     private final Map<String, Endpoint> coordinators = new ConcurrentHashMap<>();
+    /** Cached transaction coordinators, keyed by transactional_id. */
+    private final Map<String, Endpoint> txnCoordinators = new ConcurrentHashMap<>();
+    /** Per-topic partition counts from the last DescribeTopicPartitions — the txn routing modulus. */
+    private final Map<String, Integer> partitionCounts = new ConcurrentHashMap<>();
+
     private final Stats stats = new Stats();
     private volatile ClusterView view = ClusterView.EMPTY;
     private final Object refreshLock = new Object();
@@ -619,6 +664,99 @@ public final class ClusterClient implements AutoCloseable {
         coordinators.remove(groupId);
     }
 
+    // ---- Transactional path ----
+
+    /**
+     * InitTransactions routed to the transactional id's coordinator — the
+     * leader of {@code __transaction_state} partition
+     * {@code floorMod(id.hashCode(), partitionCount)}, with the partition
+     * count read from live topic metadata ({@code FindCoordinator} has no
+     * transaction key type; the {@code suggested_coordinator_*} hints in
+     * txn responses re-point the cache when routing is stale). Coordinator
+     * relocation codes retry here; every transaction-level code
+     * (CONCURRENT_TRANSACTIONS, PRODUCER_FENCED, INVALID_TXN_STATE, ...)
+     * passes through — they are the {@link TransactionalProducer} state
+     * machine's to handle.
+     */
+    public jbroker.proto.txn.InitTransactionsResponse initTransactions(
+            jbroker.proto.txn.InitTransactionsRequest req, long deadlineMs) {
+        return txnCall(
+                req.getTransactionalId(),
+                "initTransactions " + req.getTransactionalId(),
+                deadlineMs,
+                (t, timeout) -> t.initTransactions(req, timeout),
+                jbroker.proto.txn.InitTransactionsResponse::getError,
+                r -> new CoordinatorHint(
+                        r.getSuggestedCoordinatorId(),
+                        r.getSuggestedCoordinatorHost(),
+                        r.getSuggestedCoordinatorPort()));
+    }
+
+    /** AddPartitionsToTxn routed to the transactional id's coordinator; see {@link #initTransactions}. */
+    public jbroker.proto.txn.AddPartitionsToTxnResponse addPartitionsToTxn(
+            jbroker.proto.txn.AddPartitionsToTxnRequest req, long deadlineMs) {
+        return txnCall(
+                req.getTransactionalId(),
+                "addPartitionsToTxn " + req.getTransactionalId(),
+                deadlineMs,
+                (t, timeout) -> t.addPartitionsToTxn(req, timeout),
+                jbroker.proto.txn.AddPartitionsToTxnResponse::getError,
+                r -> new CoordinatorHint(
+                        r.getSuggestedCoordinatorId(),
+                        r.getSuggestedCoordinatorHost(),
+                        r.getSuggestedCoordinatorPort()));
+    }
+
+    /** EndTxn routed to the transactional id's coordinator; see {@link #initTransactions}. */
+    public jbroker.proto.txn.EndTxnResponse endTxn(jbroker.proto.txn.EndTxnRequest req, long deadlineMs) {
+        return txnCall(
+                req.getTransactionalId(),
+                "endTxn " + req.getTransactionalId(),
+                deadlineMs,
+                (t, timeout) -> t.endTxn(req, timeout),
+                jbroker.proto.txn.EndTxnResponse::getError,
+                r -> new CoordinatorHint(
+                        r.getSuggestedCoordinatorId(),
+                        r.getSuggestedCoordinatorHost(),
+                        r.getSuggestedCoordinatorPort()));
+    }
+
+    /** AddOffsetsToTxn routed to the transactional id's coordinator; see {@link #initTransactions}. */
+    public jbroker.proto.txn.AddOffsetsToTxnResponse addOffsetsToTxn(
+            jbroker.proto.txn.AddOffsetsToTxnRequest req, long deadlineMs) {
+        return txnCall(
+                req.getTransactionalId(),
+                "addOffsetsToTxn " + req.getTransactionalId(),
+                deadlineMs,
+                (t, timeout) -> t.addOffsetsToTxn(req, timeout),
+                jbroker.proto.txn.AddOffsetsToTxnResponse::getError,
+                r -> new CoordinatorHint(
+                        r.getSuggestedCoordinatorId(),
+                        r.getSuggestedCoordinatorHost(),
+                        r.getSuggestedCoordinatorPort()));
+    }
+
+    /**
+     * TxnOffsetCommit routed to the GROUP coordinator (the offsets are
+     * staged where the group's marker will land), riding the same
+     * FindCoordinator cache as {@link #commitOffsets}. Per-result
+     * transaction-level errors pass through.
+     */
+    public jbroker.proto.txn.TxnOffsetCommitResponse txnOffsetCommit(
+            jbroker.proto.txn.TxnOffsetCommitRequest req, long deadlineMs) {
+        return coordinatorCall(
+                req.getGroupId(),
+                "txnOffsetCommit " + req.getGroupId(),
+                deadlineMs,
+                (t, timeout) -> t.txnOffsetCommit(req, timeout),
+                resp -> resp.getResultsList().stream().anyMatch(r -> coordinatorMoved(r.getError())));
+    }
+
+    /** Drop the cached transaction coordinator for {@code txnId}; the next call re-resolves it. */
+    public void invalidateTxnCoordinator(String txnId) {
+        txnCoordinators.remove(txnId);
+    }
+
     // ---- Lifecycle ----
 
     @Override
@@ -672,6 +810,111 @@ public final class ClusterClient implements AutoCloseable {
 
     private static boolean coordinatorMoved(ErrorCode error) {
         return error == ErrorCode.NOT_COORDINATOR || error == ErrorCode.COORDINATOR_NOT_AVAILABLE;
+    }
+
+    private interface TxnOp<T> {
+        T call(Transport t, long timeoutMs);
+    }
+
+    private record CoordinatorHint(int id, String host, int port) {
+        boolean dialable() {
+            return id > 0 && !host.isEmpty() && port > 0;
+        }
+    }
+
+    /**
+     * Route one txn RPC to the transactional id's coordinator, retrying
+     * relocation (NOT_COORDINATOR — following the response's
+     * suggested-coordinator hints, one hop without sleeping) and
+     * unavailability (COORDINATOR_NOT_AVAILABLE, transport failures) until
+     * {@code deadlineMs}. Every other error code returns to the caller.
+     */
+    private <T> T txnCall(
+            String txnId,
+            String what,
+            long deadlineMs,
+            TxnOp<T> op,
+            java.util.function.Function<T, ErrorCode> errorOf,
+            java.util.function.Function<T, CoordinatorHint> hintOf) {
+        long deadline = deadlineNanos(deadlineMs);
+        RuntimeException last = null;
+        boolean lastWasHintFollow = false;
+        for (int attempt = 0; ; attempt++) {
+            checkDeadline(deadline, what, last);
+            var ep = txnCoordinatorEndpoint(txnId);
+            if (ep == null) {
+                last = new RuntimeException("no transaction coordinator known for '" + txnId + "'");
+                lastWasHintFollow = false;
+                backoff(attempt, deadline, what, last);
+                continue;
+            }
+            T resp;
+            try {
+                resp = op.call(transportFor(ep), config.rpcTimeoutMs());
+            } catch (StatusRuntimeException e) {
+                last = onTransportFailure(ep, e, what);
+                lastWasHintFollow = false;
+                // Invalidating the per-id cache is not enough: the
+                // coordinator resolves through the cached
+                // __transaction_state leader, and only a metadata refresh
+                // replaces a dead leader there — without it the retry
+                // would redial the corpse forever.
+                txnCoordinators.remove(txnId);
+                refreshTopic(jbroker.broker.txn.TxnStateTopic.NAME, ep);
+                backoff(attempt, deadline, what, last);
+                continue;
+            }
+            var error = errorOf.apply(resp);
+            if (error == ErrorCode.NOT_COORDINATOR) {
+                last = new RuntimeException(what + ": " + ep + " is not the coordinator");
+                txnCoordinators.remove(txnId);
+                var hint = hintOf.apply(resp);
+                if (!lastWasHintFollow && hint != null && hint.dialable()) {
+                    txnCoordinators.put(txnId, new Endpoint(hint.host(), hint.port()));
+                    lastWasHintFollow = true;
+                    stats.hintFollows.increment();
+                    continue;
+                }
+                lastWasHintFollow = false;
+                refreshTopic(jbroker.broker.txn.TxnStateTopic.NAME, null);
+                backoff(attempt, deadline, what, last);
+                continue;
+            }
+            if (error == ErrorCode.COORDINATOR_NOT_AVAILABLE) {
+                last = new RuntimeException(what + ": coordinator not available");
+                txnCoordinators.remove(txnId);
+                lastWasHintFollow = false;
+                refreshTopic(jbroker.broker.txn.TxnStateTopic.NAME, null);
+                backoff(attempt, deadline, what, last);
+                continue;
+            }
+            return resp;
+        }
+    }
+
+    /**
+     * Cached transaction-coordinator endpoint, else resolved from live
+     * metadata: the leader of the id's {@code __transaction_state}
+     * partition, with the partition count from the same
+     * DescribeTopicPartitions sweep.
+     */
+    private Endpoint txnCoordinatorEndpoint(String txnId) {
+        var cached = txnCoordinators.get(txnId);
+        if (cached != null) return cached;
+        var ep = resolveTxnCoordinator(txnId);
+        if (ep == null) {
+            refreshTopic(jbroker.broker.txn.TxnStateTopic.NAME, null);
+            ep = resolveTxnCoordinator(txnId);
+        }
+        if (ep != null) txnCoordinators.put(txnId, ep);
+        return ep;
+    }
+
+    private Endpoint resolveTxnCoordinator(String txnId) {
+        Integer count = partitionCounts.get(jbroker.broker.txn.TxnStateTopic.NAME);
+        if (count == null || count <= 0) return null;
+        int partition = jbroker.broker.txn.TxnStateTopic.partitionFor(txnId, count);
+        return cachedLeaderEndpoint(new Tp(jbroker.broker.txn.TxnStateTopic.NAME, partition));
     }
 
     /** Cached coordinator endpoint, else one FindCoordinator sweep over live brokers. */
@@ -824,6 +1067,9 @@ public final class ClusterClient implements AutoCloseable {
                     continue;
                 }
                 if (resp.getError() != ErrorCode.OK) continue;
+                if (resp.getPartitionStatesCount() > 0) {
+                    partitionCounts.put(topic, resp.getPartitionStatesCount());
+                }
                 boolean missingEndpoint = false;
                 for (var ps : resp.getPartitionStatesList()) {
                     var tp = new Tp(topic, ps.getPartition());
@@ -964,8 +1210,9 @@ public final class ClusterClient implements AutoCloseable {
     }
 
     private static RuntimeException envelopeFailure(String what, jbroker.proto.broker.Error error) {
-        return new RuntimeException(
-                what + " failed: " + ErrorCodeNames.name(error.getCode()) + " (" + error.getMessage() + ")");
+        return new BrokerErrorException(
+                what + " failed: " + ErrorCodeNames.name(error.getCode()) + " (" + error.getMessage() + ")",
+                error.getCode());
     }
 
     // ---- Backoff engine ----
@@ -1026,6 +1273,8 @@ public final class ClusterClient implements AutoCloseable {
         private final ConsumerGrpc.ConsumerBlockingStub consumer;
         private final AdminGrpc.AdminBlockingStub admin;
         private final MetadataGrpc.MetadataBlockingStub metadata;
+        private final jbroker.proto.txn.TxnGrpc.TxnBlockingStub txn;
+        private final jbroker.proto.txn.TxnOffsetsGrpc.TxnOffsetsBlockingStub txnOffsets;
 
         GrpcTransport(Endpoint endpoint, TlsConfig tls) {
             var b = NettyChannelBuilder.forAddress(endpoint.host(), endpoint.port());
@@ -1044,6 +1293,8 @@ public final class ClusterClient implements AutoCloseable {
             this.consumer = ConsumerGrpc.newBlockingStub(channel);
             this.admin = AdminGrpc.newBlockingStub(channel);
             this.metadata = MetadataGrpc.newBlockingStub(channel);
+            this.txn = jbroker.proto.txn.TxnGrpc.newBlockingStub(channel);
+            this.txnOffsets = jbroker.proto.txn.TxnOffsetsGrpc.newBlockingStub(channel);
         }
 
         @Override
@@ -1111,6 +1362,37 @@ public final class ClusterClient implements AutoCloseable {
         @Override
         public CreateTopicResponse createTopic(CreateTopicRequest req, long timeoutMs) {
             return admin.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).createTopic(req);
+        }
+
+        @Override
+        public jbroker.proto.txn.InitTransactionsResponse initTransactions(
+                jbroker.proto.txn.InitTransactionsRequest req, long timeoutMs) {
+            return txn.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).initTransactions(req);
+        }
+
+        @Override
+        public jbroker.proto.txn.AddPartitionsToTxnResponse addPartitionsToTxn(
+                jbroker.proto.txn.AddPartitionsToTxnRequest req, long timeoutMs) {
+            return txn.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).addPartitionsToTxn(req);
+        }
+
+        @Override
+        public jbroker.proto.txn.EndTxnResponse endTxn(jbroker.proto.txn.EndTxnRequest req, long timeoutMs) {
+            return txn.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).endTxn(req);
+        }
+
+        @Override
+        public jbroker.proto.txn.AddOffsetsToTxnResponse addOffsetsToTxn(
+                jbroker.proto.txn.AddOffsetsToTxnRequest req, long timeoutMs) {
+            return txn.withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).addOffsetsToTxn(req);
+        }
+
+        @Override
+        public jbroker.proto.txn.TxnOffsetCommitResponse txnOffsetCommit(
+                jbroker.proto.txn.TxnOffsetCommitRequest req, long timeoutMs) {
+            return txnOffsets
+                    .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                    .txnOffsetCommit(req);
         }
 
         @Override

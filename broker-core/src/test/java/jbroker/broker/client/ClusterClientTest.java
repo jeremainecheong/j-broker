@@ -278,6 +278,110 @@ class ClusterClientTest {
             });
         }
 
+        // --- txn surface: coordinator = leader of __transaction_state-0 ---
+
+        private boolean isTxnCoordinator() {
+            return world.partitionLeaders.getOrDefault(jbroker.broker.txn.TxnStateTopic.NAME, -1)
+                    == world.idOf(endpoint);
+        }
+
+        private void fillTxnHint(
+                java.util.function.IntConsumer id,
+                java.util.function.Consumer<String> host,
+                java.util.function.IntConsumer port) {
+            int leader = world.partitionLeaders.getOrDefault(jbroker.broker.txn.TxnStateTopic.NAME, -1);
+            var ep = world.brokers.get(leader);
+            if (leader <= 0 || ep == null) return;
+            id.accept(leader);
+            host.accept(ep.host());
+            port.accept(ep.port());
+        }
+
+        @Override
+        public jbroker.proto.txn.InitTransactionsResponse initTransactions(
+                jbroker.proto.txn.InitTransactionsRequest req, long timeoutMs) {
+            return dispatch("initTransactions", () -> {
+                var b = jbroker.proto.txn.InitTransactionsResponse.newBuilder();
+                if (!isTxnCoordinator()) {
+                    b.setError(ErrorCode.NOT_COORDINATOR).setProducerId(-1L).setProducerEpoch(-1);
+                    fillTxnHint(
+                            b::setSuggestedCoordinatorId,
+                            b::setSuggestedCoordinatorHost,
+                            b::setSuggestedCoordinatorPort);
+                    return b.build();
+                }
+                return b.setError(ErrorCode.OK)
+                        .setProducerId(7L)
+                        .setProducerEpoch(0)
+                        .build();
+            });
+        }
+
+        @Override
+        public jbroker.proto.txn.AddPartitionsToTxnResponse addPartitionsToTxn(
+                jbroker.proto.txn.AddPartitionsToTxnRequest req, long timeoutMs) {
+            return dispatch("addPartitionsToTxn", () -> {
+                var b = jbroker.proto.txn.AddPartitionsToTxnResponse.newBuilder();
+                if (!isTxnCoordinator()) {
+                    b.setError(ErrorCode.NOT_COORDINATOR);
+                    fillTxnHint(
+                            b::setSuggestedCoordinatorId,
+                            b::setSuggestedCoordinatorHost,
+                            b::setSuggestedCoordinatorPort);
+                    return b.build();
+                }
+                return b.setError(ErrorCode.OK).build();
+            });
+        }
+
+        @Override
+        public jbroker.proto.txn.EndTxnResponse endTxn(jbroker.proto.txn.EndTxnRequest req, long timeoutMs) {
+            return dispatch("endTxn", () -> {
+                var b = jbroker.proto.txn.EndTxnResponse.newBuilder();
+                if (!isTxnCoordinator()) {
+                    b.setError(ErrorCode.NOT_COORDINATOR);
+                    fillTxnHint(
+                            b::setSuggestedCoordinatorId,
+                            b::setSuggestedCoordinatorHost,
+                            b::setSuggestedCoordinatorPort);
+                    return b.build();
+                }
+                return b.setError(ErrorCode.OK).build();
+            });
+        }
+
+        @Override
+        public jbroker.proto.txn.AddOffsetsToTxnResponse addOffsetsToTxn(
+                jbroker.proto.txn.AddOffsetsToTxnRequest req, long timeoutMs) {
+            return dispatch("addOffsetsToTxn", () -> {
+                var b = jbroker.proto.txn.AddOffsetsToTxnResponse.newBuilder();
+                if (!isTxnCoordinator()) {
+                    b.setError(ErrorCode.NOT_COORDINATOR);
+                    fillTxnHint(
+                            b::setSuggestedCoordinatorId,
+                            b::setSuggestedCoordinatorHost,
+                            b::setSuggestedCoordinatorPort);
+                    return b.build();
+                }
+                return b.setError(ErrorCode.OK).build();
+            });
+        }
+
+        @Override
+        public jbroker.proto.txn.TxnOffsetCommitResponse txnOffsetCommit(
+                jbroker.proto.txn.TxnOffsetCommitRequest req, long timeoutMs) {
+            return dispatch("txnOffsetCommit", () -> {
+                var b = jbroker.proto.txn.TxnOffsetCommitResponse.newBuilder();
+                var error = world.coordinatorId == world.idOf(endpoint) ? ErrorCode.OK : ErrorCode.NOT_COORDINATOR;
+                for (var o : req.getOffsetsList()) {
+                    b.addResults(jbroker.proto.txn.TxnOffsetCommitResult.newBuilder()
+                            .setTp(o.getTp())
+                            .setError(error));
+                }
+                return b.build();
+            });
+        }
+
         @Override
         public void close() {
             closed = true;
@@ -946,5 +1050,159 @@ class ClusterClientTest {
 
         assertThat(client.stats().retriesExhausted()).isEqualTo(1L);
         assertThat(client.stats().retries()).isEqualTo(h.ticker.sleepsMs.size());
+    }
+
+    // ---- txn coordinator routing ----
+
+    private static final String TXN_STATE = jbroker.broker.txn.TxnStateTopic.NAME;
+
+    private static jbroker.proto.txn.InitTransactionsRequest initTxn(String txnId) {
+        return jbroker.proto.txn.InitTransactionsRequest.newBuilder()
+                .setTransactionalId(txnId)
+                .build();
+    }
+
+    @Test
+    void initTransactionsResolvesTheCoordinatorFromTopicMetadata() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put(TXN_STATE, 2);
+        var client = h.client();
+
+        var resp = client.initTransactions(initTxn("app-txn"), 30_000);
+        assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
+        assertThat(resp.getProducerId()).isEqualTo(7L);
+        assertThat(h.world.calls).contains("2:initTransactions");
+    }
+
+    @Test
+    void txnCoordinatorMoveFollowsTheSuggestedCoordinatorHint() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put(TXN_STATE, 1);
+        var client = h.client();
+        assertThat(client.initTransactions(initTxn("app-txn"), 30_000).getError())
+                .isEqualTo(ErrorCode.OK);
+
+        // Coordinator moves to broker 3; the stale cached coordinator
+        // answers NOT_COORDINATOR with the hint (the fake fills it from
+        // the world's new leader).
+        h.world.partitionLeaders.put(TXN_STATE, 3);
+
+        int mark = h.world.calls.size();
+        var resp = client.endTxn(
+                jbroker.proto.txn.EndTxnRequest.newBuilder()
+                        .setTransactionalId("app-txn")
+                        .setProducerId(7L)
+                        .setProducerEpoch(0)
+                        .setCommit(true)
+                        .build(),
+                30_000);
+        assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
+        assertThat(h.world.callsSince(mark))
+                .as("hint short-circuits: stale coordinator, then the hinted one (plus its handshake)")
+                .containsExactly("1:endTxn", "3:apiVersions", "3:endTxn");
+        assertThat(h.ticker.sleepsMs).as("hint follow does not back off").isEmpty();
+    }
+
+    @Test
+    void deadTxnCoordinatorIsReResolvedFromRefreshedMetadata() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put(TXN_STATE, 2);
+        var client = h.client();
+        assertThat(client.initTransactions(initTxn("app-txn"), 30_000).getError())
+                .isEqualTo(ErrorCode.OK);
+
+        // Broker 2 dies abruptly; the survivors elect broker 3. The cached
+        // coordinator AND the cached partition leader both point at the
+        // corpse — only a metadata refresh can find the successor.
+        h.world.down.add(2);
+        h.world.partitionLeaders.put(TXN_STATE, 3);
+
+        var resp = client.endTxn(
+                jbroker.proto.txn.EndTxnRequest.newBuilder()
+                        .setTransactionalId("app-txn")
+                        .setProducerId(7L)
+                        .setProducerEpoch(0)
+                        .setCommit(true)
+                        .build(),
+                30_000);
+        assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
+        assertThat(h.world.calls).contains("3:endTxn");
+    }
+
+    @Test
+    void coordinatorNotAvailableRefreshesUntilALeaderEmerges() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put(TXN_STATE, 1);
+        var client = h.client();
+        // Broker 1 answers COORDINATOR_NOT_AVAILABLE once (activation
+        // still replaying); leadership then lands on broker 2.
+        h.world.script(
+                1,
+                "initTransactions",
+                jbroker.proto.txn.InitTransactionsResponse.newBuilder()
+                        .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                        .build());
+        h.ticker.onSleep = () -> h.world.partitionLeaders.put(TXN_STATE, 2);
+
+        var resp = client.initTransactions(initTxn("app-txn"), 30_000);
+        assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
+        assertThat(h.world.calls).contains("2:initTransactions");
+    }
+
+    @Test
+    void txnLevelErrorsPassThroughWithoutRetry() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put(TXN_STATE, 1);
+        var client = h.client();
+        h.world.script(
+                1,
+                "initTransactions",
+                jbroker.proto.txn.InitTransactionsResponse.newBuilder()
+                        .setError(ErrorCode.CONCURRENT_TRANSACTIONS)
+                        .build());
+
+        var resp = client.initTransactions(initTxn("app-txn"), 30_000);
+        assertThat(resp.getError())
+                .as("transaction-level codes are the producer state machine's to handle")
+                .isEqualTo(ErrorCode.CONCURRENT_TRANSACTIONS);
+        assertThat(h.ticker.sleepsMs).isEmpty();
+    }
+
+    @Test
+    void leaderlessTxnStateBacksOffThenSucceedsOnceALeaderEmerges() {
+        var h = new Harness().threeBrokers();
+        // No leader yet; the first backoff sleep installs one.
+        h.ticker.onSleep = () -> h.world.partitionLeaders.put(TXN_STATE, 2);
+        var client = h.client(List.of(B1), config(30_000));
+
+        var resp = client.initTransactions(initTxn("app-txn"), 30_000);
+        assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
+        assertThat(h.ticker.sleepsMs).isNotEmpty();
+    }
+
+    @Test
+    void txnOffsetCommitFollowsTheGroupCoordinator() {
+        var h = new Harness().threeBrokers();
+        h.world.coordinatorId = 2;
+        var client = h.client();
+
+        var resp = client.txnOffsetCommit(
+                jbroker.proto.txn.TxnOffsetCommitRequest.newBuilder()
+                        .setTransactionalId("app-txn")
+                        .setGroupId("g")
+                        .setProducerId(7L)
+                        .setProducerEpoch(0)
+                        .addOffsets(jbroker.proto.txn.TxnOffsetCommitEntry.newBuilder()
+                                .setTp(jbroker.proto.common.TopicPartition.newBuilder()
+                                        .setTopic("t")
+                                        .setPartition(0)
+                                        .build())
+                                .setOffset(5L)
+                                .build())
+                        .build(),
+                30_000);
+        assertThat(resp.getResultsList())
+                .allSatisfy(r -> assertThat(r.getError()).isEqualTo(ErrorCode.OK));
+        assertThat(h.world.calls).contains("2:txnOffsetCommit");
     }
 }

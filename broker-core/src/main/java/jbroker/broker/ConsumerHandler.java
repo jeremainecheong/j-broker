@@ -481,6 +481,174 @@ public final class ConsumerHandler {
     }
 
     /**
+     * {@code TxnOffsets.TxnOffsetCommit}: stage a transaction's offset
+     * commits with the group coordinator. Routing is the same three-way
+     * guard as every other coordinator RPC (the request routes on
+     * {@code group_id}, not the transactional id); a NOT_COORDINATOR
+     * answer carries the {@code suggested_coordinator_*} hints so the
+     * client can retry against the group's coordinator directly.
+     *
+     * <p>Durability before visibility: the offsets are appended to the
+     * group's {@code __consumer_offsets} partition as a TRANSACTIONAL
+     * batch under {@code (producer_id, producer_epoch)} — which holds the
+     * partition's last stable offset until a marker decides it — and only
+     * then staged in {@link GroupCoordinator#stageTxnOffsets}. The
+     * committed view ({@link OffsetCache}) is untouched until the COMMIT
+     * marker lands ({@link #onTxnMarker}); replay reconstructs the staged
+     * state from the batch + marker alone, so no replication wait is
+     * needed here (same policy as {@link #commitOffsets}).
+     *
+     * <p>A stale producer epoch answers {@code PRODUCER_FENCED} on every
+     * result. The doomed transactional batch such a zombie appended is
+     * harmless: replay reproduces the same fencing decision from log
+     * order, so it never folds. Authorization gates on the group (the
+     * transactional producer commits offsets on the group's behalf),
+     * matching {@link #commitOffsets}.
+     */
+    public jbroker.proto.txn.TxnOffsetCommitResponse txnOffsetCommit(jbroker.proto.txn.TxnOffsetCommitRequest req) {
+        var b = jbroker.proto.txn.TxnOffsetCommitResponse.newBuilder();
+        if (!authorizer.allowsCurrent("group", req.getGroupId(), "consume")) {
+            return txnOffsetCommitFailure(b, req, ErrorCode.UNAUTHORIZED);
+        }
+        if (groupCoordinator == null || offsetCache == null) {
+            return txnOffsetCommitFailure(b, req, ErrorCode.COORDINATOR_NOT_AVAILABLE);
+        }
+        var routing = coordinatorRoutingFor(req.getGroupId());
+        if (routing != ErrorCode.OK) {
+            if (routing == ErrorCode.NOT_COORDINATOR) fillGroupCoordinatorHint(req.getGroupId(), b);
+            return txnOffsetCommitFailure(b, req, routing);
+        }
+        long pid = req.getProducerId();
+        int epoch = req.getProducerEpoch();
+        if (pid < 0 || epoch < 0 || epoch > 0xFFFF) {
+            return txnOffsetCommitFailure(b, req, ErrorCode.INVALID_TXN_STATE);
+        }
+        if (req.getOffsetsCount() == 0) {
+            // Nothing to append, but the fence still answers: a zombie's
+            // empty commit must not look successful.
+            var outcome = groupCoordinator.stageTxnOffsets(
+                    req.getGroupId(), coordinatorPartitionFor(req.getGroupId()), pid, epoch, java.util.Map.of());
+            return outcome == jbroker.broker.group.TxnOffsetStaging.StageOutcome.PRODUCER_FENCED
+                    ? txnOffsetCommitFailure(b, req, ErrorCode.PRODUCER_FENCED)
+                    : b.build();
+        }
+
+        long now = wallClockMillis.getAsLong();
+        int coordinatorPartition = coordinatorPartitionFor(req.getGroupId());
+        var records = new java.util.ArrayList<Record>(req.getOffsetsCount());
+        var staged = new java.util.LinkedHashMap<jbroker.proto.common.TopicPartition, OffsetCache.OffsetAndMetadata>();
+        for (int i = 0; i < req.getOffsetsCount(); i++) {
+            var entry = req.getOffsets(i);
+            byte[] key = ConsumerOffsetsTopic.keyForOffset(
+                    req.getGroupId(), entry.getTp().getTopic(), entry.getTp().getPartition());
+            byte[] value = ConsumerOffsetsTopic.valueForOffset(
+                    entry.getOffset(), entry.getLeaderEpoch(), entry.getMetadata(), now);
+            records.add(new Record(/*offsetDelta*/ i, /*timestampDelta*/ 0L, key, value));
+            staged.put(
+                    entry.getTp(),
+                    new OffsetCache.OffsetAndMetadata(
+                            entry.getOffset(), entry.getLeaderEpoch(), entry.getMetadata(), now));
+        }
+        try {
+            logManager
+                    .logFor(ConsumerOffsetsTopic.NAME, coordinatorPartition)
+                    .append(
+                            records,
+                            now,
+                            pid,
+                            (short) epoch,
+                            /*baseSequence*/ -1,
+                            leaderEpochOf(coordinatorPartition),
+                            jbroker.storage.Compression.NONE,
+                            /*transactional*/ true);
+        } catch (IOException e) {
+            return txnOffsetCommitFailure(b, req, ErrorCode.UNKNOWN);
+        }
+        var outcome = groupCoordinator.stageTxnOffsets(req.getGroupId(), coordinatorPartition, pid, epoch, staged);
+        if (outcome == jbroker.broker.group.TxnOffsetStaging.StageOutcome.PRODUCER_FENCED) {
+            return txnOffsetCommitFailure(b, req, ErrorCode.PRODUCER_FENCED);
+        }
+        for (var entry : req.getOffsetsList()) {
+            b.addResults(jbroker.proto.txn.TxnOffsetCommitResult.newBuilder()
+                    .setTp(entry.getTp())
+                    .setError(ErrorCode.OK)
+                    .build());
+        }
+        return b.build();
+    }
+
+    /**
+     * A transaction marker (control batch) landed on {@code partition} of
+     * {@code __consumer_offsets} — the {@link jbroker.broker.txn.TxnMarkerWriter}
+     * listener routes it here. COMMIT folds the producer's staged offsets
+     * into the committed view ({@link OffsetCache}, so {@code FetchOffsets}
+     * sees them from now on) and re-appends them to the same partition as
+     * regular offset records; ABORT discards the stage. The re-append is a
+     * durability convenience for a future cleaner that drops decided
+     * staged batches + markers — the fold itself is already reproducible
+     * from the log, so a failure here (or a crash between the marker and
+     * the re-append) only loses the plain copy, never the offsets: the
+     * recovery walk re-folds from the staged batch + marker.
+     */
+    public void onTxnMarker(int partition, long producerId, int producerEpoch, boolean commit) {
+        if (groupCoordinator == null || offsetCache == null) return;
+        var folded = groupCoordinator.onTxnMarker(partition, producerId, producerEpoch, commit, offsetCache);
+        if (folded.isEmpty()) return;
+        long now = wallClockMillis.getAsLong();
+        for (var fold : folded) {
+            var records = new java.util.ArrayList<Record>(fold.offsets().size());
+            int i = 0;
+            for (var e : fold.offsets().entrySet()) {
+                byte[] key = ConsumerOffsetsTopic.keyForOffset(
+                        fold.groupId(), e.getKey().getTopic(), e.getKey().getPartition());
+                byte[] value = ConsumerOffsetsTopic.valueForOffset(
+                        e.getValue().offset(),
+                        e.getValue().leaderEpoch(),
+                        e.getValue().metadata(),
+                        now);
+                records.add(new Record(/*offsetDelta*/ i++, /*timestampDelta*/ 0L, key, value));
+            }
+            try {
+                appendOffsetBatch(partition, records, now);
+            } catch (IOException e) {
+                log.warn(
+                        "folded-offset re-append failed for group '{}' on __consumer_offsets-{} "
+                                + "(committed view is correct; replay re-folds from the marker): {}",
+                        fold.groupId(),
+                        partition,
+                        e.toString());
+            }
+        }
+    }
+
+    private static jbroker.proto.txn.TxnOffsetCommitResponse txnOffsetCommitFailure(
+            jbroker.proto.txn.TxnOffsetCommitResponse.Builder b,
+            jbroker.proto.txn.TxnOffsetCommitRequest req,
+            ErrorCode code) {
+        for (var entry : req.getOffsetsList()) {
+            b.addResults(jbroker.proto.txn.TxnOffsetCommitResult.newBuilder()
+                    .setTp(entry.getTp())
+                    .setError(code)
+                    .build());
+        }
+        return b.build();
+    }
+
+    /** Fill the group's coordinator address (advertised) into a NOT_COORDINATOR answer. */
+    private void fillGroupCoordinatorHint(String groupId, jbroker.proto.txn.TxnOffsetCommitResponse.Builder b) {
+        var topicDesc = topicManager.describe(ConsumerOffsetsTopic.NAME);
+        if (topicDesc.isEmpty()) return;
+        int partition = Math.floorMod(groupId.hashCode(), topicDesc.get().partitions());
+        var ps = topicManager.partitionState(ConsumerOffsetsTopic.NAME, partition);
+        if (ps.isEmpty() || ps.get().leader() <= 0) return;
+        var address = brokerRegistry.advertisedAddressFor(ps.get().leader());
+        if (address.isEmpty()) return;
+        b.setSuggestedCoordinatorId(ps.get().leader());
+        b.setSuggestedCoordinatorHost(address.get().host());
+        b.setSuggestedCoordinatorPort(address.get().port());
+    }
+
+    /**
      * Offset expiry (R2.7): drop every commit belonging to a group that
      * has no live members and whose newest commit is older than
      * {@code retentionMillis}. Only groups this broker coordinates are
@@ -535,7 +703,7 @@ public final class ConsumerHandler {
         RecordBatch.encode(
                 buf,
                 baseOffset,
-                /*partitionLeaderEpoch*/ 0,
+                leaderEpochOf(partition),
                 /*firstTimestamp*/ nowMillis,
                 /*maxTimestamp*/ nowMillis,
                 /*producerId*/ -1L,
@@ -546,6 +714,21 @@ public final class ConsumerHandler {
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
         log.appendRaw(bytes, baseOffset);
+    }
+
+    /**
+     * The current leader epoch of a {@code __consumer_offsets} partition,
+     * stamped into every batch appended there. The epoch lineage of a log
+     * must be non-decreasing — followers reconcile divergent tails from
+     * the batch headers — and transaction markers already stamp the true
+     * epoch, so an offset batch stamped 0 after a post-failover marker
+     * would fence the follower into a truncate/re-append livelock.
+     */
+    private int leaderEpochOf(int partition) {
+        return topicManager
+                .partitionState(ConsumerOffsetsTopic.NAME, partition)
+                .map(ps -> ps.leaderEpoch())
+                .orElse(0);
     }
 
     /**

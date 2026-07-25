@@ -41,6 +41,23 @@ public final class ProducerStateRecovery {
     /** Scans the partition log and observes every idempotent batch. Returns batches observed. */
     public static int rebuild(LogManager logManager, String topic, int partition, ProducerStateManager producerState)
             throws IOException {
+        return rebuild(logManager, topic, partition, producerState, /*txnEpochs*/ null);
+    }
+
+    /**
+     * As above, additionally rebuilding the partition's transactional
+     * producer-epoch floors: every batch of a producer — data and control
+     * markers alike — raises {@code txnEpochs}' floor, so a leader whose
+     * in-memory view was lost (restart, takeover) fences zombies with the
+     * same floor the log dictates. Null skips the epoch feed.
+     */
+    public static int rebuild(
+            LogManager logManager,
+            String topic,
+            int partition,
+            ProducerStateManager producerState,
+            jbroker.broker.txn.TxnPartitionEpochs txnEpochs)
+            throws IOException {
         var partitionLog = logManager.logFor(topic, partition);
         long end = partitionLog.nextOffset();
         long offset = 0;
@@ -49,7 +66,16 @@ public final class ProducerStateRecovery {
             var batches = partitionLog.read(offset, READ_CHUNK_BYTES);
             if (batches.isEmpty()) break; // truncated/compacted gap we cannot advance past
             for (var b : batches) {
-                if (b.producerId() > 0) {
+                if (txnEpochs != null && b.producerId() > 0) {
+                    txnEpochs.observe(topic, partition, b.producerId(), b.producerEpoch());
+                }
+                // Control batches (transaction markers) carry the producer id
+                // with baseSequence = -1 — they never consume an idempotent
+                // sequence slot, so observing them would corrupt the dedup
+                // window (a marker seen before the producer's next data batch
+                // would make the expected-next-sequence computation start
+                // from -1). Skip them; only data batches advance dedup state.
+                if (b.producerId() > 0 && !b.control()) {
                     producerState.observeAppend(
                             new ProducerStateManager.DedupKey(topic, partition, b.producerId(), b.producerEpoch()),
                             b.baseSequence(),

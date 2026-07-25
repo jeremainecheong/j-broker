@@ -1201,6 +1201,8 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.controller.MembershipController membershipController;
     private final jbroker.broker.controller.DecommissionController decommissionController;
     private final jbroker.broker.controller.PreferredLeaderBalancer preferredBalancer;
+    private final jbroker.broker.txn.TxnCoordinatorRuntime txnRuntime;
+    private final jbroker.broker.txn.TxnMarkerPeerClients txnMarkerClients;
     private final int selfBrokerId;
 
     private Broker(
@@ -1226,6 +1228,8 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.controller.MembershipController membershipController,
             jbroker.broker.controller.DecommissionController decommissionController,
             jbroker.broker.controller.PreferredLeaderBalancer preferredBalancer,
+            jbroker.broker.txn.TxnCoordinatorRuntime txnRuntime,
+            jbroker.broker.txn.TxnMarkerPeerClients txnMarkerClients,
             int selfBrokerId) {
         this.topicManager = tm;
         this.logManager = lm;
@@ -1249,6 +1253,8 @@ public final class Broker implements AutoCloseable {
         this.membershipController = membershipController;
         this.decommissionController = decommissionController;
         this.preferredBalancer = preferredBalancer;
+        this.txnRuntime = txnRuntime;
+        this.txnMarkerClients = txnMarkerClients;
         this.selfBrokerId = selfBrokerId;
     }
 
@@ -1360,6 +1366,12 @@ public final class Broker implements AutoCloseable {
         // ReplicaFetcher (follower observe). Keeps idempotent-producer
         // dedup state correct across leader failover.
         var producerState = new jbroker.broker.ProducerStateManager();
+        // Transactional producer-epoch floors, shared by the produce path
+        // (fencing), the marker append path (markers carry the fencing
+        // bump), and the replica apply path (an ex-follower taking over
+        // leadership fences with the same floor). Created before the
+        // fetcher factory so no early fetcher misses the feed.
+        var txnEpochs = new jbroker.broker.txn.TxnPartitionEpochs();
         // Audit-finding #3 — single ChaosState instance shared by the inbound
         // ChaosServerInterceptor (constructed later with the gRPC server) and
         // by outbound ChaosClientInterceptors threaded through RaftPeerClient,
@@ -1379,6 +1391,7 @@ public final class Broker implements AutoCloseable {
                 config.tls(),
                 producerState,
                 chaosInterceptorFactory);
+        fetcherFactory.setTxnPartitionEpochs(txnEpochs);
         var fetcherManager = new jbroker.broker.replication.ReplicaFetcherManager(
                 config.selfId().value(), topicManager, brokerRegistry, logManager, fetcherFactory);
         // Deferred: the Raft driver is built below (a construction cycle runs
@@ -1412,6 +1425,8 @@ public final class Broker implements AutoCloseable {
             // Audit-finding #1 — drop this topic's dedup entries so a
             // topic recreated with the same name starts with a clean slate.
             producerState.evictTopic(deletedTopic);
+            // Same clean-slate rule for the transactional epoch floors.
+            txnEpochs.evictTopic(deletedTopic);
         };
         var metadataSm = new MetadataStateMachine(
                 topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager, topicDeletionChain);
@@ -1626,6 +1641,74 @@ public final class Broker implements AutoCloseable {
         fetch.setAuthorizer(authorizer);
         consumerHandler.setAuthorizer(authorizer);
         admin.setAuthorizer(authorizer);
+
+        // --- Transactions ---
+        // Produce-side fencing shares the marker/replica epoch floors.
+        produce.setTxnPartitionEpochs(txnEpochs);
+        // Leader-local marker appends, served to remote coordinators via
+        // the TxnMarkers service and used directly for local partitions.
+        final int selfIdForTxn = config.selfId().value();
+        var txnMarkerWriter = new jbroker.broker.txn.TxnMarkerWriter(
+                logManager, topicManager, followerTracker, selfIdForTxn, config.minInsyncReplicas(), txnEpochs);
+        var txnMarkersHandler = new jbroker.broker.txn.TxnMarkersHandler(txnMarkerWriter);
+        // Marker fan-out to peers rides the internal addresses, like
+        // replication; chaos partitions apply to it like any inter-broker
+        // RPC.
+        var txnMarkerClients = new jbroker.broker.txn.TxnMarkerPeerClients(
+                config.tls(), chaosInterceptorFactory, brokerRegistry::addressFor);
+        jbroker.broker.txn.TxnCoordinatorRuntime.MarkerTransport markerTransport = instruction -> {
+            var tp = instruction.tp();
+            var ps = topicManager.partitionState(tp.getTopic(), tp.getPartition());
+            if (ps.isEmpty() || ps.get().leader() <= 0) return false;
+            int leader = ps.get().leader();
+            if (leader == selfIdForTxn) {
+                return txnMarkerWriter.append(
+                                tp.getTopic(),
+                                tp.getPartition(),
+                                instruction.producerId(),
+                                instruction.producerEpoch(),
+                                instruction.commit(),
+                                instruction.coordinatorEpoch())
+                        == jbroker.broker.ErrorCodes.NONE;
+            }
+            var markerReq = jbroker.proto.txn.WriteTxnMarkersRequest.newBuilder()
+                    .addMarkers(jbroker.proto.txn.TxnMarker.newBuilder()
+                            .setProducerId(instruction.producerId())
+                            .setProducerEpoch(instruction.producerEpoch())
+                            .setCommit(instruction.commit())
+                            .setCoordinatorEpoch(instruction.coordinatorEpoch())
+                            .addPartitions(tp))
+                    .build();
+            var resp = txnMarkerClients.write(leader, markerReq);
+            return resp.isPresent()
+                    && resp.get().getResultsCount() == 1
+                    && resp.get().getResults(0).getError() == jbroker.proto.common.ErrorCode.OK;
+        };
+        // Fresh producer ids come from the controller's replicated counter,
+        // the same record shape InitProducerId commits.
+        jbroker.broker.txn.TxnCoordinatorRuntime.ProducerIdAllocator txnPidAllocator = () -> {
+            long id = producerIdRegistry.allocateNext();
+            var record = jbroker.proto.raft.MetadataRecord.newBuilder()
+                    .setProducerIdAssignment(jbroker.proto.raft.ProducerIdAssignmentRecord.newBuilder()
+                            .setProducerId(id)
+                            .setProducerEpoch(0)
+                            .setNextProducerId(id + 1)
+                            .build())
+                    .build();
+            proposer.proposeAndWait(record.toByteArray(), TimeUnit.SECONDS.toMillis(5));
+            return id;
+        };
+        var txnRuntime = new jbroker.broker.txn.TxnCoordinatorRuntime(
+                logManager,
+                topicManager,
+                followerTracker,
+                selfIdForTxn,
+                config.minInsyncReplicas(),
+                txnPidAllocator,
+                markerTransport,
+                System::currentTimeMillis);
+        var txnHandler = new jbroker.broker.txn.TxnHandler(topicManager, brokerRegistry, selfIdForTxn, txnRuntime);
+        txnHandler.setAuthorizer(authorizer);
         // Metadata service: DescribeCluster now wired to live
         // BrokerRegistry + BrokerLiveness + Raft state. Remaining RPCs
         // return UNIMPLEMENTED until they are implemented.
@@ -1687,7 +1770,9 @@ public final class Broker implements AutoCloseable {
                 .addService(BrokerGrpcServices.replicaConsumer(replicaFetch, offsetsForLeaderEpoch))
                 .addService(BrokerGrpcServices.cluster(heartbeatHandler))
                 .addService(BrokerGrpcServices.admin(admin, consumerHandler))
-                .addService(BrokerGrpcServices.metadata(metadataHandler));
+                .addService(BrokerGrpcServices.metadata(metadataHandler))
+                .addService(BrokerGrpcServices.txn(txnHandler))
+                .addService(BrokerGrpcServices.txnMarkers(txnMarkersHandler));
         try {
             var sslCtx = TlsContexts.serverContext(config.tls());
             if (sslCtx != null) brokerServerBuilder.sslContext(sslCtx);
@@ -1770,6 +1855,21 @@ public final class Broker implements AutoCloseable {
                 ConsumerOffsetsCreator.fromMetadataProposer(proposer),
                 () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
                 config.consumerOffsetsPartitions());
+        // __transaction_state rides the same creator machinery AND the
+        // same partition-count knob: both coordinator topics share the
+        // routing-stability caveat (the count is fixed at first boot) and
+        // the same scale — production configs default to the canonical 50
+        // ({@link jbroker.broker.txn.TxnStateTopic#PARTITION_COUNT}),
+        // test fixtures shrink both to 1 so 3-broker ITs don't pay a
+        // 100-replica-fetcher tax.
+        var txnStateCreator = new ConsumerOffsetsCreator(
+                topicManager,
+                brokerRegistry::knownBrokerIds,
+                config.selfId().value(),
+                ConsumerOffsetsCreator.fromMetadataProposer(proposer),
+                () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
+                config.consumerOffsetsPartitions(),
+                jbroker.broker.txn.TxnStateTopic.NAME);
         // Offset expiry (R2.7): each coordinator drops idle groups' commits
         // once their newest commit outlives the retention window. Runs
         // every minute; the pass itself is a no-op unless a group
@@ -1838,6 +1938,11 @@ public final class Broker implements AutoCloseable {
                         } catch (Exception e) {
                             log.debug("__consumer_offsets create attempt failed; will retry next tick", e);
                         }
+                        try {
+                            txnStateCreator.ensureCreated();
+                        } catch (Exception e) {
+                            log.debug("__transaction_state create attempt failed; will retry next tick", e);
+                        }
                         // Advance any in-flight broker join (add-learner ->
                         // catch-up -> promote). Idempotent per phase; a no-op
                         // when no join is pending.
@@ -1876,6 +1981,16 @@ public final class Broker implements AutoCloseable {
                                 selfIdVal);
                     } catch (Exception e) {
                         log.warn("offset cache recovery failed on broker {}; will retry next tick", selfIdVal, e);
+                    }
+                    // Same unconditional rule for transaction coordination:
+                    // every broker activates coordinators for the
+                    // __transaction_state partitions IT leads (replaying the
+                    // log and resuming a dead predecessor's pending marker
+                    // deliveries), and sweeps transaction timeouts.
+                    try {
+                        txnRuntime.tick();
+                    } catch (Exception e) {
+                        log.warn("txn coordinator tick failed on broker {}; will retry next tick", selfIdVal, e);
                     }
                 },
                 0,
@@ -2122,6 +2237,8 @@ public final class Broker implements AutoCloseable {
                 membershipController,
                 decommissionController,
                 preferredBalancer,
+                txnRuntime,
+                txnMarkerClients,
                 selfId);
     }
 
@@ -2587,6 +2704,8 @@ public final class Broker implements AutoCloseable {
         heartbeatSender.close();
         fetcherManager.close();
         fetcherFactory.close();
+        txnRuntime.close();
+        txnMarkerClients.close();
         try {
             logManager.close();
         } catch (IOException ignored) {
@@ -2635,6 +2754,10 @@ public final class Broker implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
         raftDriver.close();
+        // After the server stops taking Txn RPCs and before the log closes:
+        // stop marker delivery tasks and release peer channels.
+        txnRuntime.close();
+        txnMarkerClients.close();
         try {
             logManager.close();
         } catch (IOException ignored) {

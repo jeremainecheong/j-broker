@@ -68,6 +68,19 @@ public final class ProduceHandler {
         this.authorizer = authorizer;
     }
 
+    /**
+     * Partition-local producer-epoch floors for transactional fencing.
+     * Defaults to a private instance so the gate is always live; the broker
+     * replaces it with the instance shared with the marker append path and
+     * the replica-fetch apply path, so marker-driven epoch bumps fence
+     * producers on this handler too.
+     */
+    private volatile jbroker.broker.txn.TxnPartitionEpochs txnEpochs = new jbroker.broker.txn.TxnPartitionEpochs();
+
+    public void setTxnPartitionEpochs(jbroker.broker.txn.TxnPartitionEpochs epochs) {
+        this.txnEpochs = java.util.Objects.requireNonNull(epochs);
+    }
+
     private final ProducerStateManager producerState;
     private final int minInsyncReplicas;
     private final DiskHeadroom diskHeadroom;
@@ -321,6 +334,17 @@ public final class ProduceHandler {
         } catch (IllegalArgumentException e) {
             return err(ErrorCodes.CORRUPT_BATCH, e.getMessage() == null ? e.toString() : e.getMessage());
         }
+        // Control batches are broker-internal: only the transaction
+        // coordinator's marker path may append them (through
+        // Log.appendControl, never through Produce). Accepting one here
+        // would let a client forge a commit/abort decision.
+        if (parsed.control()) {
+            return err(ErrorCodes.CORRUPT_BATCH, "control batches are broker-internal and cannot be produced");
+        }
+        if (parsed.transactional()) {
+            var txnError = validateTransactional(req);
+            if (txnError != null) return txnError;
+        }
 
         long startNs = System.nanoTime();
         // Stamped into the batch header: the log's lineage marker.
@@ -392,6 +416,47 @@ public final class ProduceHandler {
     }
 
     /**
+     * Partition-local transactional gate. The full protocol contract —
+     * "AddPartitionsToTxn must register a partition before the first
+     * transactional produce lands there" — lives with the coordinator (it
+     * only delivers markers to registered partitions); what this leader can
+     * verify by itself is producer identity against the transaction state
+     * already in its log:
+     * <ul>
+     *   <li>a transactional batch without an InitTransactions-granted
+     *       producer id is a protocol violation ({@code INVALID_TXN_STATE},
+     *       fatal), and</li>
+     *   <li>an epoch below the partition's observed floor for that producer
+     *       is a zombie — the coordinator bumped the epoch and the marker
+     *       carrying the bump already landed here ({@code PRODUCER_FENCED},
+     *       fatal; the producer must re-init).</li>
+     * </ul>
+     * An epoch match extends the producer's ongoing transaction; a higher
+     * epoch opens the next one (the marker that closed the previous epoch
+     * decides every batch of the producer, so the ranges cannot interleave).
+     */
+    private ProduceResponse validateTransactional(ProduceRequest req) {
+        if (req.getProducerId() <= 0) {
+            return err(
+                    ErrorCodes.INVALID_TXN_STATE,
+                    "transactional batch requires an InitTransactions-granted producer_id, got " + req.getProducerId());
+        }
+        // The epoch floor must include markers already on disk — rebuild
+        // before consulting it (idempotent; first touch per partition walks
+        // the log, later calls no-op).
+        ensureProducerStateRecovered(req.getTopic(), req.getPartition());
+        int floor = txnEpochs.maxEpochOf(req.getTopic(), req.getPartition(), req.getProducerId());
+        if (req.getProducerEpoch() < floor) {
+            return err(
+                    ErrorCodes.PRODUCER_FENCED,
+                    "producer_epoch " + req.getProducerEpoch() + " for producer " + req.getProducerId()
+                            + " is below the fenced floor " + floor + " on " + req.getTopic() + "-"
+                            + req.getPartition() + "; re-run InitTransactions");
+        }
+        return null;
+    }
+
+    /**
      * Partitions whose producer state has been rebuilt from the log this
      * process lifetime. computeIfAbsent serializes concurrent first
      * touches of the same partition; a failed rebuild stays unmarked so
@@ -403,7 +468,7 @@ public final class ProduceHandler {
     private void ensureProducerStateRecovered(String topic, int partition) {
         producerStateRecovered.computeIfAbsent(topic + "-" + partition, tp -> {
             try {
-                ProducerStateRecovery.rebuild(logManager, topic, partition, producerState);
+                ProducerStateRecovery.rebuild(logManager, topic, partition, producerState, txnEpochs);
                 return Boolean.TRUE;
             } catch (IOException e) {
                 // Leave unmarked; the append itself will surface disk
@@ -449,8 +514,16 @@ public final class ProduceHandler {
                     (short) req.getProducerEpoch(),
                     req.getBaseSequence(),
                     partitionLeaderEpoch,
-                    parsed.codec());
+                    parsed.codec(),
+                    // The transactional bit rides through to disk so the log
+                    // opens/extends the producer's ongoing transaction (LSO
+                    // holds until a control batch decides it) and followers
+                    // replicate the same view byte-identically.
+                    parsed.transactional());
             long first = last - (parsed.records().size() - 1);
+            if (parsed.transactional()) {
+                txnEpochs.observe(req.getTopic(), req.getPartition(), req.getProducerId(), req.getProducerEpoch());
+            }
             return Appended.ok(first, last);
         } catch (IllegalArgumentException | IOException e) {
             return Appended.failed(

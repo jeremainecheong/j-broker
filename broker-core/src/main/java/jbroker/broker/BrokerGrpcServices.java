@@ -157,6 +157,52 @@ public final class BrokerGrpcServices {
         };
     }
 
+    /** Client-facing transaction coordinator surface, routed on transactional_id. */
+    public static jbroker.proto.txn.TxnGrpc.TxnImplBase txn(jbroker.broker.txn.TxnHandler handler) {
+        return new jbroker.proto.txn.TxnGrpc.TxnImplBase() {
+            @Override
+            public void initTransactions(
+                    jbroker.proto.txn.InitTransactionsRequest req,
+                    StreamObserver<jbroker.proto.txn.InitTransactionsResponse> out) {
+                out.onNext(handler.initTransactions(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void addPartitionsToTxn(
+                    jbroker.proto.txn.AddPartitionsToTxnRequest req,
+                    StreamObserver<jbroker.proto.txn.AddPartitionsToTxnResponse> out) {
+                out.onNext(handler.addPartitionsToTxn(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void endTxn(
+                    jbroker.proto.txn.EndTxnRequest req, StreamObserver<jbroker.proto.txn.EndTxnResponse> out) {
+                out.onNext(handler.endTxn(req));
+                out.onCompleted();
+            }
+        };
+    }
+
+    /**
+     * Inter-broker marker delivery: a remote transaction coordinator fans a
+     * decided transaction's control-batch markers out to the partitions
+     * this broker leads.
+     */
+    public static jbroker.proto.txn.TxnMarkersGrpc.TxnMarkersImplBase txnMarkers(
+            jbroker.broker.txn.TxnMarkersHandler handler) {
+        return new jbroker.proto.txn.TxnMarkersGrpc.TxnMarkersImplBase() {
+            @Override
+            public void writeTxnMarkers(
+                    jbroker.proto.txn.WriteTxnMarkersRequest req,
+                    StreamObserver<jbroker.proto.txn.WriteTxnMarkersResponse> out) {
+                out.onNext(handler.handle(req));
+                out.onCompleted();
+            }
+        };
+    }
+
     public static ClusterGrpc.ClusterImplBase cluster(BrokerHeartbeatHandler handler) {
         return new ClusterGrpc.ClusterImplBase() {
             @Override

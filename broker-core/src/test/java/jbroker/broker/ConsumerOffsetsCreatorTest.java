@@ -58,6 +58,29 @@ class ConsumerOffsetsCreatorTest {
     }
 
     @Test
+    void topicNameFormCreatesTransactionStateWithItsCanonicalShape() throws Exception {
+        var tm = new TopicManager();
+        var proposed = new java.util.ArrayList<byte[]>();
+        var creator = new ConsumerOffsetsCreator(
+                tm,
+                () -> Set.of(1, 2, 3),
+                1,
+                proposed::add,
+                () -> true,
+                jbroker.broker.txn.TxnStateTopic.PARTITION_COUNT,
+                jbroker.broker.txn.TxnStateTopic.NAME);
+
+        assertThat(creator.ensureCreated()).isTrue();
+        var ct = MetadataRecord.parseFrom(proposed.get(0)).getCreateTopic();
+        assertThat(ct.getTopic().getTopic()).isEqualTo("__transaction_state");
+        assertThat(ct.getTopic().getPartitions()).isEqualTo(50);
+        assertThat(ct.getTopic().getInternal()).isTrue();
+        assertThat(ct.getTopic().getCompact()).isTrue();
+        assertThat(ct.getTopic().getReplicationFactor()).isEqualTo(3);
+        assertThat(ct.getPartitionChangesList()).hasSize(50);
+    }
+
+    @Test
     void clampsReplicationFactorToMinOfThreeAndKnownBrokers() throws Exception {
         var tm = new TopicManager();
         var proposed = new java.util.ArrayList<byte[]>();

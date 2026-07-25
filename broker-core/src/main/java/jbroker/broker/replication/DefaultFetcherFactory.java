@@ -42,6 +42,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
     private final ProducerStateManager producerState;
     private final java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory;
     private volatile FetchThrottle throttle = FetchThrottle.UNTHROTTLED;
+    private volatile jbroker.broker.txn.TxnPartitionEpochs txnEpochs;
 
     public DefaultFetcherFactory(
             int selfBrokerId,
@@ -120,6 +121,15 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
         this.throttle = throttle == null ? FetchThrottle.UNTHROTTLED : throttle;
     }
 
+    /**
+     * Thread the broker's shared transactional epoch floors into every
+     * fetcher created from now on (same pattern as the throttle: set once
+     * at wiring time, before any fetcher starts). Null keeps the feed off.
+     */
+    public void setTxnPartitionEpochs(jbroker.broker.txn.TxnPartitionEpochs epochs) {
+        this.txnEpochs = epochs;
+    }
+
     @Override
     public ReplicaFetcherManager.FetcherHandle start(
             String topic, int partition, int leaderBrokerId, BrokerRegistry.HostPort leaderAddr) {
@@ -136,7 +146,7 @@ public final class DefaultFetcherFactory implements ReplicaFetcherManager.Fetche
                 return client.offsetsForLeaderEpoch(t, p, e, fetchTimeoutMs);
             }
         };
-        var fetcher = new ReplicaFetcher(logManager, topic, partition, selfBrokerId, peer, producerState);
+        var fetcher = new ReplicaFetcher(logManager, topic, partition, selfBrokerId, peer, producerState, txnEpochs);
         ScheduledFuture<?> task = pump.scheduleWithFixedDelay(
                 () -> {
                     try {

@@ -182,6 +182,14 @@ public final class BrokerGrpcServices {
                 out.onNext(handler.endTxn(req));
                 out.onCompleted();
             }
+
+            @Override
+            public void addOffsetsToTxn(
+                    jbroker.proto.txn.AddOffsetsToTxnRequest req,
+                    StreamObserver<jbroker.proto.txn.AddOffsetsToTxnResponse> out) {
+                out.onNext(handler.addOffsetsToTxn(req));
+                out.onCompleted();
+            }
         };
     }
 

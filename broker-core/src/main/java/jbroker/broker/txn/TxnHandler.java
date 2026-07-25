@@ -144,6 +144,59 @@ public final class TxnHandler {
         return b.build();
     }
 
+    /**
+     * {@code AddOffsetsToTxn}: registers the group's
+     * {@code __consumer_offsets} partition in the transaction, exactly like
+     * {@code AddPartitionsToTxn} would — a thin translation of group id to
+     * coordinator partition ({@code floorMod(group_id.hashCode(),
+     * partitionCount)}, the {@code FindCoordinator} routing) so the
+     * commit/abort marker reaches the partition where {@code
+     * TxnOffsetCommit} stages the offsets. Answers
+     * {@code COORDINATOR_NOT_AVAILABLE} (retriable) while
+     * {@code __consumer_offsets} does not exist yet.
+     */
+    public jbroker.proto.txn.AddOffsetsToTxnResponse addOffsetsToTxn(jbroker.proto.txn.AddOffsetsToTxnRequest req) {
+        var b = jbroker.proto.txn.AddOffsetsToTxnResponse.newBuilder();
+        if (!authorizer.allowsCurrent("txn", req.getTransactionalId(), "produce")) {
+            return b.setError(ErrorCode.UNAUTHORIZED).build();
+        }
+        var routing = route(req.getTransactionalId());
+        if (routing.error() != ErrorCode.OK) {
+            b.setError(routing.error());
+            fillSuggestedCoordinator(
+                    routing,
+                    b::setSuggestedCoordinatorId,
+                    b::setSuggestedCoordinatorHost,
+                    b::setSuggestedCoordinatorPort);
+            return b.build();
+        }
+        var offsetsDesc = topicManager.describe(jbroker.broker.ConsumerOffsetsTopic.NAME);
+        if (offsetsDesc.isEmpty()) {
+            return b.setError(ErrorCode.COORDINATOR_NOT_AVAILABLE).build();
+        }
+        int offsetsPartition =
+                Math.floorMod(req.getGroupId().hashCode(), offsetsDesc.get().partitions());
+        int code = runtime.addPartitions(
+                routing.partition(),
+                req.getTransactionalId(),
+                req.getProducerId(),
+                req.getProducerEpoch(),
+                java.util.List.of(jbroker.proto.common.TopicPartition.newBuilder()
+                        .setTopic(jbroker.broker.ConsumerOffsetsTopic.NAME)
+                        .setPartition(offsetsPartition)
+                        .build()));
+        b.setError(toWire(code));
+        if (code == ErrorCodes.NOT_COORDINATOR) {
+            var moved = route(req.getTransactionalId());
+            fillSuggestedCoordinator(
+                    moved,
+                    b::setSuggestedCoordinatorId,
+                    b::setSuggestedCoordinatorHost,
+                    b::setSuggestedCoordinatorPort);
+        }
+        return b.build();
+    }
+
     // --- routing ---
 
     private record Routing(ErrorCode error, int partition, int leaderId, String leaderHost, int leaderPort) {}

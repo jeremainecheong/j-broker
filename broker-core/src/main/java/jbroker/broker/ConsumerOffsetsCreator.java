@@ -11,16 +11,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Proposes the {@code __consumer_offsets} {@code CreateTopicRecord}
- * exactly once per cluster, when the active controller observes that the
- * topic doesn't yet exist. Idempotent: callers may invoke {@link #ensureCreated()}
- * on every controller tick without producing duplicate proposals.
+ * Proposes a compacted internal topic's {@code CreateTopicRecord} exactly
+ * once per cluster, when the active controller observes that the topic
+ * doesn't yet exist. Named for its first customer, {@code
+ * __consumer_offsets}; {@code __transaction_state} rides the same
+ * machinery through the topic-name constructor. Idempotent: callers may
+ * invoke {@link #ensureCreated()} on every controller tick without
+ * producing duplicate proposals.
  *
  * <p>Replication factor is clamped to {@code min(3, |knownBrokers|)} so a
  * single-broker cluster (e.g. existing single-broker ITs) doesn't deadlock waiting
  * for absent followers. The fixed 50-partition shape matches Kafka
- * convention; changing it would invalidate every committed offset's
- * coordinator routing (see spec §"`__consumer_offsets` internal topic").
+ * convention; changing it would invalidate the coordinator routing of
+ * every committed offset / transactional_id (see spec §"`__consumer_offsets`
+ * internal topic" and {@link jbroker.broker.txn.TxnStateTopic}).
  */
 public final class ConsumerOffsetsCreator {
 
@@ -37,6 +41,7 @@ public final class ConsumerOffsetsCreator {
     private final Proposer proposer;
     private final Supplier<Boolean> isLeader;
     private final int partitions;
+    private final String topicName;
     private volatile boolean proposed;
 
     /** Convenience constructor — uses the canonical {@link ConsumerOffsetsTopic#PARTITION_COUNT}. */
@@ -56,8 +61,27 @@ public final class ConsumerOffsetsCreator {
             Proposer proposer,
             Supplier<Boolean> isLeader,
             int partitions) {
+        this(topicManager, knownBrokers, selfBrokerId, proposer, isLeader, partitions, ConsumerOffsetsTopic.NAME);
+    }
+
+    /**
+     * Full form: create {@code topicName} (compacted, internal) with the
+     * given partition count. {@code __transaction_state} uses this with
+     * {@link jbroker.broker.txn.TxnStateTopic#PARTITION_COUNT}.
+     */
+    public ConsumerOffsetsCreator(
+            TopicManager topicManager,
+            Supplier<Set<Integer>> knownBrokers,
+            int selfBrokerId,
+            Proposer proposer,
+            Supplier<Boolean> isLeader,
+            int partitions,
+            String topicName) {
         if (partitions < 1) {
             throw new IllegalArgumentException("partitions must be ≥ 1, got " + partitions);
+        }
+        if (topicName == null || topicName.isBlank()) {
+            throw new IllegalArgumentException("topicName must be non-blank");
         }
         this.topicManager = topicManager;
         this.knownBrokers = knownBrokers;
@@ -65,6 +89,7 @@ public final class ConsumerOffsetsCreator {
         this.proposer = proposer;
         this.isLeader = isLeader;
         this.partitions = partitions;
+        this.topicName = topicName;
     }
 
     /**
@@ -74,7 +99,7 @@ public final class ConsumerOffsetsCreator {
      * peers known yet, propose failure, etc.).
      */
     public boolean ensureCreated() {
-        if (topicManager.exists(ConsumerOffsetsTopic.NAME)) {
+        if (topicManager.exists(topicName)) {
             proposed = true;
             return true;
         }
@@ -99,7 +124,7 @@ public final class ConsumerOffsetsCreator {
 
         var ct = CreateTopicRecord.newBuilder()
                 .setTopic(TopicRecord.newBuilder()
-                        .setTopic(ConsumerOffsetsTopic.NAME)
+                        .setTopic(topicName)
                         .setPartitions(partitions)
                         .setReplicationFactor(rf)
                         .setCreatedMillis(System.currentTimeMillis())
@@ -111,7 +136,7 @@ public final class ConsumerOffsetsCreator {
         for (int p = 0; p < partitions; p++) {
             int leader = replicas.get(p % replicas.size());
             var pc = PartitionChangeRecord.newBuilder()
-                    .setTopic(ConsumerOffsetsTopic.NAME)
+                    .setTopic(topicName)
                     .setPartition(p)
                     .setLeader(leader)
                     .setLeaderEpoch(0);
@@ -132,7 +157,7 @@ public final class ConsumerOffsetsCreator {
             proposed = true;
             return true;
         } catch (Exception e) {
-            log.debug("__consumer_offsets propose failed; will retry on next tick", e);
+            log.debug("{} propose failed; will retry on next tick", topicName, e);
             return false;
         }
     }

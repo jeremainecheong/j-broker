@@ -1,0 +1,180 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Install &amp; deploy — j-broker</title><link rel="stylesheet" href="../assets/site.css"></head><body>
+<nav class="top"><span class="brand">j-broker</span><a href="../index.html">Overview</a><a href="install.html" class="here">Install &amp; deploy</a><a href="producers.html">Producers</a><a href="consumers.html">Consumers</a><a href="operations.html">Operations</a><a href="security.html">Security</a><a href="https://github.com/jeremainecheong/j-broker">GitHub</a></nav>
+<main>
+<h1>Install &amp; deploy</h1>
+<p class="lead">Four ways to run j-broker: Docker Compose for a local 3-broker cluster, Helm for Kubernetes, the published release artifacts, or a from-source build. This page covers all four, then the full broker configuration reference.</p>
+
+<h2>Prerequisites</h2>
+<ul>
+<li><b>Docker Compose path</b> — Docker with the compose plugin.</li>
+<li><b>Kubernetes path</b> — Helm 3 and a cluster (Kind or minikube work for local use).</li>
+<li><b>From source</b> — Java 21 (Temurin). The Gradle wrapper is pinned to 8.7 and SHA-256 verified on download; no Gradle install needed.</li>
+<li><b>The full demo</b> additionally uses <code>curl</code> and <code>python3</code> to talk to the admin REST API.</li>
+</ul>
+
+<h2>Install with Docker Compose</h2>
+<p>From a repository checkout:</p>
+<pre><code>docker compose up</code></pre>
+<p>This builds both images and starts three brokers plus the admin UI. The admin container waits for each broker's gRPC port to accept connections before starting, so the whole stack settles on its own.</p>
+<table>
+<tr><th>Component</th><th>Host port</th><th>Notes</th></tr>
+<tr><td>Admin UI</td><td><a href="http://localhost:15672">15672</a></td><td>RabbitMQ-management port convention.</td></tr>
+<tr><td>Broker 1 (gRPC)</td><td><code>localhost:9092</code></td><td>Container port 9092.</td></tr>
+<tr><td>Broker 2 (gRPC)</td><td><code>localhost:9093</code></td><td>Container port 9092.</td></tr>
+<tr><td>Broker 3 (gRPC)</td><td><code>localhost:9094</code></td><td>Container port 9092.</td></tr>
+<tr><td>Chaos HTTP (opt-in)</td><td><code>9100</code> / <code>9101</code> / <code>9102</code></td><td>Bound only with <code>JBROKER_CHAOS_ENABLED=true JBROKER_CHAOS_PORT=9100 JBROKER_CHAOS_TOKEN=&lt;secret&gt;</code>.</td></tr>
+<tr><td>Raft peer RPC</td><td>—</td><td>Port 9192 stays inside the compose bridge network; it is never exposed to the host.</td></tr>
+</table>
+<p>Each broker advertises <code>localhost:909{2,3,4}</code> to external clients via <code>--advertised-listeners</code>, so host-side producers and consumers can follow leader hints across the bridge network.</p>
+<img src="../screenshots/overview.png" alt="Admin UI overview" style="max-width:100%;border:1px solid var(--line);border-radius:8px">
+<p>The admin UI overview after startup: topology, controller badge, per-broker roles.</p>
+<h3>Volumes and teardown</h3>
+<p>Broker data persists in named volumes <code>broker1-data</code>, <code>broker2-data</code>, <code>broker3-data</code>, mounted at <code>/var/lib/jbroker</code> in each container (Raft state plus partition segment files).</p>
+<pre><code>docker compose down       # stop; data volumes survive for the next up
+docker compose down -v    # stop and wipe all broker data</code></pre>
+<h3>Monitoring profile</h3>
+<pre><code>docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up</code></pre>
+<p>Adds Prometheus at <a href="http://localhost:9091">http://localhost:9091</a> and Grafana at <a href="http://localhost:3000">http://localhost:3000</a> with two auto-provisioned dashboards (cluster overview, partitions). Prometheus scrapes the admin app's merged <code>/actuator/prometheus</code> endpoint — the admin app is the single scrape point; brokers have no metrics port of their own.</p>
+
+<h2>Install with Helm</h2>
+<p>The chart ships a 3-replica broker StatefulSet (stable network identity for the Raft voter config), a single-replica admin Deployment, an optional bundled Redis, and opt-in mTLS wiring. Chart source and full docs: <a href="https://github.com/jeremainecheong/j-broker/tree/main/deploy/helm/j-broker">deploy/helm/j-broker</a>.</p>
+<h3>From the published chart</h3>
+<p>Release-artifact path — pulls the chart and images published by the <code>v2.0.0-rc.1</code> release:</p>
+<pre><code>helm install jb oci://ghcr.io/jeremainecheong/charts/j-broker --version 2.0.0-rc.1 \
+  --set broker.image.repository=ghcr.io/jeremainecheong/jbroker-broker \
+  --set broker.image.tag=2.0.0-rc.1 \
+  --set admin.image.repository=ghcr.io/jeremainecheong/jbroker-admin \
+  --set admin.image.tag=2.0.0-rc.1
+
+kubectl port-forward svc/jb-j-broker-admin 15672:15672</code></pre>
+<div class="note">The chart's default image references are the local-build names (<code>jbroker-broker:1.4.0</code>), matching the from-source flow below — release installs must override repository and tag as shown.</div>
+<h3>From source (Kind / minikube)</h3>
+<pre><code># Build + load the images into your local cluster:
+docker build -f Dockerfile.broker -t jbroker-broker:1.4.0 .
+docker build -f Dockerfile.admin  -t jbroker-admin:1.4.0  .
+kind load docker-image jbroker-broker:1.4.0 jbroker-admin:1.4.0
+
+# Install with defaults (3-broker plaintext cluster, no TLS, no Redis):
+helm install jb deploy/helm/j-broker
+kubectl port-forward svc/jb-j-broker-admin 15672:15672</code></pre>
+<p>Against a live release, <code>helm test jb</code> runs a hook pod that TCP-connects to every broker pod and the admin service and fails if any port does not answer. <code>deploy/helm/j-broker/tests/render-smoke.sh</code> checks the rendered templates without any cluster.</p>
+<h3>Values highlights</h3>
+<p><a href="https://github.com/jeremainecheong/j-broker/blob/main/deploy/helm/j-broker/values.yaml">values.yaml</a> is the authoritative, fully commented list. The ones that shape a deployment:</p>
+<table>
+<tr><th>Key</th><th>Default</th><th>Purpose</th></tr>
+<tr><td><code>broker.replicaCount</code></td><td><code>3</code></td><td>Raft-majority-friendly odd number. Changing it on a running release requires manual Raft voter reconfiguration.</td></tr>
+<tr><td><code>broker.persistence.size</code></td><td><code>10Gi</code></td><td>Per-broker PVC size, backing <code>/var/lib/jbroker</code>.</td></tr>
+<tr><td><code>broker.podDisruptionBudget.enabled</code></td><td><code>true</code></td><td>Caps voluntary evictions at <code>maxUnavailable: 1</code> so node drains never cost Raft its majority.</td></tr>
+<tr><td><code>broker.podAntiAffinity.enabled</code></td><td><code>true</code></td><td>Soft anti-affinity spreading brokers across nodes; single-node clusters still schedule.</td></tr>
+<tr><td><code>broker.rack.enabled</code></td><td><code>false</code></td><td>Rack awareness — see below.</td></tr>
+<tr><td><code>broker.advertisedHostTemplate</code></td><td><code>""</code></td><td><code>sprintf</code>-style template (<code>%d</code> → 1-indexed broker id) building <code>--advertised-listeners</code> for external clients, e.g. <code>broker%d.example.com</code>. Empty skips the flag.</td></tr>
+<tr><td><code>broker.auth.mode</code></td><td><code>none</code></td><td><code>none</code> or <code>mtls</code>. mTLS derives the principal from the client certificate CN and enforces default-deny ACLs. Requires <code>tls.enabled</code>.</td></tr>
+<tr><td><code>broker.auth.superUsers</code></td><td><code>broker,admin</code></td><td>Principals that bypass ACL checks; the inter-broker and admin-app certificate CNs must be here before flipping to mtls.</td></tr>
+<tr><td><code>admin.replicaCount</code></td><td><code>1</code></td><td>More than one replica requires <code>redis.enabled=true</code> for cross-replica SSE fan-out.</td></tr>
+<tr><td><code>admin.ingress.enabled</code></td><td><code>false</code></td><td>Stand up an Ingress for the admin UI.</td></tr>
+<tr><td><code>admin.auth.existingSecret</code></td><td><code>""</code></td><td>Secret whose <code>users</code> key holds <code>name:bcrypt-hash</code> pairs for operator login. Empty leaves the admin app open (it logs a startup warning).</td></tr>
+<tr><td><code>tls.enabled</code></td><td><code>false</code></td><td>mTLS on every gRPC hop.</td></tr>
+<tr><td><code>tls.secretName</code></td><td><code>jbroker-tls</code></td><td>Secret carrying <code>ca.crt</code> + <code>tls.crt</code> + <code>tls.key</code> PEM files.</td></tr>
+<tr><td><code>redis.enabled</code></td><td><code>false</code></td><td>Bundled Redis for quota buckets + SSE fan-out. The default install never dials Redis.</td></tr>
+<tr><td><code>networkPolicy.enabled</code></td><td><code>false</code></td><td>Ingress lockdown — see below.</td></tr>
+<tr><td><code>metrics.serviceMonitor.enabled</code></td><td><code>false</code></td><td>prometheus-operator ServiceMonitor — see below.</td></tr>
+<tr><td><code>metrics.prometheusRule.enabled</code></td><td><code>false</code></td><td>Alert pack — see below.</td></tr>
+</table>
+<h3>Enabling mTLS</h3>
+<pre><code>scripts/tls/bootstrap-ca.sh .tls
+
+kubectl create secret generic jbroker-tls \
+    --from-file=tls.crt=.tls/broker1.crt \
+    --from-file=tls.key=.tls/broker1.key \
+    --from-file=ca.crt=.tls/ca.crt
+
+helm upgrade --install jb deploy/helm/j-broker \
+    --set tls.enabled=true \
+    --set tls.secretName=jbroker-tls</code></pre>
+<p>With <code>tls.enabled</code>, every broker server and every inter-broker client speaks mTLS, and the admin app uses the same bundle to dial brokers (<code>tls.adminClientSecretName</code> optionally points it at a separate client cert). To also turn on authentication and ACL enforcement, set <code>broker.auth.mode=mtls</code> — and make sure the inter-broker and admin certificate CNs are in <code>broker.auth.superUsers</code> first, or the brokers will deny each other. The full principal/ACL model is on the <a href="security.html">Security</a> page.</p>
+<div class="warn">The dev script generates per-broker server certs (<code>broker1.crt</code>…), but the chart mounts one Secret on every broker pod. In a production deployment, issue one cert per StatefulSet pod — SAN-matching each pod's stable DNS name — with cert-manager or similar.</div>
+<h3>Rack awareness</h3>
+<p><code>broker.rack.enabled=true</code> makes each pod read its rack from its own <code>topology.kubernetes.io/zone</code> <b>pod</b> label via the downward API (surfaced to the broker as <code>JBROKER_RACK</code>); topic placement then spreads each partition's replicas across the racks brokers report, so a whole-zone outage cannot take out every copy. The downward API cannot read node labels, so the pods themselves must carry the label — mirror it from the node with an admission webhook or stamp it through zone-pinned deployment tooling. A pod missing the label fails to start with <code>CreateContainerConfigError</code>. Leave this off on single-zone clusters.</p>
+<h3>NetworkPolicy</h3>
+<p><code>networkPolicy.enabled=true</code> locks down ingress: the Raft port stays broker-only, chaos and Redis ports admin-only, the broker client port is scoped by the <code>networkPolicy.clientFrom</code> peer list and the admin UI/API port by <code>networkPolicy.adminFrom</code> (an empty list keeps that port open to any peer). Egress is left unrestricted. Enforcement needs a CNI that implements NetworkPolicy (Calico, Cilium, …) — Kind's stock kindnet accepts the objects but enforces nothing.</p>
+<h3>ServiceMonitor and alerts</h3>
+<p><code>metrics.serviceMonitor.enabled=true</code> renders a prometheus-operator ServiceMonitor scraping the admin <code>/actuator/prometheus</code> endpoint (the merged per-broker view; the actuator path stays open even with admin auth enabled). Keep the scrape interval at or above the admin app's own 5&nbsp;s broker-scrape cadence. When NetworkPolicy is on with a non-empty <code>adminFrom</code>, add the Prometheus pods to it or scrapes will be dropped.</p>
+<p><code>metrics.prometheusRule.enabled=true</code> ships seven alert rules: under-replicated partitions, sustained follower lag, stuck high watermark, metadata-Raft term flapping, unreachable broker, low disk headroom, and (with the ServiceMonitor) scrape-down. Two thresholds are tunable under <code>metrics.prometheusRule.thresholds</code>: <code>replicationLagRecords</code> (default 1000) and <code>raftTermIncreasesPer10m</code> (default 3). The expressions assume the operator-attached <code>namespace</code> label, so enable the rule pack together with the ServiceMonitor. Both objects need the monitoring.coreos.com CRDs.</p>
+
+<h2>Published artifacts</h2>
+<p>All commands in this section are release-artifact-dependent — they pull what the <a href="https://github.com/jeremainecheong/j-broker/blob/main/.github/workflows/release.yml">tag-triggered release pipeline</a> published for <code>v2.0.0-rc.1</code>.</p>
+<h3>Container images</h3>
+<p><code>ghcr.io/jeremainecheong/jbroker-broker</code> and <code>ghcr.io/jeremainecheong/jbroker-admin</code>, tagged with the release version. Both run as non-root (uid 1001) and are linux/amd64.</p>
+<div class="note"><code>:latest</code> tracks stable releases only. A prerelease such as <code>2.0.0-rc.1</code> never moves it — pin the explicit version tag.</div>
+<p>A single-broker instance (the image's default command runs <code>server --data-dir /var/lib/jbroker</code> with itself as the only voter):</p>
+<pre><code>docker run -p 9092:9092 -v jbroker-data:/var/lib/jbroker \
+  ghcr.io/jeremainecheong/jbroker-broker:2.0.0-rc.1</code></pre>
+<p>Named volumes inherit the image's ownership; a host bind-mount onto <code>/var/lib/jbroker</code> must be writable by uid 1001.</p>
+<h3>Helm chart</h3>
+<pre><code>helm install jb oci://ghcr.io/jeremainecheong/charts/j-broker --version 2.0.0-rc.1</code></pre>
+<p>Remember the image overrides from the Helm section above. Each GitHub Release also carries the packaged chart <code>.tgz</code> as an attachment.</p>
+<h3>Client jars (GitHub Packages)</h3>
+<p>Five modules publish under <code>io.github.jeremainecheong</code>: <code>proto</code>, <code>raft-core</code>, <code>raft-transport</code>, <code>broker-storage</code>, <code>broker-core</code>. The client classes — <code>ClusterClient</code>, <code>BatchingProducer</code>, <code>TransactionalProducer</code>, <code>Consumer</code> — live in <code>broker-core</code>, which pulls the others transitively.</p>
+<div class="warn">GitHub Packages requires authentication even for public packages. You need a GitHub personal access token with the <code>read:packages</code> scope — an anonymous <code>repositories</code> block will fail with 401. This is a GitHub constraint, not a choice this project made.</div>
+<pre><code>// build.gradle
+repositories {
+    mavenCentral()
+    maven {
+        url = uri("https://maven.pkg.github.com/jeremainecheong/j-broker")
+        credentials {
+            username = findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")
+            password = findProperty("gpr.token") ?: System.getenv("GITHUB_TOKEN")
+        }
+    }
+}
+
+dependencies {
+    implementation "io.github.jeremainecheong:broker-core:2.0.0-rc.1"
+}</code></pre>
+
+<h2>Building from source</h2>
+<pre><code>git clone https://github.com/jeremainecheong/j-broker.git
+cd j-broker
+
+./gradlew :broker-app:installDist    # broker + CLI
+./gradlew build                      # full build with unit + fast integration tests</code></pre>
+<p><code>installDist</code> produces the shipping binary at <code>broker-app/build/install/broker-app/bin/broker-app</code> — the same launcher the Docker image packages. It is both the broker entrypoint (<code>broker-app server …</code>) and the CLI (<code>topics</code>, <code>produce</code>, <code>consume</code>, <code>console-consumer</code>, <code>admin</code>); alias it to <code>j-broker</code> for your shell. Full CLI reference: <a href="https://github.com/jeremainecheong/j-broker/tree/main/broker-app">broker-app/README.md</a>. The admin app runs with <code>./gradlew :admin-app:bootRun</code> (port 9090 bare, 15672 in the container), and the two Dockerfiles (<code>Dockerfile.broker</code>, <code>Dockerfile.admin</code>) build the images used by compose and the chart.</p>
+
+<h2>Configuration reference</h2>
+<p>Server settings resolve in layers, later layers winning: built-in defaults ← <code>--config j-broker.yaml</code> ← <code>JBROKER_*</code> environment variables ← command-line flags. The YAML file is a flat map of dotted keys; unknown keys in the file are startup errors (they are almost always typos), unrecognized <code>JBROKER_*</code> variables only warn.</p>
+<pre><code>broker-app server --validate-config</code></pre>
+<p>prints every resolved key with its value and source, reports all validation problems at once, and exits 0/2 without binding a port.</p>
+<p>The table below mirrors the key table that drives validation (<code>ServerConfig.KEYS</code>), so the code is the ground truth for every row.</p>
+<table>
+<tr><th>Key</th><th>Default</th><th>Env</th><th>Flag</th><th>Description</th></tr>
+<tr><td><code>node.id</code></td><td><code>1</code></td><td><code>JBROKER_NODE_ID</code></td><td><code>--id</code></td><td>Broker id. Must appear in the voter list.</td></tr>
+<tr><td><code>data.dir</code></td><td><code>./var/broker</code></td><td><code>JBROKER_DATA_DIR</code></td><td><code>--data-dir</code></td><td>Data directory (Raft log + partition logs).</td></tr>
+<tr><td><code>broker.port</code></td><td><code>9092</code></td><td><code>JBROKER_BROKER_PORT</code></td><td><code>--broker-port</code></td><td>Client and inter-broker gRPC port.</td></tr>
+<tr><td><code>raft.port</code></td><td><code>9192</code></td><td><code>JBROKER_RAFT_PORT</code></td><td><code>--raft-port</code></td><td>Raft peer RPC port.</td></tr>
+<tr><td><code>voters</code></td><td>(empty)</td><td><code>JBROKER_VOTERS</code></td><td><code>--voters</code></td><td>Cluster voter list, <code>ID@HOST:RAFT:BROKER,...</code>. Empty runs a single-broker cluster with self as the only voter.</td></tr>
+<tr><td><code>advertised.listeners</code></td><td>(empty)</td><td><code>JBROKER_ADVERTISED_LISTENERS</code></td><td><code>--advertised-listeners</code></td><td>Client-facing address overlay, <code>ID=HOST:PORT,...</code>. Ids absent from the overlay advertise their bind address.</td></tr>
+<tr><td><code>rack</code></td><td>(empty)</td><td><code>JBROKER_RACK</code></td><td><code>--rack</code></td><td>Rack / availability-zone label for this broker (e.g. the <code>topology.kubernetes.io/zone</code> value). When brokers span two or more racks, topic placement spreads replicas across them. Empty = no rack.</td></tr>
+<tr><td><code>chaos.port</code></td><td><code>-1</code></td><td><code>JBROKER_CHAOS_PORT</code></td><td><code>--chaos-port</code></td><td>Cooperative chaos HTTP port. -1 disables.</td></tr>
+<tr><td><code>chaos.enabled</code></td><td><code>false</code></td><td><code>JBROKER_CHAOS_ENABLED</code></td><td><code>--enable-chaos</code></td><td>Explicit opt-in for the chaos control plane. chaos.port refuses to bind without it.</td></tr>
+<tr><td><code>chaos.token</code></td><td>(empty)</td><td><code>JBROKER_CHAOS_TOKEN</code></td><td>—</td><td>Bearer token every chaos HTTP request must present. Required when the chaos port is enabled.</td></tr>
+<tr><td><code>consumer.offsets.partitions</code></td><td><code>50</code></td><td><code>JBROKER_CONSUMER_OFFSETS_PARTITIONS</code></td><td><code>--consumer-offsets-partitions</code></td><td>Partition count for the internal <code>__consumer_offsets</code> topic. Fixed at first boot.</td></tr>
+<tr><td><code>min.insync.replicas</code></td><td><code>2</code></td><td><code>JBROKER_MIN_INSYNC_REPLICAS</code></td><td><code>--min-insync-replicas</code></td><td>Cluster default acks=all durability floor. Per-topic config overrides; RF-1 topics clamp down.</td></tr>
+<tr><td><code>max.message.bytes</code></td><td><code>1048576</code></td><td><code>JBROKER_MAX_MESSAGE_BYTES</code></td><td>—</td><td>Cluster default for the largest serialized produce batch. Per-topic config overrides; hard cap 8 MiB (gRPC frame limits bound every hop).</td></tr>
+<tr><td><code>log.segment.bytes</code></td><td><code>134217728</code></td><td><code>JBROKER_LOG_SEGMENT_BYTES</code></td><td>—</td><td>Cluster default segment roll threshold. Per-topic <code>segment.bytes</code> overrides.</td></tr>
+<tr><td><code>log.retention.ms</code></td><td><code>604800000</code></td><td><code>JBROKER_LOG_RETENTION_MS</code></td><td>—</td><td>Cluster default time retention (7 days). -1 = unlimited. Per-topic <code>retention.ms</code> overrides.</td></tr>
+<tr><td><code>log.retention.bytes</code></td><td><code>-1</code></td><td><code>JBROKER_LOG_RETENTION_BYTES</code></td><td>—</td><td>Cluster default size-retention budget per partition. -1 = unlimited. Per-topic <code>retention.bytes</code> overrides.</td></tr>
+<tr><td><code>log.flush.messages</code></td><td><code>-1</code></td><td><code>JBROKER_LOG_FLUSH_MESSAGES</code></td><td>—</td><td>Cluster default flush count trigger. -1 = off (fsync on segment roll + replication). Per-topic <code>flush.messages</code> overrides.</td></tr>
+<tr><td><code>log.flush.ms</code></td><td><code>-1</code></td><td><code>JBROKER_LOG_FLUSH_MS</code></td><td>—</td><td>Cluster default flush age trigger, ms. -1 = off. Per-topic <code>flush.ms</code> overrides.</td></tr>
+<tr><td><code>log.cleaner.interval.ms</code></td><td><code>300000</code></td><td><code>JBROKER_LOG_CLEANER_INTERVAL_MS</code></td><td>—</td><td>Retention/compaction cleaner tick interval, ms.</td></tr>
+<tr><td><code>offsets.retention.ms</code></td><td><code>604800000</code></td><td><code>JBROKER_OFFSETS_RETENTION_MS</code></td><td>—</td><td>Committed offsets of groups with no live members expire once their newest commit is older than this (7 days). -1 disables expiry.</td></tr>
+<tr><td><code>shutdown.timeout.ms</code></td><td><code>30000</code></td><td><code>JBROKER_SHUTDOWN_TIMEOUT_MS</code></td><td>—</td><td>SIGTERM drain budget: how long the broker spends handing led partitions to other ISR members before closing. 0 skips the drain.</td></tr>
+<tr><td><code>storage.headroom.bytes</code></td><td><code>1073741824</code></td><td><code>JBROKER_STORAGE_HEADROOM_BYTES</code></td><td>—</td><td>Disk-headroom watermark. Below it, client produces get retriable STORAGE_FULL while fetch/replication/admin keep serving.</td></tr>
+<tr><td><code>auth.mode</code></td><td><code>none</code></td><td><code>JBROKER_AUTH_MODE</code></td><td><code>--auth-mode</code></td><td>Client authentication: none or mtls. mtls derives the principal from the client certificate CN, rejects principal-less RPCs, and requires tls.enabled.</td></tr>
+<tr><td><code>super.users</code></td><td>(empty)</td><td><code>JBROKER_SUPER_USERS</code></td><td>—</td><td>Comma-separated principals that bypass ACL checks. Put inter-broker certificate CNs here before turning on auth.mode=mtls.</td></tr>
+<tr><td><code>tls.enabled</code></td><td><code>false</code></td><td><code>JBROKER_TLS_ENABLED</code></td><td><code>--tls-enabled</code></td><td>Enable mTLS on every gRPC listener and inter-broker client. The flag is a switch (no value).</td></tr>
+<tr><td><code>tls.cert</code></td><td>(empty)</td><td><code>JBROKER_TLS_CERT</code></td><td><code>--tls-cert</code></td><td>PEM certificate chain. Required when tls.enabled.</td></tr>
+<tr><td><code>tls.key</code></td><td>(empty)</td><td><code>JBROKER_TLS_KEY</code></td><td><code>--tls-key</code></td><td>PEM private key. Required when tls.enabled.</td></tr>
+<tr><td><code>tls.trust</code></td><td>(empty)</td><td><code>JBROKER_TLS_TRUST</code></td><td><code>--tls-trust</code></td><td>PEM trust bundle peers are verified against. Required when tls.enabled.</td></tr>
+</table>
+<p>Per-topic keys (<code>min.insync.replicas</code>, <code>max.message.bytes</code>, <code>retention.ms</code>, <code>retention.bytes</code>, <code>segment.bytes</code>, <code>flush.messages</code>, <code>flush.ms</code>) are set at topic create/update through the admin API and override the cluster default for that topic.</p>
+</main><footer>j-broker documentation — Apache-2.0.</footer></body></html>

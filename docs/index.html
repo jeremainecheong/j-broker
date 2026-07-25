@@ -1,0 +1,40 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Overview — j-broker</title><link rel="stylesheet" href="assets/site.css"></head><body>
+<nav class="top"><span class="brand">j-broker</span><a href="index.html" class="here">Overview</a><a href="guide/install.html">Install &amp; deploy</a><a href="guide/producers.html">Producers</a><a href="guide/consumers.html">Consumers</a><a href="guide/operations.html">Operations</a><a href="guide/security.html">Security</a><a href="https://github.com/jeremainecheong/j-broker">GitHub</a></nav>
+<main>
+<h1>j-broker</h1>
+<p class="lead">A log-structured distributed message broker written from scratch in Java 21: a Raft-replicated metadata plane, partitioned replicated logs with high-watermark semantics and a <code>min.insync.replicas</code> durability floor, consumer groups, idempotent producers, transactions with exactly-once consume-transform-produce, log compaction, mTLS with per-principal ACLs, online cluster membership changes, a cluster-aware failover-transparent client, and a web admin UI. No Kafka libraries — the wire is gRPC, and the clients in this repository are the interface. Current release: <code>v2.0.0-rc.1</code>, Apache-2.0.</p>
+
+<video src="media/produce-consume.mp4" autoplay loop muted playsinline style="width:100%;border:1px solid var(--line);border-radius:8px"></video>
+<p>A producer and a consumer group, live.</p>
+
+<h2>Documentation</h2>
+<div class="pages">
+<a href="guide/install.html"><b>Install &amp; deploy</b>Docker Compose, Kubernetes with Helm, published images/chart/jars, building from source, and the full broker configuration reference.</a>
+<a href="guide/producers.html"><b>Producers</b>The batching idempotent producer, <code>acks</code> semantics, transactions, compression, and the delivery contract under failover.</a>
+<a href="guide/consumers.html"><b>Consumers</b>Consumer groups, offset commits, rebalancing, <code>read_committed</code> isolation, and the CLI consumers.</a>
+<a href="guide/operations.html"><b>Operations</b>The admin UI and REST API, cluster lifecycle (add/decommission/reassign), monitoring, alerts, and runbooks.</a>
+<a href="guide/security.html"><b>Security</b>mTLS on every gRPC hop, certificate-CN principals, default-deny ACLs, and operator login on the admin plane.</a>
+<a href="https://github.com/jeremainecheong/j-broker/tree/main/docs/architecture"><b>Architecture</b>Diagrams of the system: components, the Kubernetes topology, the produce path, transaction two-phase commit, leader failover, release artifacts.</a>
+</div>
+
+<h2>Quickstart</h2>
+<p>Bring up a 3-broker cluster with the admin UI on <a href="http://localhost:15672">http://localhost:15672</a>:</p>
+<pre><code>docker compose up</code></pre>
+<p>Produce and consume from the CLI:</p>
+<pre><code>./gradlew :broker-app:installDist   # builds the CLI used below
+
+./broker-app/build/install/broker-app/bin/broker-app topics create \
+  --broker localhost:9092 --topic orders --partitions 3 --replication-factor 3
+
+echo -e "o-1\no-2\no-3" | ./broker-app/build/install/broker-app/bin/broker-app \
+  produce --broker localhost:9092 --topic orders --partition 0
+
+./broker-app/build/install/broker-app/bin/broker-app consume \
+  --broker localhost:9092 --group order-processor --topic orders</code></pre>
+<p>Topic creation must reach the controller and produce must reach the partition's leader; when you aim at the wrong broker, the CLI reads the redirect from the refusal and retries once against the right one on its own. Group consume works against any broker.</p>
+
+<h2>The full demo</h2>
+<p>One command boots the cluster, runs plain and transactional pipelines, kills a broker mid-transaction, audits exactly-once delivery, and leaves everything running for exploration:</p>
+<pre><code>scripts/demo/full-demo.sh</code></pre>
+<p>What each act shows and what to explore afterwards: <a href="https://github.com/jeremainecheong/j-broker/tree/main/scripts/demo">scripts/demo/README.md</a>. Add <code>DEMO_MONITORING=1</code> for Prometheus and Grafana.</p>
+</main><footer>j-broker documentation — Apache-2.0.</footer></body></html>

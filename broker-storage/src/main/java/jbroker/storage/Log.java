@@ -52,6 +52,33 @@ public final class Log implements AutoCloseable {
      */
     private final java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
 
+    /**
+     * Per-log transaction bookkeeping: ongoing ranges for the LSO and the
+     * aborted-txn index. Mutated on the append/truncate paths (under
+     * {@link #lock}); read lock-free by fetch paths — the state object
+     * synchronizes internally.
+     */
+    private final TransactionState txnState = new TransactionState();
+
+    /**
+     * Invoked before the first byte of every control batch hits disk. The
+     * {@link LogManager} installs a gate that re-stamps the data
+     * directory's {@link FormatVersion} marker so a binary too old to
+     * understand control batches refuses the directory instead of decoding
+     * markers as data. Default no-op: a log opened without a manager has no
+     * data-dir marker to guard.
+     */
+    @FunctionalInterface
+    public interface ControlAppendGate {
+        void ensureControlWritable() throws IOException;
+    }
+
+    private volatile ControlAppendGate controlAppendGate = () -> {};
+
+    public void setControlAppendGate(ControlAppendGate gate) {
+        this.controlAppendGate = java.util.Objects.requireNonNull(gate);
+    }
+
     private Log(Path dir, Config config) {
         this.dir = dir;
         this.config = config;
@@ -141,6 +168,14 @@ public final class Log implements AutoCloseable {
         if (log.segments.isEmpty()) {
             log.segments.add(LogSegment.open(dir, 0L, config.indexIntervalBytes()));
         }
+        // Rebuild LSO + aborted-txn state from the recovery scan each
+        // segment already ran (the same decode pass that restored
+        // nextOffset); replay in segment order = log order.
+        for (var seg : log.segments) {
+            for (var event : seg.drainRecoveredTxnEvents()) {
+                log.txnState.apply(event);
+            }
+        }
         return log;
     }
 
@@ -174,9 +209,35 @@ public final class Log implements AutoCloseable {
     public long appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
         lock.lock();
         try {
+            // Peek the plaintext attributes so replicated transactional and
+            // control batches keep this replica's LSO and aborted index in
+            // step with the leader's — byte-identical replication carries
+            // the flags for free.
+            short attributes = encodedBatch.length >= RecordBatch.BATCH_OVERHEAD
+                    ? java.nio.ByteBuffer.wrap(encodedBatch).getShort(RecordBatch.ATTRIBUTES_OFFSET)
+                    : 0;
+            boolean control = RecordBatch.isControl(attributes);
+            if (control) {
+                // Stamp the format marker BEFORE the marker bytes land: a
+                // crash in between over-claims (marker bumped, no control
+                // batch yet), never under-claims.
+                controlAppendGate.ensureControlWritable();
+            }
             var active = segments.get(segments.size() - 1);
             active.appendRaw(encodedBatch, expectedBaseOffset);
             long assignedLast = active.nextOffset() - 1;
+            if (control) {
+                var parsed = RecordBatch.decode(java.nio.ByteBuffer.wrap(encodedBatch));
+                if (parsed.producerId() >= 0) {
+                    txnState.onControl(
+                            parsed.producerId(), parsed.controlRecord().type());
+                }
+            } else if (RecordBatch.isTransactional(attributes)) {
+                long producerId = java.nio.ByteBuffer.wrap(encodedBatch).getLong(RecordBatch.PRODUCER_ID_OFFSET);
+                if (producerId >= 0) {
+                    txnState.onTransactionalData(producerId, expectedBaseOffset, assignedLast);
+                }
+            }
             if (active.sizeBytes() >= segmentBytes) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
                 active.force();
@@ -239,9 +300,38 @@ public final class Log implements AutoCloseable {
             int partitionLeaderEpoch,
             Compression codec)
             throws IOException {
+        return append(
+                records,
+                nowMillis,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                partitionLeaderEpoch,
+                codec,
+                /*transactional*/ false);
+    }
+
+    /**
+     * Full append with the transactional flag: the batch is stamped with
+     * the transactional attribute bit and opens (or extends)
+     * {@code producerId}'s ongoing transaction, holding the
+     * {@linkplain #lastStableOffset last stable offset} at the
+     * transaction's first offset until a control batch decides it.
+     */
+    public long append(
+            List<Record> records,
+            long nowMillis,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            int partitionLeaderEpoch,
+            Compression codec,
+            boolean transactional)
+            throws IOException {
         lock.lock();
         try {
             var active = segments.get(segments.size() - 1);
+            long baseOffset = active.nextOffset();
             long firstTimestamp = nowMillis;
             long maxTimestamp = nowMillis;
             active.append(
@@ -252,8 +342,12 @@ public final class Log implements AutoCloseable {
                     producerEpoch,
                     baseSequence,
                     partitionLeaderEpoch,
-                    codec);
+                    codec,
+                    transactional);
             long assignedLast = active.nextOffset() - 1;
+            if (transactional) {
+                txnState.onTransactionalData(producerId, baseOffset, assignedLast);
+            }
             if (active.sizeBytes() >= segmentBytes) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
                 active.force();
@@ -268,6 +362,69 @@ public final class Log implements AutoCloseable {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Append a control batch deciding {@code producerId}'s ongoing
+     * transaction: COMMIT releases it, ABORT additionally records the data
+     * range in the aborted-txn index. Consumes one offset; never
+     * compressed. Returns the marker's assigned offset.
+     *
+     * <p>The first control batch a data directory ever sees re-stamps its
+     * format marker via the {@link ControlAppendGate} before the bytes
+     * land, so a rolling downgrade to a pre-control binary refuses loudly.
+     */
+    public long appendControl(
+            long producerId, short producerEpoch, ControlRecord marker, long nowMillis, int partitionLeaderEpoch)
+            throws IOException {
+        if (producerId < 0) {
+            throw new IllegalArgumentException("control batch requires producerId >= 0, got " + producerId);
+        }
+        lock.lock();
+        try {
+            controlAppendGate.ensureControlWritable();
+            var active = segments.get(segments.size() - 1);
+            active.appendControl(nowMillis, producerId, producerEpoch, partitionLeaderEpoch, marker);
+            long assigned = active.nextOffset() - 1;
+            txnState.onControl(producerId, marker.type());
+            if (active.sizeBytes() >= segmentBytes) {
+                var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
+                active.force();
+                segments.add(next);
+                markFlushedLocked();
+            } else {
+                onAppendedLocked(1, System.currentTimeMillis());
+            }
+            return assigned;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * The last stable offset: every offset below it is transactionally
+     * decided AND below the caller-provided replication boundary
+     * {@code hwm} — {@code min(firstOffsetOfEarliestOngoingTxn, hwm)}.
+     * Storage does not know the high watermark; the replication layer owns
+     * that boundary and passes it in.
+     */
+    public long lastStableOffset(long hwm) {
+        return txnState.lastStableOffset(hwm);
+    }
+
+    /** First offset of the earliest ongoing transaction, if any. */
+    public java.util.OptionalLong firstOngoingTxnOffset() {
+        return txnState.firstOngoingOffset();
+    }
+
+    /**
+     * Aborted transactions overlapping the half-open fetch window
+     * {@code [fetchStart, fetchEnd)}, sorted by first offset — what a
+     * read-committed fetch response attaches so consumers can drop aborted
+     * records.
+     */
+    public List<TransactionState.AbortedTxn> abortedTxnsIn(long fetchStart, long fetchEnd) {
+        return txnState.abortedTxnsIn(fetchStart, fetchEnd);
     }
 
     public long nextOffset() {
@@ -300,8 +457,34 @@ public final class Log implements AutoCloseable {
             }
             var active = segments.get(segments.size() - 1);
             active.truncateAtOrAbove(targetOffset);
+            // The dropped suffix may have held control batches (a decided
+            // transaction becomes ongoing again) or transactional data (an
+            // aborted range shrinks or vanishes) — recompute from what
+            // survived. Rare path: only follower reconciliation truncates.
+            rebuildTxnStateLocked();
         } finally {
             lock.unlock();
+        }
+    }
+
+    /** Recompute {@link #txnState} from the surviving batches. Callers hold {@link #lock}. */
+    private void rebuildTxnStateLocked() throws IOException {
+        txnState.clear();
+        for (var seg : segments) {
+            long pos = seg.baseOffset();
+            long limit = seg.nextOffset();
+            while (pos < limit) {
+                var batches = seg.readFrom(pos, 1 << 20);
+                if (batches.isEmpty()) break;
+                for (var b : batches) {
+                    if (b.control() && b.producerId() >= 0) {
+                        txnState.onControl(b.producerId(), b.controlRecord().type());
+                    } else if (b.transactional() && b.producerId() >= 0) {
+                        txnState.onTransactionalData(b.producerId(), b.baseOffset(), b.lastOffset());
+                    }
+                    pos = b.lastOffset() + 1;
+                }
+            }
         }
     }
 
@@ -419,6 +602,14 @@ public final class Log implements AutoCloseable {
                     removed++;
                 }
             }
+            if (removed > 0) {
+                // Aborted ranges wholly below the new log start can never be
+                // fetched again — drop them so the index stays bounded by
+                // what the log holds. Ongoing transactions are kept even if
+                // retention ate their first batches: they are still
+                // undecided, and the LSO must keep saying so.
+                txnState.evictAbortedBelow(segments.get(0).baseOffset());
+            }
             return removed;
         } finally {
             lock.unlock();
@@ -495,6 +686,16 @@ public final class Log implements AutoCloseable {
                 var batches = seg.readFrom(pos, 64 * 1024);
                 if (batches.isEmpty()) break;
                 for (var b : batches) {
+                    if (b.control()) {
+                        // The single-batch rewrite cannot preserve marker
+                        // positions relative to the data they decide, and
+                        // dropping markers would resurrect decided
+                        // transactions. Transactional logs stay on delete
+                        // retention until the cleaner understands markers.
+                        throw new IOException("cannot compact " + dir
+                                + ": log contains transaction control batches; compaction is unsupported for"
+                                + " transactional logs");
+                    }
                     if (!sawAny) {
                         firstTimestamp = b.firstTimestamp();
                         sawAny = true;

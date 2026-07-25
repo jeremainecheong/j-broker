@@ -44,6 +44,13 @@ public final class LogSegment implements AutoCloseable {
     private int bytesSinceLastIndex;
     private long maxTimestamp;
 
+    /**
+     * Transaction-relevant batches observed by the open-time recovery scan,
+     * in log order. Drained once by {@link Log} to rebuild its
+     * {@link TransactionState}; empty afterwards and for fresh segments.
+     */
+    private List<TransactionState.TxnEvent> recoveredTxnEvents;
+
     private LogSegment(
             long baseOffset,
             Path logPath,
@@ -52,7 +59,8 @@ public final class LogSegment implements AutoCloseable {
             TimeIndex timeIndex,
             int indexIntervalBytes,
             long nextOffset,
-            long maxTimestamp) {
+            long maxTimestamp,
+            List<TransactionState.TxnEvent> recoveredTxnEvents) {
         this.baseOffset = baseOffset;
         this.logPath = logPath;
         this.logChannel = logChannel;
@@ -61,6 +69,14 @@ public final class LogSegment implements AutoCloseable {
         this.indexIntervalBytes = indexIntervalBytes;
         this.nextOffset = nextOffset;
         this.maxTimestamp = maxTimestamp;
+        this.recoveredTxnEvents = recoveredTxnEvents;
+    }
+
+    /** Hand over (and forget) the txn events the open-time recovery scan observed. */
+    List<TransactionState.TxnEvent> drainRecoveredTxnEvents() {
+        var out = recoveredTxnEvents;
+        recoveredTxnEvents = List.of();
+        return out;
     }
 
     public static LogSegment open(Path dir, long baseOffset) throws IOException {
@@ -87,6 +103,7 @@ public final class LogSegment implements AutoCloseable {
         // that survived intact.
         long nextOff = baseOffset;
         long maxTs = -1L;
+        var txnEvents = new ArrayList<TransactionState.TxnEvent>();
         long size = logChannel.size();
         long pos = 0;
         while (pos < size) {
@@ -96,6 +113,19 @@ public final class LogSegment implements AutoCloseable {
                 int markPos = mapped.position();
                 try {
                     var parsed = RecordBatch.decode(mapped);
+                    // Collect txn events before advancing the scan state: a
+                    // CRC-valid control batch with a malformed marker is
+                    // corruption, and the truncate-here path below must not
+                    // count the bad batch as recovered.
+                    if (parsed.control() && parsed.producerId() >= 0) {
+                        txnEvents.add(TransactionState.TxnEvent.control(
+                                parsed.producerId(),
+                                parsed.baseOffset(),
+                                parsed.controlRecord().type()));
+                    } else if (parsed.transactional() && parsed.producerId() >= 0) {
+                        txnEvents.add(TransactionState.TxnEvent.data(
+                                parsed.producerId(), parsed.baseOffset(), parsed.lastOffset()));
+                    }
                     nextOff = parsed.lastOffset() + 1;
                     if (parsed.maxTimestamp() > maxTs) maxTs = parsed.maxTimestamp();
                 } catch (IllegalArgumentException e) {
@@ -135,7 +165,7 @@ public final class LogSegment implements AutoCloseable {
         }
 
         return new LogSegment(
-                baseOffset, logPath, logChannel, offsetIndex, timeIndex, indexIntervalBytes, nextOff, maxTs);
+                baseOffset, logPath, logChannel, offsetIndex, timeIndex, indexIntervalBytes, nextOff, maxTs, txnEvents);
     }
 
     public long baseOffset() {
@@ -316,6 +346,33 @@ public final class LogSegment implements AutoCloseable {
             int partitionLeaderEpoch,
             Compression codec)
             throws IOException {
+        return append(
+                firstTimestamp,
+                maxTimestamp,
+                records,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                partitionLeaderEpoch,
+                codec,
+                /*transactional*/ false);
+    }
+
+    /**
+     * Full append — additionally stamps the transactional attribute bit so
+     * the batch opens (or extends) {@code producerId}'s transaction.
+     */
+    public int append(
+            long firstTimestamp,
+            long maxTimestamp,
+            List<Record> records,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            int partitionLeaderEpoch,
+            Compression codec,
+            boolean transactional)
+            throws IOException {
         lock.lock();
         try {
             return appendLocked(
@@ -326,7 +383,8 @@ public final class LogSegment implements AutoCloseable {
                     producerEpoch,
                     baseSequence,
                     partitionLeaderEpoch,
-                    codec);
+                    codec,
+                    transactional);
         } finally {
             lock.unlock();
         }
@@ -340,7 +398,8 @@ public final class LogSegment implements AutoCloseable {
             short producerEpoch,
             int baseSequence,
             int partitionLeaderEpoch,
-            Compression codec)
+            Compression codec,
+            boolean transactional)
             throws IOException {
         if (records.isEmpty()) throw new IllegalArgumentException("records must be non-empty");
         long baseOff = nextOffset;
@@ -356,7 +415,8 @@ public final class LogSegment implements AutoCloseable {
                 producerEpoch,
                 baseSequence,
                 records,
-                codec);
+                codec,
+                transactional);
         buf.flip();
         int pos = (int) logChannel.size();
         while (buf.hasRemaining()) {
@@ -373,6 +433,41 @@ public final class LogSegment implements AutoCloseable {
         nextOffset = baseOff + lastDelta + 1;
         if (maxTimestamp > this.maxTimestamp) this.maxTimestamp = maxTimestamp;
         return pos;
+    }
+
+    /**
+     * Append a control batch carrying {@code marker} for {@code producerId}.
+     * Consumes exactly one offset; never compressed. Returns the position
+     * at which the batch was written.
+     */
+    public int appendControl(
+            long timestamp, long producerId, short producerEpoch, int partitionLeaderEpoch, ControlRecord marker)
+            throws IOException {
+        lock.lock();
+        try {
+            long baseOff = nextOffset;
+            var markerRecord = new Record(0, 0L, null, marker.encode());
+            var buf = ByteBuffer.allocate(RecordBatch.estimatedSize(List.of(markerRecord)));
+            int written = RecordBatch.encodeControl(
+                    buf, baseOff, partitionLeaderEpoch, timestamp, producerId, producerEpoch, marker);
+            buf.flip();
+            int pos = (int) logChannel.size();
+            while (buf.hasRemaining()) {
+                logChannel.write(buf, pos + (written - buf.remaining()));
+            }
+
+            if (bytesSinceLastIndex >= indexIntervalBytes || offsetIndex.size() == 0) {
+                offsetIndex.append(baseOff, pos);
+                timeIndex.append(timestamp, baseOff);
+                bytesSinceLastIndex = 0;
+            }
+            bytesSinceLastIndex += written;
+            nextOffset = baseOff + 1;
+            if (timestamp > this.maxTimestamp) this.maxTimestamp = timestamp;
+            return pos;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**

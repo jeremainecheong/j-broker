@@ -267,17 +267,47 @@ message FetchRequest {
   // equivalent to a legacy stateless fetch.
   int32 session_id = 5;
   int32 session_epoch = 6;
+  // Isolation level. 0 (proto3 default) = read_uncommitted: serve every
+  // appended batch. 1 = read_committed: cap the read at the partition's
+  // last stable offset (no batch of an undecided transaction is returned)
+  // and attach the aborted-transaction ranges overlapping the returned
+  // window so the client can drop aborted records.
+  int32 isolation_level = 7;
 }
 
 message FetchResponse {
   // Raw bytes containing one or more v2 record batches; may be empty if the
   // offset is at or past the log end.
+  //
+  // Under EITHER isolation level the bytes may include control batches
+  // (transaction markers) — the broker serves raw log bytes via zero-copy
+  // transfer and does not strip markers. Clients MUST skip batches carrying
+  // the control attribute bit and MUST NOT surface their records to the
+  // application. Under read_committed the ABORT markers double as range
+  // terminators for the aborted_txns entries below.
   bytes records = 1;
   int64 high_watermark = 2;
   Error error = 3;
   // Echoes (for session_id>0 requests) or allocates (for session_id=0) the
   // session id the client should send on its next Fetch.
   int32 session_id = 4;
+  // read_committed only: the last stable offset the read was capped at —
+  // every returned batch sits wholly below it. 0 when read_uncommitted.
+  int64 last_stable_offset = 5;
+  // read_committed only: aborted transactions overlapping the returned
+  // window, sorted by first_offset. The client drops records of
+  // producer_id from first_offset onward until it sees that producer's
+  // ABORT control batch in the stream (markers ship with the records —
+  // see the records comment above).
+  repeated AbortedTxn aborted_txns = 6;
+}
+
+// One aborted transaction's range start, attached to a read_committed
+// FetchResponse. Kafka-shaped: the end of the range is not carried here —
+// the producer's ABORT control batch inside the fetched records marks it.
+message AbortedTxn {
+  int64 producer_id = 1;
+  int64 first_offset = 2;
 }
 
 // ===== ReplicaFetch (follower -> leader) =====

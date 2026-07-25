@@ -60,9 +60,18 @@ abstract class GitCommitValueSource : ValueSource<String, GitCommitValueSource.P
     }
 }
 
-val gitCommit = providers.of(GitCommitValueSource::class.java) {
-    parameters.repoDir.set(rootDir)
-}
+// An explicit -PgitCommit=... wins over the ValueSource: container
+// builds copy a context whose .dockerignore excludes .git, so `git
+// rev-parse` inside the builder stage can only ever answer "unknown".
+// The Dockerfiles thread the commit through this property instead.
+// gradleProperty is configuration-cache safe (the cache is keyed on
+// property values), and absent the property the ValueSource keeps
+// stamping straight from the local checkout.
+val gitCommit = providers
+    .gradleProperty("gitCommit")
+    .orElse(providers.of(GitCommitValueSource::class.java) {
+        parameters.repoDir.set(rootDir)
+    })
 
 // Stamps the project version (and commit) into a classpath resource so
 // ProtocolVersion.BROKER_VERSION always mirrors the Gradle version.

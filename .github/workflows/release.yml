@@ -94,8 +94,10 @@ jobs:
           VERSION: ${{ steps.rel.outputs.version }}
         run: |
           docker build -f Dockerfile.broker --build-arg RELEASE_VERSION="$VERSION" \
+            --build-arg GIT_COMMIT="$GITHUB_SHA" \
             -t "$IMAGE_NS/jbroker-broker:$VERSION" -t "$IMAGE_NS/jbroker-broker:latest" .
           docker build -f Dockerfile.admin --build-arg RELEASE_VERSION="$VERSION" \
+            --build-arg GIT_COMMIT="$GITHUB_SHA" \
             -t "$IMAGE_NS/jbroker-admin:$VERSION" -t "$IMAGE_NS/jbroker-admin:latest" .
 
       - name: Package Helm chart

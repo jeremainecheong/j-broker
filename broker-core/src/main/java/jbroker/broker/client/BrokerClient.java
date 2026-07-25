@@ -29,14 +29,31 @@ import jbroker.tls.TlsContexts;
  * Consumer, and Admin stubs against one gRPC channel. No retries, no
  * batching — the simplest possible shape that lets the E2E test cover
  * "produce N, consume N" end-to-end.
+ *
+ * <p>The first RPC on a client runs the {@code ApiVersions} handshake
+ * ({@link ProtocolHandshake}): a broker whose advertised protocol range
+ * does not overlap this client's raises {@link UnsupportedBrokerException}
+ * up front instead of failing obscurely on some later request. The check
+ * runs once per client; a failed handshake leaves nothing cached, so the
+ * next call re-checks (a broker restarted with a compatible version needs
+ * no client restart).
  */
 public final class BrokerClient implements AutoCloseable {
 
+    private final String endpoint;
     private final ManagedChannel channel;
     private final ProducerGrpc.ProducerBlockingStub producer;
     private final ConsumerGrpc.ConsumerBlockingStub consumer;
     private final AdminGrpc.AdminBlockingStub admin;
     private final jbroker.proto.broker.MetadataGrpc.MetadataBlockingStub metadata;
+
+    /**
+     * Flipped after the first successful handshake. Volatile: concurrent
+     * first calls may each run the (idempotent, read-only) handshake, but
+     * every thread observes the flip and no real RPC ever precedes a
+     * successful check on its own thread.
+     */
+    private volatile boolean verified;
 
     public BrokerClient(String host, int port) {
         this(host, port, TlsConfig.DISABLED);
@@ -44,6 +61,7 @@ public final class BrokerClient implements AutoCloseable {
 
     /** TLS-aware constructor. Pass {@link TlsConfig#DISABLED} for plaintext. */
     public BrokerClient(String host, int port, TlsConfig tls) {
+        this.endpoint = host + ":" + port;
         var b = NettyChannelBuilder.forAddress(host, port);
         try {
             var sslCtx = TlsContexts.clientContext(tls);
@@ -62,16 +80,57 @@ public final class BrokerClient implements AutoCloseable {
         this.metadata = jbroker.proto.broker.MetadataGrpc.newBlockingStub(channel);
     }
 
+    // ---- Handshake chokepoint: every stub access goes through these ----
+
+    private void ensureCompatible() {
+        if (verified) return;
+        ProtocolHandshake.verify(endpoint, () -> metadata.withDeadlineAfter(5, TimeUnit.SECONDS)
+                .apiVersions(jbroker.proto.broker.ApiVersionsRequest.getDefaultInstance()));
+        verified = true;
+    }
+
+    private ProducerGrpc.ProducerBlockingStub producer() {
+        ensureCompatible();
+        return producer;
+    }
+
+    private ConsumerGrpc.ConsumerBlockingStub consumer() {
+        ensureCompatible();
+        return consumer;
+    }
+
+    private AdminGrpc.AdminBlockingStub admin() {
+        ensureCompatible();
+        return admin;
+    }
+
+    private jbroker.proto.broker.MetadataGrpc.MetadataBlockingStub metadata() {
+        ensureCompatible();
+        return metadata;
+    }
+
     /** This broker's observability snapshot ({@code Metadata.DescribeMetrics}). */
     public jbroker.proto.broker.DescribeMetricsResponse describeMetrics() {
-        return metadata.withDeadlineAfter(5, TimeUnit.SECONDS)
+        return metadata()
+                .withDeadlineAfter(5, TimeUnit.SECONDS)
                 .describeMetrics(jbroker.proto.broker.DescribeMetricsRequest.getDefaultInstance());
+    }
+
+    /**
+     * This broker's replicated cluster view ({@code Metadata.DescribeCluster}):
+     * broker id → advertised endpoint, controller id, liveness. Any broker
+     * can answer — the view is metadata-log state, not leader-only.
+     */
+    public jbroker.proto.broker.DescribeClusterResponse describeCluster() {
+        return metadata()
+                .withDeadlineAfter(5, TimeUnit.SECONDS)
+                .describeCluster(jbroker.proto.broker.DescribeClusterRequest.getDefaultInstance());
     }
 
     // ---- Admin ----
 
     public void createTopic(String topic, int partitions, int replicationFactor) {
-        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(10, TimeUnit.SECONDS)
                 .createTopic(CreateTopicRequest.newBuilder()
                         .setTopic(topic)
                         .setPartitions(partitions)
@@ -83,7 +142,7 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     public List<TopicDescription> listTopics() {
-        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(5, TimeUnit.SECONDS)
                 .listTopics(ListTopicsRequest.newBuilder().build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("listTopics failed: " + resp.getError().getMessage());
@@ -92,7 +151,7 @@ public final class BrokerClient implements AutoCloseable {
     }
 
     public TopicDescription describeTopic(String topic) {
-        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(5, TimeUnit.SECONDS)
                 .describeTopic(DescribeTopicRequest.newBuilder().setTopic(topic).build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException(
@@ -103,7 +162,7 @@ public final class BrokerClient implements AutoCloseable {
 
     /** Delete a topic cluster-wide. Raises on NOT_LEADER / IO / UNKNOWN_TOPIC. */
     public void deleteTopic(String topic) {
-        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(5, TimeUnit.SECONDS)
                 .deleteTopic(DeleteTopicRequest.newBuilder().setTopic(topic).build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("deleteTopic failed: " + resp.getError().getMessage());
@@ -114,7 +173,7 @@ public final class BrokerClient implements AutoCloseable {
     public java.util.Map<String, String> updateTopicConfig(String topic, java.util.Map<String, String> config) {
         var b = UpdateTopicConfigRequest.newBuilder().setTopic(topic);
         b.putAllConfig(config);
-        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS).updateTopicConfig(b.build());
+        var resp = admin().withDeadlineAfter(5, TimeUnit.SECONDS).updateTopicConfig(b.build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException(
                     "updateTopicConfig failed: " + resp.getError().getMessage());
@@ -129,7 +188,7 @@ public final class BrokerClient implements AutoCloseable {
      * populated {@code error} (unknown topic, invalid partition, I/O error).
      */
     public int forceCompactPartition(String topic, int partition) {
-        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(10, TimeUnit.SECONDS)
                 .forceCompactPartition(jbroker.proto.broker.ForceCompactPartitionRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -149,7 +208,7 @@ public final class BrokerClient implements AutoCloseable {
             boolean prefix,
             String operation,
             boolean allow) {
-        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(10, TimeUnit.SECONDS)
                 .createAcl(jbroker.proto.broker.CreateAclRequest.newBuilder()
                         .setEntry(aclEntry(principal, resourceType, resourceName, prefix, operation, allow))
                         .build());
@@ -161,7 +220,7 @@ public final class BrokerClient implements AutoCloseable {
     /** Delete the ACL entry with this identity key (allow flag is not part of the key). */
     public void deleteAcl(
             String principal, String resourceType, String resourceName, boolean prefix, String operation) {
-        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(10, TimeUnit.SECONDS)
                 .deleteAcl(jbroker.proto.broker.DeleteAclRequest.newBuilder()
                         .setEntry(aclEntry(principal, resourceType, resourceName, prefix, operation, true))
                         .build());
@@ -172,7 +231,7 @@ public final class BrokerClient implements AutoCloseable {
 
     /** Every ACL entry in the responding broker's replicated cache. */
     public List<jbroker.proto.broker.AclEntry> listAcls() {
-        var resp = admin.withDeadlineAfter(5, TimeUnit.SECONDS)
+        var resp = admin().withDeadlineAfter(5, TimeUnit.SECONDS)
                 .listAcls(jbroker.proto.broker.ListAclsRequest.getDefaultInstance());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("listAcls failed: " + resp.getError().getMessage());
@@ -204,7 +263,7 @@ public final class BrokerClient implements AutoCloseable {
                 .setPartitions(partitions)
                 .setReplicationFactor(rf);
         b.putAllConfig(config);
-        var resp = admin.withDeadlineAfter(10, TimeUnit.SECONDS).createTopic(b.build());
+        var resp = admin().withDeadlineAfter(10, TimeUnit.SECONDS).createTopic(b.build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException("createTopic failed: " + resp.getError().getMessage());
         }
@@ -217,7 +276,8 @@ public final class BrokerClient implements AutoCloseable {
      * client-tracked {@code base_sequence} per {@code (topic, partition)}.
      */
     public long initProducerId() {
-        var resp = producer.withDeadlineAfter(5, TimeUnit.SECONDS)
+        var resp = producer()
+                .withDeadlineAfter(5, TimeUnit.SECONDS)
                 .initProducerId(InitProducerIdRequest.newBuilder().build());
         if (resp.hasError() && resp.getError().getCode() != 0) {
             throw new RuntimeException(
@@ -267,7 +327,8 @@ public final class BrokerClient implements AutoCloseable {
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
         long deadlineSeconds = acks == -1 ? 10 : 7;
-        var resp = producer.withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
+        var resp = producer()
+                .withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
                 .produce(ProduceRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -305,7 +366,8 @@ public final class BrokerClient implements AutoCloseable {
         // NOT_ENOUGH_REPLICAS error surfaces to the caller rather than
         // a gRPC DEADLINE_EXCEEDED.
         long deadlineSeconds = acks == -1 ? 7 : 5;
-        var resp = producer.withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
+        var resp = producer()
+                .withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
                 .produce(ProduceRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -388,7 +450,8 @@ public final class BrokerClient implements AutoCloseable {
         buf.flip();
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
-        var resp = producer.withDeadlineAfter(10, TimeUnit.SECONDS)
+        var resp = producer()
+                .withDeadlineAfter(10, TimeUnit.SECONDS)
                 .produce(ProduceRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -414,7 +477,8 @@ public final class BrokerClient implements AutoCloseable {
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
         long deadlineSeconds = acks == -1 ? 7 : 5;
-        var resp = producer.withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
+        var resp = producer()
+                .withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
                 .produce(ProduceRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -437,7 +501,8 @@ public final class BrokerClient implements AutoCloseable {
      * offset order. {@code maxBytes} bounds the server-side response size.
      */
     public List<byte[]> fetch(String topic, int partition, long offset, int maxBytes) {
-        var resp = consumer.withDeadlineAfter(5, TimeUnit.SECONDS)
+        var resp = consumer()
+                .withDeadlineAfter(5, TimeUnit.SECONDS)
                 .fetch(FetchRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)
@@ -474,7 +539,8 @@ public final class BrokerClient implements AutoCloseable {
      * survive the gRPC hop.
      */
     public List<FetchedRecord> fetchRecords(String topic, int partition, long offset, int maxBytes) {
-        var resp = consumer.withDeadlineAfter(5, TimeUnit.SECONDS)
+        var resp = consumer()
+                .withDeadlineAfter(5, TimeUnit.SECONDS)
                 .fetch(FetchRequest.newBuilder()
                         .setTopic(topic)
                         .setPartition(partition)

@@ -1,6 +1,6 @@
 # broker-core
 
-The broker's brain. Handlers for every RPC, core state for topics/groups/offsets/producers, the fencer that drives ISR changes, the preferred-leader balancer, quota enforcement, and JFR instrumentation. Spring-free — the only non-core JVM dep is the proto-generated gRPC stubs.
+The broker's brain. Handlers for every RPC, core state for topics/groups/offsets/producers, the transaction coordinator, the fencer that drives ISR changes, the preferred-leader balancer, rack-aware replica placement, quota enforcement, the Java client (`jbroker.broker.client`), and JFR instrumentation. Spring-free — the only non-core JVM dep is the proto-generated gRPC stubs.
 
 ## Threading model
 
@@ -10,11 +10,11 @@ The broker's brain. Handlers for every RPC, core state for topics/groups/offsets
 
 Inside one broker JVM:
 
-- **gRPC handler virtual threads** — one VT per inbound RPC, spawned by the gRPC server. Six handlers (Produce, Consumer, Admin, ReplicaFetch, Metadata, BrokerHeartbeat) all run concurrently on this pool.
-- **Background ticker virtual threads** — each is a single long-lived VT. Split into three groups:
-  - *Controller-only* (BrokerFencer 250 ms, PreferredLeaderBalancer 15 s, Snapshot scheduler 30 s) — only run on the Raft leader.
-  - *All brokers* (LogManager cleaner 60 s, BrokerHeartbeat sender 250 ms, RaftDriver pump + ticker).
-  - *Per-partition / opt-in* (ReplicaFetcher × N, ChaosHttpServer, InstallSnapshot sender).
+- **gRPC handler virtual threads** — one VT per inbound RPC, spawned by the gRPC server. Nine services (Producer, Consumer, Admin, ReplicaConsumer, Metadata, Cluster, Txn, TxnOffsets, TxnMarkers) all run concurrently on this pool.
+- **Background tickers** — long-lived single threads (daemon `ScheduledExecutorService`s, plus the RaftDriver's two VTs). Split into three groups:
+  - *Controller-only* (BrokerFencer 250 ms, PreferredLeaderBalancer 15 s) — only act on the Raft leader.
+  - *All brokers* (housekeeping 1 s: broker registration, offset/group/txn-coordinator recovery, transaction-timeout sweep; IsrManager 2 s; LogManager cleaner 5 min default; BrokerHeartbeat sender 250 ms; RaftDriver pump + ticker).
+  - *Per-partition / opt-in* (ReplicaFetcher × N, txn marker-delivery VTs — one per in-flight fan-out, `txn-marker-delivery-*` — ChaosHttpServer, InstallSnapshot sender).
 - **Shared state** — every state manager is thread-safe by construction (`ConcurrentHashMap`, per-partition striped locks, or `ReentrantLock` on hot paths).
 
 The `synchronized` → `ReentrantLock` swap on `Log` + `LogSegment` was the project's biggest perf unlock at scale. Blocking I/O inside `synchronized` pins the carrier OS thread; under 200+ concurrent VTs that strangles the whole reactor. CI gates the regression: `VirtualThreadPinningIT` (200 concurrent produces, JFR `VirtualThreadPinned` count == 0) and `VtPinningBenchScaleIT` (2000 produces + 2000 fetches at bench scale).
@@ -23,11 +23,15 @@ The `synchronized` → `ReentrantLock` swap on `Log` + `LogSegment` was the proj
 
 | Handler | RPCs |
 |---|---|
-| `ProduceHandler` | `Producer.Produce`, `Producer.InitProducerId` |
-| `ConsumerHandler` | `Consumer.Fetch`, `Consumer.FindCoordinator`, `Consumer.ConsumerGroupHeartbeat`, `Consumer.CommitOffsets`, `Consumer.FetchOffsets` |
-| `AdminHandler` | `Admin.CreateTopic`, `Admin.DeleteTopic`, `Admin.UpdateTopicConfig`, `Admin.ListTopics`, `Admin.DescribeTopic`, `Admin.ForceCompactPartition`, `Admin.DeleteConsumerGroup`, `Admin.ResetConsumerGroupOffsets` |
-| `ReplicaFetchHandler` | `ReplicaConsumer.ReplicaFetch`, `ReplicaConsumer.OffsetsForLeaderEpoch` |
-| `MetadataServiceHandler` | `Metadata.DescribeCluster`, `Metadata.DescribeTopicPartitions`, `Metadata.DescribeRaft`, `Metadata.DescribeMetrics`, `Metadata.SubscribeEvents` |
+| `ProduceHandler` | `Producer.Produce` |
+| `InitProducerIdHandler` | `Producer.InitProducerId` |
+| `FetchHandler` | `Consumer.Fetch` |
+| `ConsumerHandler` | `Consumer.ListOffsets`, `Consumer.FindCoordinator`, `Consumer.ConsumerGroupHeartbeat`, `Consumer.CommitOffsets`, `Consumer.FetchOffsets`, `TxnOffsets.TxnOffsetCommit` |
+| `AdminHandler` | `Admin.CreateTopic`, `Admin.DeleteTopic`, `Admin.UpdateTopicConfig`, `Admin.ListTopics`, `Admin.DescribeTopic`, `Admin.ForceCompactPartition`, `Admin.DeleteConsumerGroup`, `Admin.ResetConsumerGroupOffsets`, `Admin.CreateAcl`/`DeleteAcl`/`ListAcls`, `Admin.AddBroker`, `Admin.DecommissionBroker`, `Admin.DescribeMembership`, `Admin.ReassignPartition`, `Admin.ListReassignments`, `Admin.CancelReassignment`, `Admin.RebalanceLeadership` |
+| `TxnHandler` | `Txn.InitTransactions`, `Txn.AddPartitionsToTxn`, `Txn.EndTxn`, `Txn.AddOffsetsToTxn` |
+| `TxnMarkersHandler` | `TxnMarkers.WriteTxnMarkers` (broker ↔ broker) |
+| `ReplicaFetchHandler` / `OffsetsForLeaderEpochHandler` | `ReplicaConsumer.ReplicaFetch`, `ReplicaConsumer.OffsetsForLeaderEpoch` |
+| `MetadataServiceHandler` | `Metadata.DescribeCluster`, `Metadata.DescribeTopicPartitions`, `Metadata.ListConsumerGroups`, `Metadata.DescribeConsumerGroup`, `Metadata.DescribeRaft`, `Metadata.ApiVersions`, `Metadata.DescribeMetrics`, `Metadata.SubscribeEvents` |
 | `BrokerHeartbeatHandler` | `Cluster.BrokerHeartbeat` |
 
 ## Core state
@@ -43,7 +47,11 @@ The `synchronized` → `ReentrantLock` swap on `Log` + `LogSegment` was the proj
 | `BrokerLiveness` | Wall-clock of the last-seen heartbeat per peer. Used by `BrokerFencer` to declare brokers dead. |
 | `BrokerFencer` | Controller-only 250ms tick. Reads `BrokerLiveness` + partition assignments, proposes `PartitionChangeRecord`s to move leadership off fenced brokers. |
 | `PreferredLeaderBalancer` | Controller-only 15s tick. Rebalances leadership back to `replicas[0]` (the preferred leader) once the stability window has passed. |
-| `MetadataStateMachine` | Applies every `MetadataRecord` from Raft (CreateTopic, DeleteTopic, PartitionChange, CommitOffset, UpdateTopicConfig, ...). |
+| `ReplicaPlacer` | Pure placement function for topic creation. Rack-blind clusters get the original first-`rf`-candidates policy; two or more distinct racks round-robin so a replica set spans as many racks as it can. The proposing controller always leads the partitions it creates. |
+| `TxnCoordinator` / `TxnCoordinatorRuntime` | Transaction coordination per `__transaction_state` partition this broker leads — see the transactions section below. |
+| `TxnOffsetStaging` | Group-coordinator side of transactional offsets: staged commits keyed by `(group, producerId)`, decided by the transaction marker. |
+| `TxnPartitionEpochs` | Partition-local producer-epoch floors; a transactional produce below the floor is `PRODUCER_FENCED` at the data partition itself. |
+| `MetadataStateMachine` | Applies every `MetadataRecord` from Raft (topic create/delete, partition changes, broker registration, producer-id assignment, topic config, ACLs, reassignments). |
 
 ## Producing (acks, idempotent)
 
@@ -167,6 +175,24 @@ The contract: **a record acked under `acks=all` survives any single broker loss.
 
 Against the full #115 chain: replication starves (channels rebuild after consecutive unresolvable-host failures) → ISR shrinks to the leader → **acks=all refuses the write** instead of acking a single copy → retries of the unacked write **dedup instead of re-appending** → the leader dies → the partition goes **offline with ISR preserved** instead of promoting a shorter log → the ISR member returns, is re-elected, and any follower that diverged meanwhile **truncates to the lineage intersection** before rejoining → nothing acked was lost. Deliberately *not* guaranteed: `acks=0/1` records (at-most-once by contract on leader loss), and topics explicitly configured to `min.insync.replicas=1`.
 
+## Transactions
+
+Atomic multi-partition produces plus consumer-offset commits — the consume-transform-produce exactly-once loop. The contract: **everything a committed transaction wrote becomes visible together, nothing an aborted one wrote is ever surfaced to a `read_committed` consumer, and a zombie producer cannot decide a transaction it no longer owns.** Kafka's shape throughout: a coordinator over an internal compacted topic, two-phase outcome with control-batch markers, epoch fencing.
+
+**Coordinator-as-partition-leader.** The coordinator for a `transactional_id` is the leader of `__transaction_state` partition `Math.floorMod(txnId.hashCode(), 50)` (`TxnStateTopic`) — the same scheme the group coordinator uses over `__consumer_offsets`. A non-coordinator broker answers `NOT_COORDINATOR` with `suggested_coordinator_*` hints; the client re-points its cache and retries. On gaining leadership of a coordinator partition, the broker replays it into a fresh core (`TxnStateRecovery`, latest record per key — exactly what compaction preserves) and resumes any marker deliveries the previous coordinator left unfinished.
+
+**Pure core, I/O shell.** `TxnCoordinator` is a pure state machine: every input returns the `TxnStateRecord` to append and/or the `MarkerInstruction`s to deliver — the same returns-effects philosophy as `RaftCore.step`. `TxnCoordinatorRuntime` executes the effects in a pinned order: **append before answer** (every state record is appended to the coordinator partition and replicated acks=all before the client sees a response or any marker leaves the broker; a failed append deactivates the partition and the next access rebuilds from the log, the only source of truth), then **deliver markers, then confirm** (Complete is logged only after every partition acks its marker — logging Complete first would let a crash strand undelivered markers with no record of the obligation, leaving the data partitions' LSO stuck forever).
+
+**Two-phase with markers.** `EndTxn` logs `PREPARE_COMMIT`/`PREPARE_ABORT`; from that moment the outcome is irrevocable, and the record carries the full partition set so any successor coordinator can regenerate and redeliver the markers. Delivery runs on background VTs through `TxnMarkerWriter` — locally for partitions this broker leads, via the inter-broker `TxnMarkers.WriteTxnMarkers` RPC otherwise. Each marker append is leader-checked, fenced by `coordinator_epoch` (a deposed coordinator still flushing its queue is refused), idempotent under retry, and confirmed only after the same ISR replication wait the produce path uses — a marker confirmed but lost with its leader would leave the partition undecided forever.
+
+**Epoch fencing.** `InitTransactions` bumps the producer epoch (int16 ceiling 65 535, then the id rolls); every later call carrying the older epoch — at the coordinator, the group coordinator, or the data partition (`TxnPartitionEpochs` in `ProduceHandler`) — answers `PRODUCER_FENCED`. An in-flight transaction left by the previous epoch is aborted by the bump itself; one abandoned by a dead producer falls to the timeout sweep (`TxnCoordinator.tick`, default 60 s).
+
+**Staged transactional offsets.** `AddOffsetsToTxn` registers the group's `__consumer_offsets` partition in the transaction; `TxnOffsetCommit` then appends the offsets to that partition as a TRANSACTIONAL batch and stages them in `TxnOffsetStaging` — invisible to `FetchOffsets` until the transaction's marker lands on that same partition: COMMIT folds them into the `OffsetCache` (and re-appends them as regular commit records for durability), ABORT discards them. Recovery replays transactional batches back through the staging map, so a coordinator restart reconstructs staged-but-undecided transactions exactly.
+
+**read_committed fetch.** `FetchHandler` caps a `read_committed` read at the partition's **last stable offset** — `min(first offset of the earliest ongoing transaction, HWM)`, tracked by storage (`Log.lastStableOffset`) — by trimming whole batches on plaintext headers, no record decode. The response carries the aborted-transaction ranges overlapping the fetch window; the client (`Consumer` with `isolation.level=read_committed`) drops aborted producers' batches from each range's start to its ABORT marker and skips control batches in both isolation levels. `TransactionalProducer.transact(Runnable)` closes the loop client-side: any abortable failure aborts the attempt, re-inits (the epoch bump prevents a resend deduping against aborted data), and re-runs the body — aborted attempts are invisible to `read_committed` readers, so the retry is exactly-once end to end. A COMMIT failure is never retried into an abort: the decision may already be logged, and a decision is never reversed.
+
+End-to-end gates: `TxnCommitAbortIT` and `TransactionalExactlyOnceIT` (broker-app) drive commit/abort visibility and the full consume-transform-produce loop against real clusters.
+
 ## Broker heartbeats + fencer
 
 Brokers run a point-to-point heartbeat every 250ms to every peer:
@@ -200,12 +226,27 @@ Integration tests compress tick + stability via `Broker.Config.withBalancerTimin
 
 ## Quota enforcement
 
-Per-principal byte-rate quotas on produce and fetch. Two backends:
+Per-principal byte-rate quotas on produce and fetch. Off by default (0 = disabled); switched on per op via `Broker.Config.withQuotaBytesPerSec(produce, fetch)`. The produce gate sits in `ProduceHandler` before the append; the fetch gate in `FetchHandler` is charged on bytes actually read. Follower replication rides the separate `ReplicaFetch` RPC, which has no quota gate — a fetch quota can never throttle intra-cluster replication or starve the ISR.
+
+Two backends:
 
 - **In-memory** (default) — token bucket per `(principal, op)`. Refills at configured bytes/sec, capped at 1s burst. Per-broker state.
-- **Redis** (opt-in via `jbroker.quota.redis.url`) — hand-rolled RESP `INCRBY + EXPIRE 2` per second-granularity bucket. Cluster-wide because all brokers see the same counters. Fail-open: any Redis I/O error falls back to the in-memory enforcer.
+- **Redis** (opt-in via `Broker.Config.withQuotaRedisUrl`) — hand-rolled RESP `INCRBY + EXPIRE 2` per second-granularity bucket. Cluster-wide because all brokers see the same counters. Fail-open: any Redis I/O error falls back to the in-memory enforcer.
 
 Exceeded quotas return `QUOTA_VIOLATED` (86) with a `throttle_ms` hint.
+
+## Java client (`jbroker.broker.client`)
+
+The reference client ships in this module — same wire types, no extra dependency:
+
+| Type | Purpose |
+|---|---|
+| `BrokerClient` | Single-endpoint blocking client: produce (plain / idempotent / batch), fetch, admin, offsets. The building block for tests and the CLI. |
+| `ClusterClient` | Cluster-aware core: seeds its view from the first `DescribeCluster` that answers, routes each request to the partition leader (or the group / transaction coordinator), and re-resolves through `NOT_LEADER` / `NOT_COORDINATOR` hints so leader failover is invisible to the application. Transaction RPCs route on `Math.floorMod(transactional_id.hashCode(), 50)` to the `__transaction_state` partition leader. |
+| `BatchingProducer` | Async batching producer with idempotent acks=all delivery. |
+| `TransactionalProducer` | Transactions over `ClusterClient` — see the transactions section above. |
+| `consumer.Consumer` | Group consumer: heartbeat-driven assignment, seek / pause / resume, `max.poll.records`, async commit, dead-letter policy, and `isolation.level` (`read_committed` filters aborted ranges client-side). |
+| `ProtocolHandshake` | Runs `Metadata.ApiVersions` once per connection before the first real RPC. A range disjoint from the client's — or gRPC `UNIMPLEMENTED` from a broker predating the RPC — raises `UnsupportedBrokerException` and is never retried: a version mismatch cannot heal on its own. |
 
 ## JFR events
 
@@ -261,6 +302,7 @@ Key semantics:
 | gRPC handler dispatch | one VT per inbound RPC | provided by `grpc-java` Netty config |
 | `RaftDriver` pump | single long-lived VT draining the event queue | `raft-transport/RaftDriver.java` |
 | `RaftDriver` ticker | single long-lived VT emitting periodic `Tick` events | same |
+| Txn marker delivery | one VT per in-flight marker fan-out (`txn-marker-delivery-*`) | `broker-core/txn/TxnCoordinatorRuntime.java` |
 | `MetricsScraper` fan-out | `Executors.newVirtualThreadPerTaskExecutor()` for per-broker `DescribeMetrics` calls | `admin-app/api/MetricsScraper.java` |
 | `RaftController` fan-out | same pattern for per-broker `DescribeRaft` | `admin-app/api/RaftController.java` |
 | Stress / IT clients | `newVirtualThreadPerTaskExecutor()` for 10k-client tests | `integration-tests/E2E_*` |
@@ -309,7 +351,7 @@ double area(Shape s) {
 
 - `RaftCore.step(RaftEvent)` switches on the event subtype and dispatches to the right handler.
 - `RaftDriver` switches on `RaftEffect` to dispatch outbound RPCs / persist calls / timer resets.
-- `MetadataStateMachine.apply(MetadataRecord)` — was a chain of `if (record instanceof CreateTopic ct) { ... }` casts, now a single exhaustive switch over the sealed `MetadataRecord` type. Adding a new `MetadataRecord` subtype fails the build at every dispatch site that doesn't handle it.
+- `MetadataStateMachine.apply(MetadataRecord)` — was a chain of `has*()` checks, now a single switch over the proto oneof's generated `KindCase` enum (the record itself is a protobuf message, so it can't be sealed — the enum switch is the closest the generated code allows, and the compiler warns when a case is missing).
 
 The compile-time exhaustiveness check is the most useful refactor of the project for catching "I added a new case and forgot to wire it through."
 
@@ -365,8 +407,9 @@ public sealed interface RaftEffect
 
 - `RaftEvent` — sealed, ~14 record subtypes (`Tick`, `AppendEntriesReq`, `AppendEntriesResp`, `VoteReq`, `VoteResp`, `PreVoteReq`, `PreVoteResp`, `InstallSnapshotReq`, `InstallSnapshotResp`, `ClientPropose`, `ConfigPropose`, `Read`, ...)
 - `RaftEffect` — sealed, ~12 record subtypes (`SendAppendEntries`, `SendAppendEntriesResp`, `SendVoteReq`, `SendVoteResp`, `SendPreVoteReq`, `SendPreVoteResp`, `SendInstallSnapshot`, `PersistLog`, `PersistState`, `ApplyEntries`, `RejectClientPropose`, `DuplicateClientPropose`, ...)
-- `MetadataRecord` — sealed, 7 record subtypes (`CreateTopic`, `DeleteTopic`, `PartitionChange`, `CommitOffset`, `UpdateTopicConfig`, `ProducerIdAllocation`, `ProducerSequence`)
 - `BrokerEvent` — sealed for the `AdminEventBus` publisher
+
+(`MetadataRecord` is a protobuf message with a `kind` oneof, so it dispatches on the generated `KindCase` enum instead — see the previous section.)
 
 Combined with pattern-matching switch, every event/effect/record dispatch site in the codebase is compile-time-exhaustive. Adding a new event type fails the build at the dispatch site rather than silently falling through `else`.
 
@@ -580,4 +623,4 @@ The dual-driver design (real `RaftDriver` vs simulator) only works because of th
 
 ## Testing
 
-~270 unit tests covering every handler, state-machine transitions, HWM advancement, idempotent producer dedup, group coordinator flows, fencer proposals, balancer decisions, quota enforcement, and the admin merge logic.
+~640 unit tests covering every handler, state-machine transitions, HWM advancement, idempotent producer dedup, group coordinator flows, transaction coordination (core transitions, runtime ordering, marker writes, offset staging, recovery replay), fencer proposals, balancer decisions, rack placement, quota enforcement, client routing, and the admin merge logic.

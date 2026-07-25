@@ -37,6 +37,9 @@ public final class ErrorCodeNames {
             Map.entry(ErrorCodes.FETCH_SESSION_ID_NOT_FOUND, "FETCH_SESSION_ID_NOT_FOUND"),
             Map.entry(ErrorCodes.QUOTA_VIOLATED, "QUOTA_VIOLATED"),
             Map.entry(ErrorCodes.REASSIGNMENT_IN_PROGRESS, "REASSIGNMENT_IN_PROGRESS"),
+            Map.entry(ErrorCodes.PRODUCER_FENCED, "PRODUCER_FENCED"),
+            Map.entry(ErrorCodes.INVALID_TXN_STATE, "INVALID_TXN_STATE"),
+            Map.entry(ErrorCodes.CONCURRENT_TRANSACTIONS, "CONCURRENT_TRANSACTIONS"),
             Map.entry(ErrorCodes.UNIMPLEMENTED, "UNIMPLEMENTED"));
 
     /** Returns the canonical name for {@code code}, or {@code "UNKNOWN"} if unrecognised. */

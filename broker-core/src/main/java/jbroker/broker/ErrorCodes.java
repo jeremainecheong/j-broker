@@ -64,6 +64,29 @@ public final class ErrorCodes {
      */
     public static final int REASSIGNMENT_IN_PROGRESS = 87;
 
+    // Transactions. Numerics match common.proto::ErrorCode.
+    /**
+     * Request carried a (producer_id, producer_epoch) older than the
+     * coordinator's current grant for the transactional_id — a newer
+     * {@code InitTransactions} fenced this producer. Fatal for the fenced
+     * instance; only a fresh {@code InitTransactions} can continue.
+     */
+    public static final int PRODUCER_FENCED = 88;
+
+    /**
+     * Request is not legal in the transaction's current state (e.g.
+     * {@code EndTxn} with no open transaction, or commit while an abort is
+     * already prepared). Fatal — indicates a client protocol violation.
+     */
+    public static final int INVALID_TXN_STATE = 89;
+
+    /**
+     * The previous transaction for this transactional_id is still
+     * completing (markers in flight). Retriable — back off and retry once
+     * the completion lands.
+     */
+    public static final int CONCURRENT_TRANSACTIONS = 90;
+
     // Admin surface placeholders.
     /** Skeleton placeholder: RPC is wired but the body has not yet been implemented. */
     public static final int UNIMPLEMENTED = 99;

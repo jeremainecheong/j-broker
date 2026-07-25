@@ -214,6 +214,10 @@ message BrokerHeartbeatRequest {
   // treat supported_protocol_max == 0 as "range unknown".
   int32 supported_protocol_min = 3;
   int32 supported_protocol_max = 4;
+  // Rack / zone label the sender was configured with, piggybacked the
+  // same way so every peer learns each broker's rack for rack-aware
+  // replica placement. Empty = no rack declared.
+  string rack = 5;
 }
 
 message BrokerHeartbeatResponse {
@@ -676,6 +680,10 @@ message BrokerInfo {
   // version discovery.
   optional int32 supported_protocol_min = 7;
   optional int32 supported_protocol_max = 8;
+  // Rack / zone label: the broker's own config for the self entry, the
+  // label the peer declared on its last heartbeat otherwise. Empty when
+  // the broker has no rack.
+  string rack = 9;
 }
 
 // ===== ApiVersions =====

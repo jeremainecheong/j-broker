@@ -854,7 +854,13 @@ public final class ClusterClient implements AutoCloseable {
             } catch (StatusRuntimeException e) {
                 last = onTransportFailure(ep, e, what);
                 lastWasHintFollow = false;
+                // Invalidating the per-id cache is not enough: the
+                // coordinator resolves through the cached
+                // __transaction_state leader, and only a metadata refresh
+                // replaces a dead leader there — without it the retry
+                // would redial the corpse forever.
                 txnCoordinators.remove(txnId);
+                refreshTopic(jbroker.broker.txn.TxnStateTopic.NAME, ep);
                 backoff(attempt, deadline, what, last);
                 continue;
             }
@@ -870,6 +876,7 @@ public final class ClusterClient implements AutoCloseable {
                     continue;
                 }
                 lastWasHintFollow = false;
+                refreshTopic(jbroker.broker.txn.TxnStateTopic.NAME, null);
                 backoff(attempt, deadline, what, last);
                 continue;
             }
@@ -877,6 +884,7 @@ public final class ClusterClient implements AutoCloseable {
                 last = new RuntimeException(what + ": coordinator not available");
                 txnCoordinators.remove(txnId);
                 lastWasHintFollow = false;
+                refreshTopic(jbroker.broker.txn.TxnStateTopic.NAME, null);
                 backoff(attempt, deadline, what, last);
                 continue;
             }

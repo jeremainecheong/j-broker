@@ -1104,6 +1104,52 @@ class ClusterClientTest {
     }
 
     @Test
+    void deadTxnCoordinatorIsReResolvedFromRefreshedMetadata() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put(TXN_STATE, 2);
+        var client = h.client();
+        assertThat(client.initTransactions(initTxn("app-txn"), 30_000).getError())
+                .isEqualTo(ErrorCode.OK);
+
+        // Broker 2 dies abruptly; the survivors elect broker 3. The cached
+        // coordinator AND the cached partition leader both point at the
+        // corpse — only a metadata refresh can find the successor.
+        h.world.down.add(2);
+        h.world.partitionLeaders.put(TXN_STATE, 3);
+
+        var resp = client.endTxn(
+                jbroker.proto.txn.EndTxnRequest.newBuilder()
+                        .setTransactionalId("app-txn")
+                        .setProducerId(7L)
+                        .setProducerEpoch(0)
+                        .setCommit(true)
+                        .build(),
+                30_000);
+        assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
+        assertThat(h.world.calls).contains("3:endTxn");
+    }
+
+    @Test
+    void coordinatorNotAvailableRefreshesUntilALeaderEmerges() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put(TXN_STATE, 1);
+        var client = h.client();
+        // Broker 1 answers COORDINATOR_NOT_AVAILABLE once (activation
+        // still replaying); leadership then lands on broker 2.
+        h.world.script(
+                1,
+                "initTransactions",
+                jbroker.proto.txn.InitTransactionsResponse.newBuilder()
+                        .setError(ErrorCode.COORDINATOR_NOT_AVAILABLE)
+                        .build());
+        h.ticker.onSleep = () -> h.world.partitionLeaders.put(TXN_STATE, 2);
+
+        var resp = client.initTransactions(initTxn("app-txn"), 30_000);
+        assertThat(resp.getError()).isEqualTo(ErrorCode.OK);
+        assertThat(h.world.calls).contains("2:initTransactions");
+    }
+
+    @Test
     void txnLevelErrorsPassThroughWithoutRetry() {
         var h = new Harness().threeBrokers();
         h.world.partitionLeaders.put(TXN_STATE, 1);

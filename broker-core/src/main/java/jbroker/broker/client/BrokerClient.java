@@ -538,7 +538,11 @@ public final class BrokerClient implements AutoCloseable {
         long offset = 0;
         while (true) {
             var page = decodePage(fetchRaw(topic, partition, offset, maxBytes), offset);
-            if (page.nextOffset() < 0) break; // nothing decoded — log end
+            // Progress guard: a fetch at (or past) the log end may re-serve
+            // the window below it — the broker reads from an index floor —
+            // so "no batch past the requested offset" is the log-end
+            // signal, not just an empty response.
+            if (page.nextOffset() <= offset) break;
             for (var rec : page.records()) {
                 all.add(rec.value());
             }

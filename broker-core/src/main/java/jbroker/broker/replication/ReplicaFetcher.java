@@ -41,6 +41,7 @@ public final class ReplicaFetcher {
     private final int selfBrokerId;
     private final Peer peer;
     private final ProducerStateManager producerState;
+    private final jbroker.broker.txn.TxnPartitionEpochs txnEpochs;
     private final AtomicLong highWatermark = new AtomicLong();
 
     public ReplicaFetcher(LogManager logManager, String topic, int partition, int selfBrokerId, Peer peer) {
@@ -61,12 +62,32 @@ public final class ReplicaFetcher {
             int selfBrokerId,
             Peer peer,
             ProducerStateManager producerState) {
+        this(logManager, topic, partition, selfBrokerId, peer, producerState, null);
+    }
+
+    /**
+     * Constructor additionally threading the shared
+     * {@link jbroker.broker.txn.TxnPartitionEpochs} so every replicated
+     * batch of a producer — markers included — raises this broker's
+     * transactional epoch floor. A takeover as leader then fences zombie
+     * producers with the same floor the old leader enforced. Null skips
+     * the feed (legacy tests).
+     */
+    public ReplicaFetcher(
+            LogManager logManager,
+            String topic,
+            int partition,
+            int selfBrokerId,
+            Peer peer,
+            ProducerStateManager producerState,
+            jbroker.broker.txn.TxnPartitionEpochs txnEpochs) {
         this.logManager = logManager;
         this.topic = topic;
         this.partition = partition;
         this.selfBrokerId = selfBrokerId;
         this.peer = peer;
         this.producerState = producerState;
+        this.txnEpochs = txnEpochs;
     }
 
     /**
@@ -183,6 +204,12 @@ public final class ReplicaFetcher {
                         decoded.records().size(),
                         decoded.baseOffset(),
                         decoded.lastOffset());
+            }
+            // Transactional epoch floor: every producer batch — control
+            // markers included — raises it, so a takeover as leader fences
+            // zombies exactly where the old leader did.
+            if (txnEpochs != null && decoded.producerId() > 0) {
+                txnEpochs.observe(topic, partition, decoded.producerId(), decoded.producerEpoch());
             }
         }
         highWatermark.set(resp.getHighWatermark());

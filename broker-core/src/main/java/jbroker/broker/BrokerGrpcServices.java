@@ -186,6 +186,23 @@ public final class BrokerGrpcServices {
     }
 
     /**
+     * Consumer-group half of transactional offsets: {@code TxnOffsetCommit}
+     * routes on group_id to the group coordinator, which stages the offsets
+     * against the transaction ({@link ConsumerHandler#txnOffsetCommit}).
+     */
+    public static jbroker.proto.txn.TxnOffsetsGrpc.TxnOffsetsImplBase txnOffsets(ConsumerHandler handler) {
+        return new jbroker.proto.txn.TxnOffsetsGrpc.TxnOffsetsImplBase() {
+            @Override
+            public void txnOffsetCommit(
+                    jbroker.proto.txn.TxnOffsetCommitRequest req,
+                    StreamObserver<jbroker.proto.txn.TxnOffsetCommitResponse> out) {
+                out.onNext(handler.txnOffsetCommit(req));
+                out.onCompleted();
+            }
+        };
+    }
+
+    /**
      * Inter-broker marker delivery: a remote transaction coordinator fans a
      * decided transaction's control-batch markers out to the partitions
      * this broker leads.

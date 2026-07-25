@@ -1772,6 +1772,7 @@ public final class Broker implements AutoCloseable {
                 .addService(BrokerGrpcServices.admin(admin, consumerHandler))
                 .addService(BrokerGrpcServices.metadata(metadataHandler))
                 .addService(BrokerGrpcServices.txn(txnHandler))
+                .addService(BrokerGrpcServices.txnOffsets(consumerHandler))
                 .addService(BrokerGrpcServices.txnMarkers(txnMarkersHandler));
         try {
             var sslCtx = TlsContexts.serverContext(config.tls());

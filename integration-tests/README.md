@@ -49,7 +49,7 @@ Every scenario from the end-to-end coverage matrix, mapped to the test(s) that c
 | Describe topic | `MetadataServiceWireUpIT`, `AdminCliIT` |
 | Delete topic | `DeleteTopicViaRestIT` + `AdminHandler` unit tests |
 | Produce N, consume all in order | `HighVolumeSmokeTest` (100k round-trip), `BrokerEndToEndIT` |
-| Produce with compression | **Descoped** — see below |
+| Produce with compression (zstd) | `CompressionRoundTripIT` (broker-app), `RecordBatchCompressionTest` (broker-storage) |
 | Broker restart preserves topics + records | `BrokerEndToEndIT` (restart + re-read), broker-storage crash-recovery tests |
 | Produce to unknown topic errors | `ProduceHandler`/`FetchHandler` error-path unit tests (broker-core) |
 | acks=all lands on all 3 replicas | `MultiBrokerAcksAllIT` |
@@ -76,15 +76,20 @@ Every scenario from the end-to-end coverage matrix, mapped to the test(s) that c
 | Chaos kill/pause/partition endpoints | `ChaosKillBrokerIT` |
 | Network partition: minority stalls, heal converges | `AsymmetricPartitionIT` |
 | 1M-record compaction | `MillionRecordCompactionIT` (`@slow`) |
-| Quota enforcement | `ProduceQuotaIntegrationTest`, `RedisQuotaEnforcerIT` (Testcontainers, `@slow`) |
+| Quota enforcement | `ProduceQuotaIntegrationTest`, `FetchQuotaIntegrationTest`, `QuotaEnforcementIT` (broker-app), `RedisQuotaEnforcerIT` (Testcontainers, `@slow`) |
+| Transaction commit/abort visibility | `TxnCommitAbortIT` (broker-app) |
+| Consume-transform-produce exactly-once | `TransactionalExactlyOnceIT` (broker-app) |
+| Rack-aware replica placement | `RackSpreadPlacementIT` (broker-app) |
+| Protocol-version handshake | `ApiVersionsIT` (broker-app) |
 | Preferred-leader rebalance | `PreferredLeaderBalancerRebalanceIT` |
 | 10k concurrent clients | `TenThousandClientsIT` (`@slow`), `TenThousandClientsCiGradeIT` (CI) |
 | Zero VT pinning on hot paths | `VirtualThreadPinningIT`, `VtPinningBenchScaleIT` |
 
 **Descoped scenarios** (planned, consciously not built):
 
-- **Batch compression (gzip/snappy/zstd)** — the v2 batch format reserves the compression bits in `attributes` but no codec was ever wired in. Nothing else in the system depends on it.
 - **acks=0 (fire-and-forget)** — the client exposes `acks=1` and `acks=all` only. acks=0 adds a third produce path with no correctness content; skipped.
+
+(Batch compression used to sit here; zstd shipped since — `Compression` in broker-storage, round-tripped by `CompressionRoundTripIT`. gzip/lz4 codec ids stay reserved, unimplemented.)
 
 The one soft spot worth knowing about: follower truncation (via `OffsetsForLeaderEpoch`) is covered at unit level on both the handler and fetcher sides but has no full-cluster IT that forces a divergent follower log through a real rejoin.
 

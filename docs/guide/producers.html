@@ -1,0 +1,192 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Producers — j-broker</title><link rel="stylesheet" href="../assets/site.css"></head><body>
+<nav class="top"><span class="brand">j-broker</span><a href="../index.html">Overview</a><a href="install.html">Install &amp; deploy</a><a href="producers.html" class="here">Producers</a><a href="consumers.html">Consumers</a><a href="operations.html">Operations</a><a href="security.html">Security</a><a href="https://github.com/jeremainecheong/j-broker">GitHub</a></nav>
+<main>
+<h1>Producers</h1>
+<p class="lead">From a one-line blocking produce to idempotent batching and exactly-once transactions, all over gRPC.</p>
+
+<video src="../media/produce-consume.mp4" autoplay loop muted playsinline style="max-width:100%;border:1px solid var(--line);border-radius:8px"></video>
+<p>A producer appending records while a consumer receives them from the same three-broker cluster.</p>
+
+<p>The Java client lives in the <code>jbroker.broker.client</code> package of <code>broker-core</code>. See <a href="install.html#artifacts">Install &amp; deploy</a> for adding the artifact to your build and starting a cluster; the examples below assume brokers at <code>localhost:9092&ndash;9094</code>.</p>
+
+<h2>Choosing a client</h2>
+<p>Two entry points, one wire protocol:</p>
+<table>
+<tr><th>Client</th><th>Use when</th><th>Behavior</th></tr>
+<tr><td><code>BrokerClient</code></td><td>One known broker: local development, tests, scripts.</td><td>Single gRPC channel to one <code>host:port</code>. No retries, no routing — an error or a dead broker surfaces immediately.</td></tr>
+<tr><td><code>ClusterClient</code></td><td>Anything long-running against a replicated cluster.</td><td>Bootstraps from a list of endpoints, discovers the cluster view, caches partition leaders, and routes each request to the right broker. On <code>NOT_LEADER</code> it follows the broker's suggested-leader hints; on transport failure it drops the channel, refreshes metadata through another broker, and retries with jittered exponential backoff until the per-call deadline.</td></tr>
+</table>
+<p>Both clients run a protocol-version handshake (<code>ApiVersions</code>) on first use of each connection, so a version mismatch fails up front rather than mid-request (see <a href="#errors">Error handling</a>).</p>
+<p><code>ClusterClient</code> retry tuning is a <code>ClusterClient.Config</code>:</p>
+<!-- source: ClusterClient.java (Config record + defaults()) -->
+<table>
+<tr><th>Knob</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>backoffBaseMs</code></td><td><code>100</code></td><td>First retry backoff.</td></tr>
+<tr><td><code>backoffMultiplier</code></td><td><code>2.0</code></td><td>Backoff growth per attempt.</td></tr>
+<tr><td><code>backoffCapMs</code></td><td><code>1000</code></td><td>Backoff ceiling. Sleeps use equal jitter: uniform in <code>[raw/2, raw]</code>.</td></tr>
+<tr><td><code>callDeadlineMs</code></td><td><code>120000</code></td><td>Overall per-call budget across all retries.</td></tr>
+<tr><td><code>rpcTimeoutMs</code></td><td><code>10000</code></td><td>Per-attempt gRPC deadline — a hair above the broker's internal 5&nbsp;s acks=all window so server-side errors surface as error envelopes, not <code>DEADLINE_EXCEEDED</code>.</td></tr>
+</table>
+
+<h2>Minimal produce</h2>
+<p>The simplest path is a blocking single-record produce on <code>BrokerClient</code>. <code>produce</code> returns after the leader appends (acks=1); <code>produceAcksAll</code> blocks until every in-sync replica has the record (acks=all) and throws if replication cannot complete — the durable choice.</p>
+<pre><code>import java.nio.charset.StandardCharsets;
+import jbroker.broker.client.BrokerClient;
+
+try (var client = new BrokerClient("localhost", 9092)) {
+    client.createTopic("orders", 3, 3);
+
+    // Leader-only ack: fast, but a leader crash right after the ack can lose it.
+    long offset = client.produce("orders", 0, "created".getBytes(StandardCharsets.UTF_8));
+
+    // acks=all: returns only once the whole ISR has the record.
+    long durable = client.produceAcksAll("orders", 0, "paid".getBytes(StandardCharsets.UTF_8));
+}</code></pre>
+<p><code>produceBatch</code> / <code>produceBatchAcksAll</code> take a <code>List&lt;byte[]&gt;</code> and ship all values in one RPC — one record per RPC is round-trip-bound, so batching is the first throughput lever. For applications, prefer <code>BatchingProducer</code> below, which does the batching for you and adds idempotence.</p>
+
+<h2>BatchingProducer</h2>
+<p><code>BatchingProducer</code> is the asynchronous producer: <code>send</code> enqueues a record and returns a future immediately; a background sender thread packs records into per-partition batches and ships each batch with one acks=all RPC. A batch closes when its encoded size reaches <code>batchSizeBytes</code> or when <code>lingerMs</code> has passed since its first record, whichever comes first.</p>
+<pre><code>import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import jbroker.broker.client.BatchingProducer;
+import jbroker.broker.client.ClusterClient;
+
+try (var cluster = new ClusterClient(List.of("localhost:9092", "localhost:9093", "localhost:9094"));
+        var producer = BatchingProducer.create(cluster)) {
+    CompletableFuture&lt;Long&gt; first = producer.send("orders", 0, "a".getBytes());
+    CompletableFuture&lt;Long&gt; second = producer.send("orders", 0, "b".getBytes());
+    producer.flush(); // force pending batches out and wait
+    System.out.println("appended at " + first.join() + " and " + second.join());
+}</code></pre>
+
+<h3>Config knobs</h3>
+<!-- source: BatchingProducer.java (Config record + defaults()) -->
+<table>
+<tr><th>Knob</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>batchSizeBytes</code></td><td><code>65536</code> (64&nbsp;KiB)</td><td>A batch is sealed as soon as its encoded size reaches this. Accounts <em>uncompressed</em> encoded bytes, so a compressed batch ships at or below the threshold. An oversized single record travels alone.</td></tr>
+<tr><td><code>lingerMs</code></td><td><code>5</code></td><td>Maximum wait after a batch's first record before it ships even if under-full.</td></tr>
+<tr><td><code>deliveryTimeoutMs</code></td><td><code>120000</code></td><td>Total delivery budget per batch, measured from its first record (linger and queueing time count). Past it, the batch's futures complete exceptionally.</td></tr>
+<tr><td><code>retryBackoffMs</code></td><td><code>100</code></td><td>Initial pause between delivery retries; doubles per attempt, capped at 1000&nbsp;ms.</td></tr>
+<tr><td><code>compression</code></td><td><code>Compression.NONE</code></td><td>Codec applied when the batch is encoded for the wire (<code>NONE</code> or <code>ZSTD</code>).</td></tr>
+</table>
+
+<h3>The futures contract</h3>
+<p>Delivery is idempotent: the producer allocates a producer id lazily on first use and stamps every batch with a per-partition base sequence. A failed RPC is retried with the <em>same</em> sequence, which the broker deduplicates. So a future that completes normally means the record is on the partition <strong>exactly once</strong>, at the reported offset, replicated to the full ISR (every batch ships acks=all). Batches for one partition are sent strictly in order and never pipelined, which is what keeps the broker's contiguous-sequence check — and therefore the dedup guarantee — intact.</p>
+<p>With the <code>ClusterClient</code>-backed producer this contract holds through leader failover: the same base sequence is retried against the new leader, which either dedupes the batch (it replicated before the old leader died) or appends it fresh.</p>
+<div class="warn">A batch that exhausts <code>deliveryTimeoutMs</code> leaves a hole in the partition's sequence stream, and the broker will reject the next batch as out-of-order. After a delivery failure, close the producer and build a new one — exactly-once bookkeeping cannot resume across a gap that was never delivered.</div>
+
+<h3>zstd compression</h3>
+<p>Set <code>Compression.ZSTD</code> in the config to compress each batch's records section client-side. The broker keeps the codec when it re-encodes the batch for its log — compressed on the wire, compressed on disk, decompressed transparently on fetch. Compression is applied on the <code>BrokerClient</code>-backed sender; the cluster-routed sender currently ships batches uncompressed.</p>
+<pre><code>import jbroker.storage.Compression;
+
+var config = new BatchingProducer.Config(
+        64 * 1024, /*lingerMs*/ 5, /*deliveryTimeoutMs*/ 120_000, /*retryBackoffMs*/ 100,
+        Compression.ZSTD);
+try (var client = new BrokerClient("localhost", 9092);
+        var producer = BatchingProducer.create(client, config)) {
+    producer.send("orders", 0, largeJsonPayload);
+    producer.flush();
+}</code></pre>
+
+<h2>TransactionalProducer</h2>
+<p><code>TransactionalProducer</code> adds atomic multi-partition produces plus consumer-offset commits on top of <code>ClusterClient</code> — the client half of consume-transform-produce exactly-once. Records produced inside a transaction become visible to <code>read_committed</code> consumers only when the transaction commits; an abort makes them permanently invisible.</p>
+
+<h3>Lifecycle</h3>
+<pre><code>import jbroker.broker.client.TransactionalProducer;
+
+try (var producer = new TransactionalProducer(cluster, "checkout-svc-1")) {
+    producer.initTransactions();       // adopt (producerId, epoch); fences older holders of this id
+
+    producer.beginTransaction();
+    producer.send("orders", 0, orderBytes);   // registers the partition on first touch
+    producer.send("billing", 1, chargeBytes); // both commit or neither does
+    producer.commitTransaction();
+}</code></pre>
+<p>The <code>transactionalId</code> (<code>"checkout-svc-1"</code>) is the stable identity: a restarted instance calling <code>initTransactions()</code> with the same id bumps the epoch, which fences any zombie still holding the old epoch and aborts whatever it left in flight. <code>commitTransaction()</code> returns once the coordinator has durably logged the decision; marker delivery continues broker-side and decides visibility.</p>
+
+<h3>Consume-transform-produce</h3>
+<p><code>sendOffsetsToTransaction</code> stages the consumer group's offsets inside the transaction, so "output written" and "input marked consumed" commit or vanish together — the exactly-once loop:</p>
+<pre><code>import java.util.HashMap;
+import jbroker.proto.common.TopicPartition;
+
+var records = consumer.poll(Duration.ofMillis(500));
+if (!records.isEmpty()) {
+    producer.beginTransaction();
+    var offsets = new HashMap&lt;TopicPartition, Long&gt;();
+    for (var rec : records) {
+        producer.send("orders-enriched", rec.tp().getPartition(), transform(rec.value()));
+        offsets.merge(rec.tp(), rec.offset() + 1, Math::max); // commit points past each record
+    }
+    producer.sendOffsetsToTransaction("pipeline", offsets);
+    producer.commitTransaction();
+}</code></pre>
+<p>The staged offsets become visible to the group's <code>FetchOffsets</code> only on commit. If the transaction aborts, the group's committed position is untouched and the input is re-read — and since the aborted output is invisible to <code>read_committed</code> readers, reprocessing produces no duplicates downstream.</p>
+
+<h3>The transact() retry loop</h3>
+<p><code>transact(Runnable)</code> wraps a whole attempt in the contract's abort-and-retry loop: begin, run the body, commit. Any abortable failure inside the body aborts the attempt, re-inits (the epoch bump both fences the aborted attempt's broker-side residue and resets sequences, so a resend can never be deduped against aborted data), and re-runs the body after a backoff:</p>
+<pre><code>producer.initTransactions();
+producer.transact(() -&gt; {
+    producer.send("orders", 0, payload);
+    producer.send("audit", 0, auditEntry);
+});</code></pre>
+<p>Because aborted attempts are invisible to <code>read_committed</code> consumers, the retry is exactly-once end to end. A failure of the <em>commit itself</em> is never retried into an abort — the decision may already be logged coordinator-side and a decision is never reversed — it propagates to the caller.</p>
+
+<h3>Error taxonomy</h3>
+<!-- source: TransactionalProducer.java (class javadoc + ProducerFencedException) -->
+<table>
+<tr><th>Failure</th><th>Handling</th></tr>
+<tr><td><code>CONCURRENT_TRANSACTIONS</code></td><td>Retried automatically with backoff — the previous transaction's markers are still being delivered. You never see it unless the op deadline expires.</td></tr>
+<tr><td><code>ProducerFencedException</code></td><td>Fatal. The coordinator granted this transactional id to a newer producer (or the transaction timed out and was force-aborted with an epoch bump). This instance can never make progress again — build a new producer, or accept that a newer instance owns the id. Never caught-and-retried, including inside <code>transact()</code>.</td></tr>
+<tr><td>Other failures inside <code>transact()</code></td><td>Abortable: the attempt is aborted and retried until <code>transactDeadlineMs</code>.</td></tr>
+<tr><td>Commit failure</td><td>Propagates; never converted into an abort.</td></tr>
+</table>
+
+<h3>Config knobs</h3>
+<!-- source: TransactionalProducer.java (Config record + defaults()) -->
+<table>
+<tr><th>Knob</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>transactionTimeoutMs</code></td><td><code>0</code> (broker default)</td><td>How long the coordinator lets a transaction sit without progress before force-aborting it and fencing the producer. Must comfortably exceed the longest stall the application tolerates mid-transaction — leader failover under acks=all can stall produces for tens of seconds.</td></tr>
+<tr><td><code>retryBackoffMs</code></td><td><code>50</code></td><td>Pause between <code>CONCURRENT_TRANSACTIONS</code> retries and between <code>transact()</code> attempts.</td></tr>
+<tr><td><code>opDeadlineMs</code></td><td><code>120000</code></td><td>Per-operation deadline (send, offset commit, end-txn, init).</td></tr>
+<tr><td><code>transactDeadlineMs</code></td><td><code>600000</code></td><td>Overall budget for one <code>transact()</code> call across all its attempts.</td></tr>
+</table>
+
+<h2 id="errors">Error handling</h2>
+<p>Every broker reply carries an error envelope with a numeric code. <code>ClusterClient</code> partitions the codes into two classes:</p>
+<ul>
+<li><strong>Retriable</strong> — conditions that heal on their own: <code>NOT_LEADER</code>, <code>NOT_ENOUGH_REPLICAS</code>, <code>STORAGE_FULL</code>, <code>QUOTA_VIOLATED</code>, <code>NOT_COORDINATOR</code>, <code>COORDINATOR_NOT_AVAILABLE</code>. These are retried with backoff until the call deadline; exhaustion raises <code>ClusterClient.RetriesExhaustedException</code> with the last failure as its cause.</li>
+<li><strong>Fail-fast</strong> — everything else (<code>UNKNOWN_TOPIC</code>, <code>MESSAGE_TOO_LARGE</code>, <code>UNAUTHORIZED</code>, ...): retrying the same request can never succeed, so the call throws <code>ClusterClient.BrokerErrorException</code> immediately. Its <code>code()</code> accessor exposes the numeric code for branching without parsing messages.</li>
+</ul>
+<pre><code>import jbroker.broker.ErrorCodes;
+import jbroker.broker.client.UnsupportedBrokerException;
+
+try {
+    cluster.createTopic("orders", 3, 3);
+} catch (ClusterClient.BrokerErrorException e) {
+    if (e.code() != ErrorCodes.TOPIC_ALREADY_EXISTS) throw e; // already there: fine
+} catch (ClusterClient.RetriesExhaustedException e) {
+    // deadline spent; e.getCause() is the last failure seen
+    throw e;
+} catch (UnsupportedBrokerException e) {
+    // protocol range mismatch: broker [min,max] vs client [min,max]
+    System.err.println("upgrade needed for " + e.endpoint());
+    throw e;
+}</code></pre>
+<p><strong>Version mismatch.</strong> The first use of each broker connection runs the <code>ApiVersions</code> handshake. A broker whose advertised protocol range does not overlap the client's raises <code>UnsupportedBrokerException</code> before any real RPC — fatal and never retried, with <code>endpoint()</code>, <code>brokerMin()</code>/<code>brokerMax()</code>, and <code>clientMin()</code>/<code>clientMax()</code> accessors for diagnostics. A failed handshake caches nothing, so a broker restarted with a compatible version needs no client restart.</p>
+<p><strong>Quota denials.</strong> A produce that exceeds a configured quota is rejected with <code>QUOTA_VIOLATED</code>; the message states the quota and how long to wait (for example <code>produce quota exceeded: 1048576 B/s; retry in 250ms</code>). <code>ClusterClient</code> treats it as retriable and backs off automatically; single-endpoint <code>BrokerClient</code> callers see the error and should wait the indicated interval before resending.</p>
+
+<h2>Python producer</h2>
+<p>The Python reference client (<code>clients/python</code>) speaks the same protos and record-batch bytes from a second language. It is deliberately minimal — synchronous, single-endpoint, uncompressed — with one convenience: a <code>NOT_LEADER</code> answer carrying suggested-leader hints gets one bounded retry against the hinted broker; everything else raises <code>BrokerError</code> with the numeric code and hint map attached. See the <a href="https://github.com/jeremainecheong/j-broker/tree/main/clients/python">package README</a> for install and stub generation.</p>
+<pre><code>from jbroker import Producer
+
+with Producer("127.0.0.1", 9092) as producer:
+    # One value or a list of values sent as a single batch.
+    base, last = producer.produce("orders", 0, [b"one", b"two", b"three"])
+    print(f"appended offsets {base}..{last}")
+
+    # acks=-1 blocks until every ISR member has the batch.
+    base, last = producer.produce("orders", 0, b"durable", acks=-1)</code></pre>
+
+<h2>Next</h2>
+<p>Reading these records back — groups, commits, <code>read_committed</code>, dead-letter routing — is covered in <a href="consumers.html">Consumers</a>.</p>
+</main><footer>j-broker documentation — Apache-2.0.</footer></body></html>

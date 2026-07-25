@@ -1,0 +1,176 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Consumers — j-broker</title><link rel="stylesheet" href="../assets/site.css"></head><body>
+<nav class="top"><span class="brand">j-broker</span><a href="../index.html">Overview</a><a href="install.html">Install &amp; deploy</a><a href="producers.html">Producers</a><a href="consumers.html" class="here">Consumers</a><a href="operations.html">Operations</a><a href="security.html">Security</a><a href="https://github.com/jeremainecheong/j-broker">GitHub</a></nav>
+<main>
+<h1>Consumers</h1>
+<p class="lead">Group membership, offsets, isolation levels, and dead-letter routing with a single-threaded poll loop.</p>
+
+<p><code>Consumer&lt;K,&nbsp;V&gt;</code> (package <code>jbroker.broker.client.consumer</code>) is single-threaded: the application drives the state machine by calling <code>poll</code> repeatedly, and each poll sends one group heartbeat, fires rebalance callbacks when the assignment changed, and fetches from every assigned partition. Dependency setup is covered in <a href="install.html#artifacts">Install &amp; deploy</a>.</p>
+
+<h2>A minimal group consumer</h2>
+<pre><code>import java.time.Duration;
+import java.util.List;
+import jbroker.broker.client.consumer.Consumer;
+import jbroker.broker.client.consumer.ConsumerConfig;
+import jbroker.broker.client.consumer.RebalanceListener;
+import jbroker.broker.client.consumer.StringDeserializer;
+
+var config = ConsumerConfig.builder("workers", "localhost", 9092).build();
+try (var consumer = new Consumer&lt;&gt;(config, new StringDeserializer(), new StringDeserializer())) {
+    consumer.subscribe(List.of("orders"), RebalanceListener.NO_OP);
+    while (running) {
+        var records = consumer.poll(Duration.ofMillis(500));
+        for (var rec : records) {
+            System.out.println(rec.tp().getTopic() + "-" + rec.tp().getPartition()
+                    + "@" + rec.offset() + ": " + rec.value());
+        }
+        consumer.commitSync(); // persist positions for everything just processed
+    }
+}</code></pre>
+<p>Every member started with group id <code>"workers"</code> and the same subscription shares the topic's partitions; the coordinator assigns each partition to exactly one member. An empty <code>ConsumerRecords</code> means "nothing this tick" — the group may still be forming — so callers simply loop. <code>close()</code> leaves the group cleanly, triggering an immediate rebalance of its partitions to the survivors.</p>
+
+<video src="../media/consumer-group-split.mp4" autoplay loop muted playsinline style="max-width:100%;border:1px solid var(--line);border-radius:8px"></video>
+<p>Two members of one group splitting a two-partition topic: each owns one partition and receives only its records.</p>
+
+<p>The admin UI's Groups page shows the live membership and per-partition lag of every group:</p>
+<img src="../screenshots/groups.png" alt="Consumer groups page of the admin UI showing members and per-partition lag" style="max-width:100%;border:1px solid var(--line);border-radius:8px">
+
+<h2>ConsumerConfig</h2>
+<p>Configuration is an immutable object built with chained setters. <code>ConsumerConfig.builder(groupId, host, port)</code> is the single-endpoint entry point; <code>ConsumerConfig.builder(groupId)</code> is for the cluster-aware path where discovery comes from a <code>ClusterClient</code> and the bootstrap host/port are unused.</p>
+<!-- source: ConsumerConfig.java (Builder defaults + DEFAULT_* constants) -->
+<table>
+<tr><th>Builder method</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>instanceId(String)</code></td><td><code>""</code> (dynamic)</td><td>Static membership: a member rejoining with the same instance id preserves its slot and assignment instead of triggering a rebalance.</td></tr>
+<tr><td><code>sessionTimeoutMs(int)</code></td><td><code>45000</code></td><td>How long the coordinator waits without a heartbeat before evicting the member.</td></tr>
+<tr><td><code>rebalanceTimeoutMs(int)</code></td><td><code>60000</code></td><td>How long the coordinator waits for members to finish a rebalance stage.</td></tr>
+<tr><td><code>fetchMaxBytes(int)</code></td><td><code>1048576</code> (1&nbsp;MiB)</td><td>Server-side bound on one fetch response, per partition per poll.</td></tr>
+<tr><td><code>maxPollRecords(int)</code></td><td><code>500</code></td><td>Upper bound on records one <code>poll</code> returns. Surplus already fetched stays buffered client-side, in order, for the next poll — never dropped.</td></tr>
+<tr><td><code>pollFetchDeadline(Duration)</code></td><td><code>5s</code></td><td>Per-fetch gRPC deadline inside a poll tick (also the per-tick retry budget on the cluster path).</td></tr>
+<tr><td><code>deadLetterPolicy(DeadLetterPolicy)</code></td><td><code>null</code> (disabled)</td><td>Retry-then-dead-letter routing for handler-driven polls; see <a href="#dlt">Dead-letter routing</a>.</td></tr>
+<tr><td><code>tls(TlsConfig)</code></td><td><code>TlsConfig.DISABLED</code></td><td>TLS / mTLS settings; see <a href="security.html">Security</a>.</td></tr>
+<tr><td><code>isolationLevel(IsolationLevel)</code></td><td><code>READ_UNCOMMITTED</code></td><td>What the consumer may see of transactional data; see <a href="#read-committed">read_committed</a>.</td></tr>
+</table>
+
+<h2>Rebalancing</h2>
+<p>Rebalances are cooperative and incremental: instead of a stop-the-world revoke of every partition, the coordinator moves only the partitions that actually change hands, in stages. The consumer reports its <code>owned_partitions</code> on each heartbeat, the coordinator advances the stages, and the <code>RebalanceListener</code> fires on the actual diffs — <code>onPartitionsRevoked</code> with partitions leaving this member, <code>onPartitionsAssigned</code> with partitions arriving. Members that keep a partition through the rebalance never stop consuming it.</p>
+<pre><code>import java.util.Collection;
+import jbroker.proto.common.TopicPartition;
+
+consumer.subscribe(List.of("orders"), new RebalanceListener() {
+    @Override
+    public void onPartitionsRevoked(Collection&lt;TopicPartition&gt; revoked) {
+        consumer.commitSync(); // last chance to persist progress for these partitions
+    }
+
+    @Override
+    public void onPartitionsAssigned(Collection&lt;TopicPartition&gt; added) {
+        // prime any per-partition state
+    }
+});</code></pre>
+<p>Commit inside <code>onPartitionsRevoked</code>: after the callback returns, the next heartbeat reports the post-revoke owned set, and the next owner resumes from whatever was last committed. Applications that don't need callbacks pass <code>RebalanceListener.NO_OP</code>. On a newly assigned partition, the consumer primes its position from the group's committed offset (or 0 if never committed).</p>
+
+<h2>Manual control</h2>
+<p>Four levers adjust consumption without touching group membership — heartbeats keep flowing throughout:</p>
+<ul>
+<li><code>seek(topic, partition, offset)</code> repositions the fetch cursor of an assigned partition; already-buffered records from the old position are discarded, never returned. <code>seekToBeginning</code> / <code>seekToEnd</code> first resolve the log's actual bounds from the broker.</li>
+<li><code>pause(topic, partition)</code> stops fetching that partition (buffered records are held back too); <code>resume</code> undoes it; <code>paused()</code> lists what is held. Pause state survives a seek.</li>
+<li><code>maxPollRecords</code> bounds each poll's hand-back for predictable per-iteration processing time.</li>
+</ul>
+<pre><code>// Reprocess partition 0 from a checkpoint while holding partition 1 back.
+consumer.pause("orders", 1);
+consumer.seek("orders", 0, checkpointOffset);
+var replayed = consumer.poll(Duration.ofMillis(500));
+consumer.resume("orders", 1);</code></pre>
+
+<h2>Commits</h2>
+<p>The consumer tracks a position per assigned partition, advanced only for records a poll has actually returned — buffered-but-unreturned records never advance it. Nothing is committed automatically in the plain poll loop; you choose when:</p>
+<ul>
+<li><code>commitSync()</code> — commit current positions, blocking until the coordinator acks. The workhorse.</li>
+<li><code>commitSync(Map&lt;TopicPartition, OffsetAndMetadata&gt;)</code> — commit an explicit offset map (for checkpointing mid-batch).</li>
+<li><code>commitAsync()</code> / <code>commitAsync(Map)</code> — the position snapshot is taken immediately (later polls can't leak in), the commit runs on a background thread, and overlapping calls reach the coordinator in submission order. The future completes exceptionally on failure — a failed commit is never swallowed.</li>
+<li><code>committed(tp)</code> — look up the group's last committed offset for a partition (offset <code>-1</code> when never committed).</li>
+</ul>
+<pre><code>import java.util.Map;
+import jbroker.broker.client.consumer.OffsetAndMetadata;
+
+var tp = TopicPartition.newBuilder().setTopic("orders").setPartition(0).build();
+
+consumer.commitSync(Map.of(tp, new OffsetAndMetadata(1234L))); // explicit checkpoint
+var async = consumer.commitAsync();                            // non-blocking, ordered
+OffsetAndMetadata last = consumer.committed(tp);               // group's committed view</code></pre>
+<p>The handler-driven <code>poll(Duration, RecordHandler)</code> variant (below) is the exception: it auto-commits the tick's resulting positions with one synchronous commit after all handlers ran.</p>
+
+<h2 id="read-committed">read_committed isolation</h2>
+<p>With <code>isolationLevel(READ_COMMITTED)</code>, the consumer only sees records whose transaction outcome is decided and committed:</p>
+<pre><code>var config = ConsumerConfig.builder("auditors", "localhost", 9092)
+        .isolationLevel(ConsumerConfig.IsolationLevel.READ_COMMITTED)
+        .build();</code></pre>
+<!-- source: ConsumerConfig.java (IsolationLevel) + Consumer.java (decodeBatch) -->
+<p>Three mechanisms combine:</p>
+<ul>
+<li><strong>Fetch capping.</strong> The broker caps <code>read_committed</code> fetches at the last stable offset, so records of still-open transactions are never shipped.</li>
+<li><strong>Aborted filtering.</strong> The broker attaches the aborted-transaction ranges overlapping the response; the client drops transactional batches belonging to those producers. A range closes at that producer's ABORT marker, so a later committed transaction from the same producer passes through.</li>
+<li><strong>Control batches skipped.</strong> Transaction markers (COMMIT/ABORT control batches) travel inline in the fetched bytes but are never surfaced as application records — under either isolation level.</li>
+</ul>
+<p>The default, <code>READ_UNCOMMITTED</code>, returns every produced record, decided or not. Note that filtering can make offsets appear sparse to a <code>read_committed</code> reader — aborted records and markers still occupy offsets.</p>
+
+<h2 id="dlt">Dead-letter routing</h2>
+<p>The handler-driven poll turns "poison message" handling into configuration. Attach a <code>DeadLetterPolicy</code> and process records with a <code>RecordHandler</code>; the handler signals a retriable failure by throwing <code>RetryableException</code>:</p>
+<pre><code>import jbroker.broker.client.consumer.DeadLetterPolicy;
+import jbroker.broker.client.consumer.RetryableException;
+
+var config = ConsumerConfig.builder("workers", "localhost", 9092)
+        .deadLetterPolicy(new DeadLetterPolicy("orders-dlt", /*maxAttempts*/ 3, Duration.ofMillis(200)))
+        .build();
+
+// inside the poll loop:
+consumer.poll(Duration.ofMillis(500), rec -&gt; {
+    if (!process(rec)) {
+        throw new RetryableException("downstream rejected " + rec.offset());
+    }
+});</code></pre>
+<!-- source: DeadLetterPolicy.java + Consumer.java (poll(Duration, RecordHandler)) -->
+<p>Semantics, in order:</p>
+<ul>
+<li>The record is retried up to <code>maxAttempts</code> times, sleeping <code>backoff</code> between tries (constant — no jitter, no exponential growth).</li>
+<li>On final failure it is produced verbatim to <code>dltTopic</code> — same partition number as the source — decorated with an <code>X-DLT-Failure-Cause</code> header carrying the last exception's class and message as UTF-8 bytes.</li>
+<li>The consumer's offset advances past the failed record only after the DLT produce confirms, then the tick auto-commits. The partition keeps flowing; the bad record waits in the DLT.</li>
+<li>Any exception <em>other than</em> <code>RetryableException</code> escaping the handler is treated as fatal and propagates out of <code>poll</code> without DLT routing — if a bug corrupts every record, you don't want 100% of traffic silently re-routed.</li>
+</ul>
+<div class="note">The DLT topic is not auto-created — create it up front with at least as many partitions as the source topic, since records land on the same partition number.</div>
+
+<h2>Consuming through failover</h2>
+<p>The cluster-aware constructor routes every consumer call through a shared <code>ClusterClient</code> (which the application owns and may also feed a producer):</p>
+<pre><code>import jbroker.broker.client.ClusterClient;
+
+try (var cluster = new ClusterClient(List.of("localhost:9092", "localhost:9093", "localhost:9094"))) {
+    var config = ConsumerConfig.builder("workers").build(); // no bootstrap host/port needed
+    try (var consumer = new Consumer&lt;&gt;(config, new StringDeserializer(), new StringDeserializer(), cluster)) {
+        consumer.subscribe(List.of("orders"), RebalanceListener.NO_OP);
+        // poll/commit as usual — leader and coordinator failover are absorbed here
+    }
+}</code></pre>
+<!-- source: ClusterConsumerRpc.java (class javadoc) -->
+<p>What the cluster path absorbs, per the routing layer's contract:</p>
+<ul>
+<li><strong>Per-tick calls</strong> (heartbeat, fetch) get a short budget — one <code>pollFetchDeadline</code> — and map retry exhaustion to an empty result, so a poll during an election window simply comes back empty and the next poll retries. The application never sees the election.</li>
+<li><strong>Offset-durability calls</strong> (commit, committed-offset and log-bounds lookups) keep retrying up to the client's full call deadline before reporting failure, because a dropped commit is worse than a slow one.</li>
+<li><strong>Coordinator moves</strong> (<code>NOT_COORDINATOR</code>) invalidate the cached coordinator; the next call re-finds it. Incremental fetch sessions are re-established transparently when a fetch lands on a different broker after failover.</li>
+</ul>
+<p>The single-endpoint constructor keeps the original behavior: one bootstrap broker plus a cached coordinator channel, with errors surfacing directly — fine for development, not for riding through broker restarts.</p>
+
+<h2>Python consumer</h2>
+<p>The Python reference client's consumer is one group member with the same heartbeat/assignment/fetch/commit cycle — single endpoint, no failover routing. <code>poll()</code> returns a list of <code>ConsumerRecord</code> dataclasses (<code>topic</code>, <code>partition</code>, <code>offset</code>, <code>key</code>, <code>value</code>, <code>headers</code>); an empty list means "nothing this tick", so callers loop:</p>
+<pre><code>from jbroker import Consumer
+
+with Consumer("127.0.0.1", 9092, group_id="workers", topics=["orders"]) as consumer:
+    records = []
+    while len(records) &lt; 3:          # poll() returns [] while the group forms
+        records.extend(consumer.poll())
+    for record in records:
+        print(record.offset, record.value)
+    consumer.commit()                 # next member of "workers" resumes here</code></pre>
+<p>Keyword options mirror the Java knobs where implemented: <code>instance_id</code> (static membership, default <code>""</code>), <code>rebalance_timeout_ms</code> (default <code>30000</code>), <code>fetch_max_bytes</code> (default 1&nbsp;MiB). <code>commit()</code> commits current positions for every assigned partition and <code>committed(topic, partition)</code> reads the group's committed offset back. See the <a href="https://github.com/jeremainecheong/j-broker/tree/main/clients/python">package README</a> for install and stub generation.</p>
+
+<h2>Next</h2>
+<p>Producing the records this page consumes — batching, idempotence, transactions — is covered in <a href="producers.html">Producers</a>; day-two topics like lag monitoring live in <a href="operations.html">Operations</a>.</p>
+</main><footer>j-broker documentation — Apache-2.0.</footer></body></html>

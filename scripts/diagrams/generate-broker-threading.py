@@ -115,7 +115,7 @@ GRPC = svg_data_uri("grpc")
 
 # ---------------------------------------------------------------------------
 
-W, H = 1700, 1000
+W, H = 1700, 1300
 
 # JVM container
 JVM_X, JVM_Y, JVM_W, JVM_H = 20, 20, W - 40, H - 40
@@ -132,11 +132,11 @@ cell("java_logo", "", icon_style(JAVA), JVM_X + JVM_W - 60, JVM_Y + 14, 36, 36)
 # ---- Row 1: gRPC handler pool ---------------------------------------------
 
 ROW1_Y = 80
-ROW1_H = 200
+ROW1_H = 270
 
 cell("rpc_panel",
      "RPC handler virtual threads  ·  one VT per inbound RPC  ·  "
-     "spawned by gRPC server",
+     "spawned by gRPC server  ·  nine services",
      panel("#ffffff", "#94a3b8", left=True),
      50, ROW1_Y, JVM_W - 60, ROW1_H)
 
@@ -144,7 +144,8 @@ cell("rpc_panel",
 cell("grpc_logo", "", icon_style(GRPC),
      50 + (JVM_W - 60) - 40, ROW1_Y + 6, 28, 28)
 
-# Six handler pills inside the rpc_panel
+# Eight handler pills inside the rpc_panel (nine gRPC services — the
+# TxnOffsets service rides ConsumerHandler)
 HANDLERS = [
     ("h_prod",    "ProduceHandler",          "#dbeafe", "#3b82f6"),
     ("h_cons",    "ConsumerHandler",         "#dbeafe", "#3b82f6"),
@@ -152,15 +153,19 @@ HANDLERS = [
     ("h_replica", "ReplicaFetchHandler",     "#dbeafe", "#3b82f6"),
     ("h_meta",    "MetadataHandler",         "#dbeafe", "#3b82f6"),
     ("h_hb",      "BrokerHeartbeatHandler",  "#dbeafe", "#3b82f6"),
+    ("h_txn",     "TxnHandler",              "#dbeafe", "#3b82f6"),
+    ("h_txnm",    "TxnMarkersHandler",       "#dbeafe", "#3b82f6"),
 ]
 
 handler_caption = {
-    "h_prod":    "Produce · InitProducerId",
-    "h_cons":    "Fetch · FindCoordinator · HB ·<br/>Commit · FetchOffsets",
+    "h_prod":    "Produce · InitProducerId ·<br/>quota + disk-headroom gate",
+    "h_cons":    "Fetch · FindCoordinator · HB · Commit ·<br/>FetchOffsets · TxnOffsetCommit",
     "h_admin":   "CreateTopic · DeleteTopic · UpdateConfig ·<br/>ForceCompact · DeleteGroup · ResetOffsets",
     "h_replica": "ReplicaFetch ·<br/>OffsetsForLeaderEpoch",
     "h_meta":    "DescribeCluster · DescribeMetrics ·<br/>SubscribeEvents · DescribeRaft",
-    "h_hb":      "BrokerHeartbeat",
+    "h_hb":      "BrokerHeartbeat (carries rack label)",
+    "h_txn":     "InitTransactions · AddPartitionsToTxn ·<br/>AddOffsetsToTxn · EndTxn (two-phase)",
+    "h_txnm":    "WriteTxnMarkers — control-batch<br/>markers from peer coordinators",
 }
 
 # Three columns of (handler pill 200 + caption 270) = 470 each
@@ -178,11 +183,12 @@ for i, (hid, label, fill, stroke) in enumerate(HANDLERS):
 
 # ---- Row 2: Background ticker VTs ------------------------------------------
 
-ROW2_Y = 310
-ROW2_H = 280
+ROW2_Y = 380
+ROW2_H = 440
 
 cell("tickers_panel",
-     "Background ticker virtual threads  ·  each is a single long-lived VT",
+     "Background tickers  ·  single long-lived daemon executors "
+     "(plus the RaftDriver's two VTs)",
      panel("#ffffff", "#94a3b8", left=True),
      50, ROW2_Y, JVM_W - 60, ROW2_H)
 
@@ -205,27 +211,32 @@ def ticker_group(_id: str, title: str, fill: str, stroke: str,
 ticker_group("ctrl_panel", "Controller-only", "#fef3c7", "#f59e0b",
              80, 480,
              [("t_fencer",  "BrokerFencer",            "every 250 ms · 3 s liveness"),
-              ("t_balancer","PreferredLeaderBalancer", "every 15 s · 30 s stability"),
-              ("t_snap",    "Snapshot scheduler",      "every 30 s · ≥10k entries")])
+              ("t_balancer","PreferredLeaderBalancer", "every 15 s · 30 s stability")])
 
 ticker_group("all_panel", "All brokers", "#ecfdf5", "#10b981",
              580, 480,
-             [("t_clean",   "LogManager cleaner",      "every 60 s · retention + compaction"),
-              ("t_hb",      "BrokerHeartbeat sender",  "every 250 ms · point-to-point"),
+             [("t_house",   "Housekeeping (broker-registration)",
+                                                       "every 1 s · registration · coordinator recovery · txn timeout sweep"),
+              ("t_isr",     "IsrManager + ReassignmentDriver",
+                                                       "every 2 s · ISR shrink/expand · reassignment steps"),
+              ("t_clean",   "LogManager cleaner",      "every 5 min (default) · retention + compaction"),
+              ("t_hb",      "BrokerHeartbeat sender",  "every 250 ms · point-to-point · carries rack"),
               ("t_raft",    "RaftDriver (pump + ticker)",
                                                        "1 pump VT + 1 ticker VT · 30 ms tick")])
 
 ticker_group("perp_panel", "Per-partition / opt-in", "#dbeafe", "#3b82f6",
              1080, 480,
              [("t_replfetch","ReplicaFetcher × N",     "1 VT per partition followed"),
+              ("t_txnm",     "txn-marker-delivery-* × N",
+                                                       "1 VT per in-flight EndTxn marker fan-out"),
               ("t_chaos",    "ChaosHttpServer",        "small platform-thread pool · opt-in port"),
               ("t_install",  "InstallSnapshot sender", "ad-hoc · chunked snapshot to far-behind followers")])
 
 
 # ---- Row 3: Shared state ---------------------------------------------------
 
-ROW3_Y = 620
-ROW3_H = 240
+ROW3_Y = 850
+ROW3_H = 335
 
 cell("state_panel",
      "Shared state  ·  thread-safe by construction",
@@ -236,7 +247,7 @@ STATE_BOXES = [
     ("s_topic",     "TopicManager",
      "PartitionState per (topic, partition)<br/>guarded by per-partition striped locks"),
     ("s_group",     "GroupCoordinator",
-     "in-memory consumer-group membership<br/>ConcurrentHashMap with epoch fencing"),
+     "consumer-group membership + txn offset staging<br/>ConcurrentHashMap with epoch fencing"),
     ("s_offsets",   "OffsetCache",
      "(group, topic, partition) → offset<br/>warmed from __consumer_offsets at start"),
     ("s_pidreg",    "ProducerIdRegistry",
@@ -245,6 +256,10 @@ STATE_BOXES = [
      "advertised host/port, last-heartbeat<br/>read by BrokerFencer"),
     ("s_log",       "LogManager + Log",
      "per-partition Log instances<br/>ReentrantLock (NOT synchronized — see VT pinning)"),
+    ("s_txnc",      "TxnCoordinatorRuntime",
+     "per-partition TxnCoordinator on its leader<br/>fenced by coordinatorEpoch = leader epoch"),
+    ("s_quota",     "QuotaEnforcer",
+     "produce/fetch rate checks at the handlers<br/>in-memory or Redis (INCRBY + EXPIRE)"),
 ]
 
 for i, (sid, title, body) in enumerate(STATE_BOXES):
@@ -260,10 +275,12 @@ for i, (sid, title, body) in enumerate(STATE_BOXES):
 
 # ---- Footer: pinning gate -------------------------------------------------
 
+FOOT_Y = ROW3_Y + ROW3_H + 25
+
 cell("pin_logo", "🚦",
      "text;html=1;align=center;verticalAlign=middle;fontSize=22;"
      f"{FONT};fontColor=#0f172a;",
-     60, 880, 36, 36)
+     60, FOOT_Y, 36, 36)
 
 cell("pin_text",
      "<b>VT-pinning gate (CI-enforced):</b>  "
@@ -273,8 +290,8 @@ cell("pin_text",
      "fix is mechanical: <code>synchronized</code> → <code>ReentrantLock</code> on hot paths "
      "(see broker-storage/Log + LogSegment)",
      "text;html=1;align=left;verticalAlign=middle;fontSize=11;fontStyle=0;"
-     f"{FONT};fontColor=#1e3a8a;",
-     110, 880, JVM_W - 130, 40)
+     f"whiteSpace=wrap;{FONT};fontColor=#1e3a8a;",
+     110, FOOT_Y, JVM_W - 130, 40)
 
 
 # ---- Edges --------------------------------------------------------------

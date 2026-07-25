@@ -13,8 +13,14 @@ COPY . .
 # Set by the release workflow so the bundled broker-core version resource
 # matches the git tag. Empty (the default) builds the regular snapshot.
 ARG RELEASE_VERSION=
+# The build context excludes .git (see .dockerignore), so the in-container
+# `git rev-parse` fallback can only answer "unknown". The release workflow
+# passes the real commit here; it reaches the stamped resource via
+# -PgitCommit (see broker-core/build.gradle.kts).
+ARG GIT_COMMIT=unknown
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew :admin-app:bootJar -x test --no-daemon \
+        "-PgitCommit=$GIT_COMMIT" \
         ${RELEASE_VERSION:+-PreleaseVersion=$RELEASE_VERSION}
 
 FROM eclipse-temurin:21-jre@sha256:ff65ff0d43c73d2b675eb4b758665a5cb487e7df127436a9979f8172c144c819

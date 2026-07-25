@@ -13,6 +13,26 @@ import jbroker.storage.LogManager;
  * {@code maxBytes} of raw batch bytes starting at {@code offset}. Uses
  * {@code FileChannel.transferTo} under the hood for zero-copy IO.
  *
+ * <p>Isolation levels: {@code read_uncommitted} (the default) serves the
+ * transferred bytes as-is. {@code read_committed} caps the read at the
+ * partition's {@linkplain jbroker.storage.Log#lastStableOffset(long) last
+ * stable offset} — batches not wholly below it are cut from the response by
+ * a plaintext-header frame scan (baseOffset / batchLength /
+ * lastOffsetDelta; no record decode) — and attaches the aborted-transaction
+ * ranges overlapping the returned window plus the LSO itself.
+ *
+ * <p>Control-batch contract: the zero-copy transfer ships transaction
+ * markers (control batches) inline with the data in BOTH isolation levels —
+ * stripping them would force a decode/re-encode of every fetched byte.
+ * Clients MUST skip batches carrying the control attribute bit and never
+ * surface their records to the application; under read_committed the ABORT
+ * markers in the stream terminate the attached aborted ranges (Kafka's
+ * consumer follows the same protocol). The LSO cap is computed after the
+ * transfer, which is safe: the LSO only advances, a batch it newly admits
+ * was already durable in the transferred bytes, and if the deciding marker
+ * was an abort the range is present in the aborted list computed in the
+ * same pass.
+ *
  * <p>Incremental fetch sessions: requests arriving with
  * {@code session_id=0} get a fresh id allocated and returned in the
  * response; requests echoing a previously-allocated id update their cached
@@ -121,6 +141,15 @@ public final class FetchHandler {
             int maxBytes = req.getMaxBytes() > 0 ? req.getMaxBytes() : 64 * 1024;
             log.transferTo(req.getOffset(), maxBytes, baos);
             byte[] bytes = baos.toByteArray();
+            boolean readCommitted = req.getIsolationLevel() == 1;
+            long lastStable = 0;
+            java.util.List<jbroker.storage.TransactionState.AbortedTxn> abortedTxns = java.util.List.of();
+            if (readCommitted) {
+                lastStable = log.lastStableOffset(log.nextOffset());
+                var capped = capAtLastStable(bytes, req.getOffset(), lastStable);
+                bytes = capped.bytes();
+                abortedTxns = log.abortedTxnsIn(req.getOffset(), capped.endOffset());
+            }
             // Admission is charged on the bytes actually read, not maxBytes,
             // so empty polls stay free and the back-off hint reflects real
             // spend. A denial returns before the session state advances —
@@ -156,11 +185,20 @@ public final class FetchHandler {
                 jfr.bytes = bytes.length;
                 jfr.commit();
             }
-            return FetchResponse.newBuilder()
+            var resp = FetchResponse.newBuilder()
                     .setRecords(ByteString.copyFrom(bytes))
                     .setHighWatermark(hwm)
-                    .setSessionId(sessionId)
-                    .build();
+                    .setSessionId(sessionId);
+            if (readCommitted) {
+                resp.setLastStableOffset(lastStable);
+                for (var txn : abortedTxns) {
+                    resp.addAbortedTxns(jbroker.proto.broker.AbortedTxn.newBuilder()
+                            .setProducerId(txn.producerId())
+                            .setFirstOffset(txn.firstOffset())
+                            .build());
+                }
+            }
+            return resp.build();
         } catch (IOException e) {
             return FetchResponse.newBuilder()
                     .setError(jbroker.proto.broker.Error.newBuilder()
@@ -170,5 +208,37 @@ public final class FetchHandler {
                     .setSessionId(sessionId)
                     .build();
         }
+    }
+
+    /** Result of {@link #capAtLastStable}: the kept prefix and the offset one past its last batch. */
+    private record CappedRead(byte[] bytes, long endOffset) {}
+
+    /**
+     * Cut the transferred bytes at the first batch that is not wholly below
+     * {@code lastStable}. Walks the v2 batch frames reading only plaintext
+     * header fields (baseOffset, batchLength, lastOffsetDelta) — no CRC, no
+     * decompression. A partial trailing frame (the transfer hit maxBytes
+     * mid-batch) is dropped too: under read_committed only complete batches
+     * proven below the LSO ship, and the client simply re-fetches the tail.
+     * {@code endOffset} reports one past the last kept batch's lastOffset
+     * (or {@code fetchOffset} when nothing survives) — the aborted-txn
+     * window bound.
+     */
+    private static CappedRead capAtLastStable(byte[] bytes, long fetchOffset, long lastStable) {
+        var buf = java.nio.ByteBuffer.wrap(bytes);
+        int pos = 0;
+        long end = fetchOffset;
+        while (bytes.length - pos >= jbroker.storage.RecordBatch.BATCH_OVERHEAD) {
+            long baseOffset = buf.getLong(pos);
+            int batchLength = buf.getInt(pos + 8);
+            int frame = 12 + batchLength;
+            if (frame <= 12 || pos + frame > bytes.length) break; // corrupt or partial tail
+            long lastOffset = baseOffset + buf.getInt(pos + 23); // lastOffsetDelta
+            if (lastOffset >= lastStable) break;
+            pos += frame;
+            end = lastOffset + 1;
+        }
+        if (pos == bytes.length) return new CappedRead(bytes, end);
+        return new CappedRead(java.util.Arrays.copyOf(bytes, pos), end);
     }
 }

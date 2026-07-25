@@ -157,6 +157,34 @@ public final class BrokerGrpcServices {
         };
     }
 
+    /** Client-facing transaction coordinator surface, routed on transactional_id. */
+    public static jbroker.proto.txn.TxnGrpc.TxnImplBase txn(jbroker.broker.txn.TxnHandler handler) {
+        return new jbroker.proto.txn.TxnGrpc.TxnImplBase() {
+            @Override
+            public void initTransactions(
+                    jbroker.proto.txn.InitTransactionsRequest req,
+                    StreamObserver<jbroker.proto.txn.InitTransactionsResponse> out) {
+                out.onNext(handler.initTransactions(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void addPartitionsToTxn(
+                    jbroker.proto.txn.AddPartitionsToTxnRequest req,
+                    StreamObserver<jbroker.proto.txn.AddPartitionsToTxnResponse> out) {
+                out.onNext(handler.addPartitionsToTxn(req));
+                out.onCompleted();
+            }
+
+            @Override
+            public void endTxn(
+                    jbroker.proto.txn.EndTxnRequest req, StreamObserver<jbroker.proto.txn.EndTxnResponse> out) {
+                out.onNext(handler.endTxn(req));
+                out.onCompleted();
+            }
+        };
+    }
+
     /**
      * Inter-broker marker delivery: a remote transaction coordinator fans a
      * decided transaction's control-batch markers out to the partitions

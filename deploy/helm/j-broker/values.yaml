@@ -50,6 +50,18 @@ broker:
     # 1-100; higher means the scheduler tries harder to spread.
     weight: 100
     topologyKey: kubernetes.io/hostname
+  # Rack awareness. When enabled, each pod reads its rack from its own
+  # `topology.kubernetes.io/zone` POD label via the downward API
+  # (JBROKER_RACK) and the brokers spread each partition's replicas
+  # across the racks they see — a whole-zone outage then can't take out
+  # every copy. The downward API cannot read NODE labels, so the pods
+  # themselves must carry the label: mirror it from the node with an
+  # admission webhook (e.g. pod-topology labelers) or stamp it through
+  # your zone-pinned deployment tooling. A pod missing the label fails
+  # to start with CreateContainerConfigError — leave this off on
+  # single-zone clusters.
+  rack:
+    enabled: false
   # Port layout inside the pod — these are not externally exposed
   # unless `service.*` toggles are flipped.
   ports:

@@ -349,7 +349,8 @@ public final class MetadataServiceHandler {
                     .setPort(port)
                     .setRole(role)
                     .setAlive(alive)
-                    .setLastSeenMillis(lastSeenMillis);
+                    .setLastSeenMillis(lastSeenMillis)
+                    .setRack(brokerRegistry.rackFor(bid));
             // Supported protocol range: own constants for self, the range
             // the peer last advertised on its heartbeat otherwise. Left
             // absent for peers that have never been heard from — the

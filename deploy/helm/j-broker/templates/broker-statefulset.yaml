@@ -99,6 +99,12 @@ spec:
             - name: JBROKER_SUPER_USERS
               value: {{ .Values.broker.auth.superUsers | quote }}
             {{- end }}
+            {{- if .Values.broker.rack.enabled }}
+            - name: JBROKER_RACK
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['topology.kubernetes.io/zone']
+            {{- end }}
             {{- if ge (int .Values.broker.chaosPort) 0 }}
             - name: JBROKER_CHAOS_TOKEN
               valueFrom:

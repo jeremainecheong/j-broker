@@ -210,7 +210,10 @@ public final class AdminHandler {
                     .setError(buildError(ErrorCodes.INVALID_CONFIG, configError))
                     .build();
         }
-        var replicas = candidates.subList(0, rf);
+        // Rack-aware when the registered brokers span ≥ 2 racks; the
+        // original first-rf-candidates policy otherwise (the placer
+        // preserves it bit-for-bit — regression-critical).
+        var replicas = ReplicaPlacer.place(candidates, addressBook.racks(), replicaLoad(), rf);
         boolean internal = req.getTopic().startsWith("__");
         var topicBuilder = TopicRecord.newBuilder()
                 .setTopic(req.getTopic())
@@ -244,6 +247,17 @@ public final class AdminHandler {
             return CreateTopicResponse.newBuilder().setError(notLeaderError(e)).build();
         }
         return CreateTopicResponse.newBuilder().build();
+    }
+
+    /** Replica count per broker across every partition — the placer's within-rack load signal. */
+    private java.util.Map<Integer, Integer> replicaLoad() {
+        var load = new java.util.HashMap<Integer, Integer>();
+        for (var a : topicManager.allPartitionAssignments()) {
+            for (int r : a.state().replicas()) {
+                load.merge(r, 1, Integer::sum);
+            }
+        }
+        return load;
     }
 
     public DeleteTopicResponse deleteTopic(DeleteTopicRequest req) {

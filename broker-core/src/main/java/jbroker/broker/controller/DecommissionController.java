@@ -33,6 +33,11 @@ public final class DecommissionController {
         /** Brokers eligible to receive drained replicas (registered and alive). */
         Set<Integer> liveBrokers();
 
+        /** Rack label per broker id; brokers without one absent. Rack-blind by default. */
+        default java.util.Map<Integer, String> racks() {
+            return java.util.Map.of();
+        }
+
         /** Whether a reassignment is already pending for the partition. */
         boolean reassignmentPending(String topic, int partition);
 
@@ -88,7 +93,7 @@ public final class DecommissionController {
                 unmanaged.add(a);
             }
         }
-        var result = DecommissionPlanner.plan(brokerId, cluster.liveBrokers(), unmanaged);
+        var result = DecommissionPlanner.plan(brokerId, cluster.liveBrokers(), unmanaged, cluster.racks());
         if (result instanceof DecommissionPlanner.Result.Refused refused) {
             this.target = brokerId;
             this.detail = refused.reason();
@@ -139,7 +144,7 @@ public final class DecommissionController {
                     // engine; nothing to start this tick.
                     return;
                 }
-                var result = DecommissionPlanner.plan(target, cluster.liveBrokers(), unmanaged);
+                var result = DecommissionPlanner.plan(target, cluster.liveBrokers(), unmanaged, cluster.racks());
                 if (result instanceof DecommissionPlanner.Result.Refused refused) {
                     // A candidate died mid-drain and no replacement exists
                     // any more — surface it rather than spinning silently.

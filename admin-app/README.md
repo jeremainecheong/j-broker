@@ -1,6 +1,6 @@
 # admin-app
 
-Spring Boot REST + Thymeleaf admin UI for the cluster. Served on port 15672 (RabbitMQ-management convention). No SPA bundler — Thymeleaf pages + htmx for partial refreshes + Alpine.js for tiny interactions + Chart.js for the metrics line charts. Everything self-hosted under `/vendor/` so Chrome ORB doesn't block external CDNs.
+Spring Boot REST + Thymeleaf admin UI for the cluster. `application.yml` binds port 9090; the Docker image and Helm chart override to 15672 (RabbitMQ-management convention) via `SERVER_PORT`. No SPA bundler — Thymeleaf pages + htmx for partial refreshes + Alpine.js for tiny interactions + Chart.js for the metrics line charts. Everything self-hosted under `/vendor/` so Chrome ORB doesn't block external CDNs.
 
 ## REST surface
 
@@ -20,6 +20,13 @@ All paths under `/api/v1/`. JSON is snake_case (Jackson in `application.yml`).
 | `DELETE` | `/consumer-groups/{id}` | Delete group |
 | `POST` | `/consumer-groups/{id}/reset-offsets` | Reset offsets |
 | `GET` | `/cluster` | Cluster overview — fans out + merges self-reported roles |
+| `GET` | `/cluster/membership` | Voter/observer membership view (fans to the controller) |
+| `POST` | `/cluster/add-broker` | Join a new broker into the Raft voter set |
+| `POST` | `/cluster/decommission/{brokerId}` | Drain leadership + replicas off a broker, then remove it |
+| `GET` | `/cluster/reassignments` | In-flight partition reassignments |
+| `POST` | `/cluster/reassignments` | Start a partition reassignment |
+| `DELETE` | `/cluster/reassignments/{topic}/{partition}` | Cancel an in-flight reassignment |
+| `POST` | `/cluster/rebalance-leadership` | On-demand preferred-leader rebalance |
 | `GET` | `/nodes`, `/nodes/{id}` | Broker listing / single broker |
 | `GET` | `/raft` | Raft state (fans to all brokers) |
 | `GET` | `/raft/nodes/{id}` | Single broker's Raft state |
@@ -39,11 +46,15 @@ All paths under `/api/v1/`. JSON is snake_case (Jackson in `application.yml`).
 
 Mutating calls route to the Raft leader via `BrokerAdminClientPool.firstNonNotLeader` — a non-leader responds with `NOT_LEADER` + `suggested_leader_*` hints and the pool iterates. Reads use `firstSuccessful` for single-broker snapshots or `allSuccessful` when a merge is needed.
 
+## Operator auth
+
+Opt-in via `jbroker.admin.auth.users` (comma-separated `name:bcrypt-hash` pairs; empty = auth disabled with a startup warning, matching pre-auth deployments). When enabled, `AdminAuthFilter` gates every surface: a session from the `/login` form or an `Authorization: Bearer` token authenticates; unauthenticated API calls get `401` JSON, UI paths redirect to `/login`. `POST /api/v1/tokens` mints API tokens, `POST /api/v1/tokens/revoke` kills one. `/login`, `/logout`, static assets and `/actuator/*` stay open. Every authenticated mutation is written to the `jbroker.audit` logger as `who method path`.
+
 ## UI pages
 
 | Route | Template | What it shows |
 |---|---|---|
-| `/` | `index.html` | Overview — summary cards, throughput sparklines, topology SVG, nodes table (delegates to `ClusterController.cluster()` merge) |
+| `/` | `index.html` | Overview — summary cards, throughput sparklines, topology SVG, nodes table (delegates to `ClusterController.cluster()` merge), cluster-lifecycle actions (add-broker, decommission, cancel-reassignment, rebalance-leaders via `/ui/cluster/*`) |
 | `/topics` | `topics.html` | Topic list + create modal |
 | `/topics/{name}` | `topic-detail.html` | Per-partition state + force-compact buttons + edit-config modal + delete (delegates to `TopicsController.describeTopic` merge) |
 | `/groups` | `groups.html` | Consumer group list |

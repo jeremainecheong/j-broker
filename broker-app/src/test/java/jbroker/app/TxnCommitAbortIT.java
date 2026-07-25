@@ -117,10 +117,12 @@ class TxnCommitAbortIT {
                 }
 
                 // --- transaction 2: abort on partition 0 ---
-                var init2 = channels.txnStub(coordPort)
-                        .initTransactions(InitTransactionsRequest.newBuilder()
-                                .setTransactionalId(txnId)
-                                .build());
+                // The markers are visible in the logs the moment they are
+                // appended, but the coordinator answers CONCURRENT_TRANSACTIONS
+                // (retriable per the RPC contract) until its delivery task
+                // finishes the replication wait and logs Complete — retry
+                // like a real client would.
+                var init2 = initUntilGranted(channels, coordPort, txnId);
                 assertThat(init2.getError()).isEqualTo(ErrorCode.OK);
                 assertThat(init2.getProducerId()).isEqualTo(pid);
                 int epoch2 = init2.getProducerEpoch();
@@ -317,6 +319,26 @@ class TxnCommitAbortIT {
             }
         }
         throw new AssertionError("no live broker knows a leader for " + topic + "-" + partition);
+    }
+
+    /**
+     * InitTransactions, retrying CONCURRENT_TRANSACTIONS (the previous
+     * transaction's completion is still in flight) with a short backoff —
+     * the retry loop every real client runs.
+     */
+    private static jbroker.proto.txn.InitTransactionsResponse initUntilGranted(
+            Channels channels, int coordPort, String txnId) throws Exception {
+        long deadline = System.currentTimeMillis() + 15_000L * CI_MULT;
+        jbroker.proto.txn.InitTransactionsResponse last = null;
+        while (System.currentTimeMillis() < deadline) {
+            last = channels.txnStub(coordPort)
+                    .initTransactions(InitTransactionsRequest.newBuilder()
+                            .setTransactionalId(txnId)
+                            .build());
+            if (last.getError() != ErrorCode.CONCURRENT_TRANSACTIONS) return last;
+            Thread.sleep(100);
+        }
+        return last;
     }
 
     // --- transactional produce ---

@@ -27,7 +27,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 
 /**
- * R3.3 acceptance, REST-driven end to end: with an operator account
+ * Acceptance, REST-driven end to end: with an operator account
  * configured, anonymous API calls are 401 and anonymous UI hits redirect
  * to {@code /login}; the login form yields a session that reaches the
  * API; a bearer token issued through that session works standalone;

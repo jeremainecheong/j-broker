@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * R3.5 acceptance for the documented rolling rotation: regenerate the
+ * Acceptance for the documented rolling rotation: regenerate the
  * broker's server certificate under the same CA, restart the broker on
  * the same data directory and ports, and a client still holding its
  * pre-rotation certificate and trust bundle keeps working — including

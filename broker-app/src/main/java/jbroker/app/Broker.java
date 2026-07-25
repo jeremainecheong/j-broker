@@ -138,7 +138,27 @@ public final class Broker implements AutoCloseable {
              * reassignment cannot starve live traffic. 0 (the default) is
              * unlimited.
              */
-            long reassignmentThrottleBytesPerSec) {
+            long reassignmentThrottleBytesPerSec,
+            /**
+             * Per-principal produce byte-rate cap, per second. 0 (the
+             * default) disables produce quotas entirely.
+             */
+            long produceQuotaBytesPerSec,
+            /**
+             * Per-principal byte-rate cap on client fetches, per second.
+             * 0 (the default) disables fetch quotas entirely. Follower
+             * replication is exempt by construction — it rides the
+             * ReplicaFetch RPC, which has no quota gate — so this cap can
+             * never starve the ISR.
+             */
+            long fetchQuotaBytesPerSec,
+            /**
+             * Redis URL backing the quota counters so per-principal caps
+             * hold cluster-wide. Blank (the default) keeps counters
+             * in-memory per broker — the same convention the admin event
+             * fan-out uses for its Redis URL.
+             */
+            String quotaRedisUrl) {
 
         /**
          * Cluster defaults behind the per-topic keys: {@code
@@ -210,6 +230,60 @@ public final class Broker implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "reassignmentThrottleBytesPerSec must be ≥ 0, got " + reassignmentThrottleBytesPerSec);
             }
+            if (produceQuotaBytesPerSec < 0L) {
+                throw new IllegalArgumentException(
+                        "produceQuotaBytesPerSec must be ≥ 0, got " + produceQuotaBytesPerSec);
+            }
+            if (fetchQuotaBytesPerSec < 0L) {
+                throw new IllegalArgumentException("fetchQuotaBytesPerSec must be ≥ 0, got " + fetchQuotaBytesPerSec);
+            }
+            if (quotaRedisUrl == null) quotaRedisUrl = "";
+        }
+
+        /** Pre-quota canonical shape kept callable: quotas disabled. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis,
+                long storageHeadroomBytes,
+                TopicDefaults topicDefaults,
+                long offsetsRetentionMillis,
+                AuthMode authMode,
+                java.util.Set<String> superUsers,
+                String chaosAuthToken,
+                long reassignmentThrottleBytesPerSec) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec,
+                    0L,
+                    0L,
+                    "");
         }
 
         /** Pre-chaos-token canonical shape kept callable: open chaos port. */
@@ -274,7 +348,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     token,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /** Pre-super-users canonical shape kept callable: empty super-user set. */
@@ -336,7 +413,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     users,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /** Pre-auth-mode canonical shape kept callable: auth.mode=none. */
@@ -396,7 +476,10 @@ public final class Broker implements AutoCloseable {
                     mode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /** Default idle-group offset retention: 7 days, matching Kafka. */
@@ -490,7 +573,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /** Override the idle-group offset retention window. Non-positive disables expiry. */
@@ -514,7 +600,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -678,7 +767,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -702,7 +794,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /**
@@ -730,7 +825,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /**
@@ -785,7 +883,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /**
@@ -814,7 +915,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /**
@@ -842,7 +946,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /**
@@ -870,7 +977,10 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    reassignmentThrottleBytesPerSec);
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
         }
 
         /**
@@ -898,7 +1008,72 @@ public final class Broker implements AutoCloseable {
                     authMode,
                     superUsers,
                     chaosAuthToken,
-                    bytesPerSec);
+                    bytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl);
+        }
+
+        /**
+         * Set per-principal byte-rate quotas for the produce and client
+         * fetch paths. 0 disables that path's quota; both at 0 (the
+         * default) keeps quota enforcement off entirely.
+         */
+        public Config withQuotaBytesPerSec(long produceBytesPerSec, long fetchBytesPerSec) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec,
+                    produceBytesPerSec,
+                    fetchBytesPerSec,
+                    quotaRedisUrl);
+        }
+
+        /**
+         * Back the quota counters with Redis so per-principal caps hold
+         * across brokers. Blank (the default) keeps counters in-memory,
+         * per broker.
+         */
+        public Config withQuotaRedisUrl(String url) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    url);
         }
     }
 
@@ -920,6 +1095,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.BrokerMetrics metrics;
     private final jbroker.broker.chaos.ChaosHttpServer chaosHttp;
     private final jbroker.broker.DiskHeadroom diskHeadroom;
+    private final jbroker.broker.quota.QuotaEnforcer quotaEnforcer;
     private final jbroker.broker.controller.MembershipController membershipController;
     private final jbroker.broker.controller.DecommissionController decommissionController;
     private final jbroker.broker.controller.PreferredLeaderBalancer preferredBalancer;
@@ -944,6 +1120,7 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.BrokerMetrics metrics,
             jbroker.broker.chaos.ChaosHttpServer chaosHttp,
             jbroker.broker.DiskHeadroom diskHeadroom,
+            jbroker.broker.quota.QuotaEnforcer quotaEnforcer,
             jbroker.broker.controller.MembershipController membershipController,
             jbroker.broker.controller.DecommissionController decommissionController,
             jbroker.broker.controller.PreferredLeaderBalancer preferredBalancer,
@@ -966,6 +1143,7 @@ public final class Broker implements AutoCloseable {
         this.metrics = metrics;
         this.chaosHttp = chaosHttp;
         this.diskHeadroom = diskHeadroom;
+        this.quotaEnforcer = quotaEnforcer;
         this.membershipController = membershipController;
         this.decommissionController = decommissionController;
         this.preferredBalancer = preferredBalancer;
@@ -1177,7 +1355,14 @@ public final class Broker implements AutoCloseable {
         // --- Broker gRPC server ---
         var brokerMetrics = new jbroker.broker.BrokerMetrics();
         var fetchSessionCache = new jbroker.broker.FetchSessionCache();
-        var fetch = new FetchHandler(logManager, topicManager, fetchSessionCache, brokerMetrics);
+        // Quota admission for client produce and fetch. Both rates at
+        // zero — the default — selects the no-op enforcer, so an
+        // unconfigured broker behaves exactly as before. Replication is
+        // never charged: followers pull via the ReplicaFetch RPC, which
+        // bypasses both gated handlers.
+        var quotaEnforcer = jbroker.broker.quota.QuotaEnforcer.configured(
+                config.produceQuotaBytesPerSec(), config.fetchQuotaBytesPerSec(), config.quotaRedisUrl());
+        var fetch = new FetchHandler(logManager, topicManager, fetchSessionCache, brokerMetrics, quotaEnforcer);
         var followerTracker = new FollowerStateTracker();
         // Probes the volume backing the partition logs; ProduceHandler
         // refuses client produces while usable space is below the watermark.
@@ -1188,7 +1373,7 @@ public final class Broker implements AutoCloseable {
                 config.selfId().value(),
                 followerTracker,
                 brokerMetrics,
-                jbroker.broker.quota.QuotaEnforcer.NOOP,
+                quotaEnforcer,
                 producerState,
                 config.minInsyncReplicas(),
                 diskHeadroom,
@@ -1820,6 +2005,7 @@ public final class Broker implements AutoCloseable {
                 brokerMetrics,
                 chaosHttp,
                 diskHeadroom,
+                quotaEnforcer,
                 membershipController,
                 decommissionController,
                 preferredBalancer,
@@ -2274,6 +2460,15 @@ public final class Broker implements AutoCloseable {
         fencerTicker.shutdownNow();
         balancerTicker.shutdownNow();
         diskHeadroom.close();
+        // AutoCloseable, not the Redis type: a single-op quota config wraps
+        // the Redis enforcer in a gate, and the socket must close either way.
+        if (quotaEnforcer instanceof AutoCloseable closeableQuota) {
+            try {
+                closeableQuota.close();
+            } catch (Exception ignored) {
+                // best-effort socket release during shutdown
+            }
+        }
         brokerServer.shutdownNow();
         raftDriver.close();
         heartbeatSender.close();
@@ -2304,6 +2499,15 @@ public final class Broker implements AutoCloseable {
         }
         if (chaosHttp != null) chaosHttp.close();
         diskHeadroom.close();
+        // AutoCloseable, not the Redis type: a single-op quota config wraps
+        // the Redis enforcer in a gate, and the socket must close either way.
+        if (quotaEnforcer instanceof AutoCloseable closeableQuota) {
+            try {
+                closeableQuota.close();
+            } catch (Exception ignored) {
+                // best-effort socket release during shutdown
+            }
+        }
         // Stop heartbeat sender before its peer channels race against
         // the peer brokers shutting down their gRPC servers.
         heartbeatSender.close();

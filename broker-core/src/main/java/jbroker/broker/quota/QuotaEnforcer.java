@@ -15,6 +15,54 @@ public interface QuotaEnforcer {
 
     Decision check(String principal, Op op, long bytes);
 
+    /**
+     * The enforcer a broker's quota settings call for. A rate of zero (or
+     * less) disables that op's quota entirely — its checks always admit,
+     * exactly as {@link #NOOP} would; with both rates disabled the result
+     * IS {@link #NOOP}. A non-blank {@code redisUrl} selects the
+     * Redis-backed enforcer so per-principal caps hold cluster-wide;
+     * blank or null keeps enforcement in-process (the same convention the
+     * admin event fan-out uses for its Redis URL).
+     */
+    static QuotaEnforcer configured(long produceBytesPerSec, long fetchBytesPerSec, String redisUrl) {
+        boolean produceOn = produceBytesPerSec > 0;
+        boolean fetchOn = fetchBytesPerSec > 0;
+        if (!produceOn && !fetchOn) return NOOP;
+        QuotaEnforcer delegate = redisUrl != null && !redisUrl.isBlank()
+                ? new RedisQuotaEnforcer(redisUrl, produceBytesPerSec, fetchBytesPerSec)
+                : new InMemoryQuotaEnforcer(produceBytesPerSec, fetchBytesPerSec);
+        if (produceOn && fetchOn) return delegate;
+        return new SingleOpGate(delegate, produceOn, fetchOn);
+    }
+
+    /**
+     * Gate for the case where only one op has a configured rate: the
+     * disabled op must stay unlimited, not inherit the other op's rate,
+     * so its checks never reach the delegate (whose constructors clamp a
+     * zero rate up to 1 B/s). AutoCloseable so a Redis-backed delegate's
+     * socket is not stranded behind the gate at broker shutdown.
+     */
+    record SingleOpGate(QuotaEnforcer delegate, boolean produceOn, boolean fetchOn)
+            implements QuotaEnforcer, AutoCloseable {
+
+        @Override
+        public Decision check(String principal, Op op, long bytes) {
+            boolean enabled = op == Op.PRODUCE ? produceOn : fetchOn;
+            return enabled ? delegate.check(principal, op, bytes) : Decision.allowed();
+        }
+
+        @Override
+        public void close() {
+            if (delegate instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception ignored) {
+                    // best-effort socket release during shutdown
+                }
+            }
+        }
+    }
+
     enum Op {
         PRODUCE,
         FETCH

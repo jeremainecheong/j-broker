@@ -20,6 +20,15 @@ import jbroker.storage.LogManager;
  * {@link BrokerMetrics#incrementalFetchHits()} counter. A request that
  * carries a session id we've since evicted gets
  * {@code FETCH_SESSION_ID_NOT_FOUND} so the client can reset to 0 and retry.
+ *
+ * <p>Byte-rate quotas: when a {@link jbroker.broker.quota.QuotaEnforcer}
+ * is wired, every served fetch is charged against the principal's FETCH
+ * budget and an over-budget request is refused with retriable
+ * {@code QUOTA_VIOLATED} carrying a back-off hint — the same shape the
+ * produce deny path uses. Only client fetches pass through here:
+ * follower replication rides the separate {@code ReplicaFetch} RPC
+ * ({@link ReplicaFetchHandler}), which has no quota gate, so a fetch
+ * quota can never throttle intra-cluster replication or starve the ISR.
  */
 public final class FetchHandler {
 
@@ -27,6 +36,7 @@ public final class FetchHandler {
     private final TopicManager topicManager;
     private final FetchSessionCache sessionCache;
     private final BrokerMetrics metrics;
+    private final jbroker.broker.quota.QuotaEnforcer quotaEnforcer;
 
     /** ACL gate, wired by the broker; {@link jbroker.broker.auth.Authorizer#OPEN} keeps test harnesses open. */
     private jbroker.broker.auth.Authorizer authorizer = jbroker.broker.auth.Authorizer.OPEN;
@@ -41,10 +51,21 @@ public final class FetchHandler {
 
     public FetchHandler(
             LogManager logManager, TopicManager topicManager, FetchSessionCache sessionCache, BrokerMetrics metrics) {
+        this(logManager, topicManager, sessionCache, metrics, jbroker.broker.quota.QuotaEnforcer.NOOP);
+    }
+
+    /** Constructor with a {@link jbroker.broker.quota.QuotaEnforcer}. */
+    public FetchHandler(
+            LogManager logManager,
+            TopicManager topicManager,
+            FetchSessionCache sessionCache,
+            BrokerMetrics metrics,
+            jbroker.broker.quota.QuotaEnforcer quotaEnforcer) {
         this.logManager = logManager;
         this.topicManager = topicManager;
         this.sessionCache = sessionCache;
         this.metrics = metrics;
+        this.quotaEnforcer = quotaEnforcer == null ? jbroker.broker.quota.QuotaEnforcer.NOOP : quotaEnforcer;
     }
 
     public FetchResponse handle(FetchRequest req) {
@@ -99,13 +120,31 @@ public final class FetchHandler {
             var baos = new ByteArrayOutputStream();
             int maxBytes = req.getMaxBytes() > 0 ? req.getMaxBytes() : 64 * 1024;
             log.transferTo(req.getOffset(), maxBytes, baos);
+            byte[] bytes = baos.toByteArray();
+            // Admission is charged on the bytes actually read, not maxBytes,
+            // so empty polls stay free and the back-off hint reflects real
+            // spend. A denial returns before the session state advances —
+            // the client got nothing, so its next fetch retries in place.
+            var decision = quotaEnforcer.check(
+                    jbroker.broker.auth.AuthContext.principalOrAnonymous(),
+                    jbroker.broker.quota.QuotaEnforcer.Op.FETCH,
+                    bytes.length);
+            if (!decision.allow()) {
+                return FetchResponse.newBuilder()
+                        .setError(jbroker.proto.broker.Error.newBuilder()
+                                .setCode(ErrorCodes.QUOTA_VIOLATED)
+                                .setMessage("fetch quota exceeded: " + decision.quotaBytesPerSec() + " B/s; retry in "
+                                        + decision.throttleMillis() + "ms")
+                                .build())
+                        .setSessionId(sessionId)
+                        .build();
+            }
             long hwm = log.nextOffset();
             var tp = TopicPartition.newBuilder()
                     .setTopic(req.getTopic())
                     .setPartition(req.getPartition())
                     .build();
             sessionCache.update(sessionId, tp, req.getOffset(), /*leaderEpoch*/ 0);
-            byte[] bytes = baos.toByteArray();
             long latencyNanos = System.nanoTime() - startNs;
             metrics.recordFetch(latencyNanos, bytes.length);
             var jfr = new jbroker.broker.jfr.FetchLatencyEvent();

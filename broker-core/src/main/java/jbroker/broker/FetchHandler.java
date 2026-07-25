@@ -130,6 +130,7 @@ public final class FetchHandler {
                     jbroker.broker.quota.QuotaEnforcer.Op.FETCH,
                     bytes.length);
             if (!decision.allow()) {
+                metrics.recordQuotaDenial(jbroker.broker.quota.QuotaEnforcer.Op.FETCH, decision.throttleMillis());
                 return FetchResponse.newBuilder()
                         .setError(jbroker.proto.broker.Error.newBuilder()
                                 .setCode(ErrorCodes.QUOTA_VIOLATED)

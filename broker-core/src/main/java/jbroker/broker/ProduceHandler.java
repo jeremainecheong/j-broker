@@ -245,6 +245,7 @@ public final class ProduceHandler {
                 jbroker.broker.quota.QuotaEnforcer.Op.PRODUCE,
                 req.getBatch().size());
         if (!decision.allow()) {
+            metrics.recordQuotaDenial(jbroker.broker.quota.QuotaEnforcer.Op.PRODUCE, decision.throttleMillis());
             return err(
                     ErrorCodes.QUOTA_VIOLATED,
                     "produce quota exceeded: " + decision.quotaBytesPerSec() + " B/s; retry in "
@@ -301,6 +302,7 @@ public final class ProduceHandler {
             int floor = topic.get().effectiveMinInsyncReplicas(minInsyncReplicas);
             int isrSize = state.get().isr().size();
             if (isrSize < floor) {
+                metrics.recordNotEnoughReplicasRejection();
                 return err(
                         ErrorCodes.NOT_ENOUGH_REPLICAS,
                         "in-sync replicas " + isrSize + " below min.insync.replicas " + floor + " for " + req.getTopic()
@@ -531,18 +533,21 @@ public final class ProduceHandler {
             // so acks=all is satisfied when HWM > producedLastOffset.
             if (hwm > producedLastOffset) {
                 if (isrSize >= floor) return null;
+                metrics.recordNotEnoughReplicasRejection();
                 return err(
                         ErrorCodes.NOT_ENOUGH_REPLICAS,
                         "ISR shrank to " + isrSize + " (below min.insync.replicas " + floor + ") after append for "
                                 + topic + "-" + partition + "; not acked — retry the produce");
             }
             if (isrSize < floor) {
+                metrics.recordNotEnoughReplicasRejection();
                 return err(
                         ErrorCodes.NOT_ENOUGH_REPLICAS,
                         "in-sync replicas " + isrSize + " below min.insync.replicas " + floor + " after append for "
                                 + topic + "-" + partition + "; not acked — retry the produce");
             }
             if (System.nanoTime() >= deadline) {
+                metrics.recordNotEnoughReplicasRejection();
                 return err(
                         ErrorCodes.NOT_ENOUGH_REPLICAS,
                         "ISR did not replicate up to offset " + producedLastOffset + " within " + ACKS_ALL_TIMEOUT_MS

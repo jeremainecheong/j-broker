@@ -32,6 +32,19 @@ public class PrometheusMetricsBinder {
     private final MultiGauge leaderLeo;
     private final MultiGauge replicationLag;
 
+    /**
+     * Cluster-level, not per-broker: only the controller reports a real
+     * count (everyone else sends 0), and it is recomputed from scratch
+     * each cycle so it can never freeze at a stale value the way absent
+     * per-broker gauges do. Taking max() over the fan-out keeps a
+     * controller handover safe — the outgoing controller drops to 0 as
+     * soon as it loses the role, and if both briefly claim it the larger
+     * (alert-firing) count wins. Blind spot: a controller that misses
+     * the fan-out entirely leaves only zeros; JBrokerBrokerUnreachable
+     * covers that case.
+     */
+    private final AtomicLong offlinePartitions = new AtomicLong();
+
     public PrometheusMetricsBinder(MeterRegistry registry) {
         this.registry = registry;
         this.isrSize = MultiGauge.builder("jbroker_isr_size")
@@ -45,6 +58,9 @@ public class PrometheusMetricsBinder {
                 .register(registry);
         this.replicationLag = MultiGauge.builder("jbroker_replication_lag_records")
                 .description("Per-follower replication lag in records")
+                .register(registry);
+        Gauge.builder("jbroker_offline_partitions", offlinePartitions, AtomicLong::doubleValue)
+                .description("Partitions with no live leader, as counted by the controller")
                 .register(registry);
     }
 
@@ -71,7 +87,17 @@ public class PrometheusMetricsBinder {
             m.raftLastLogIndex.set(resp.getRaftLastLogIndex());
             m.diskUsableBytes.set(resp.getDiskUsableBytes());
             m.diskHeadroomLow.set(resp.getDiskHeadroomLow() ? 1 : 0);
+            m.notEnoughReplicasRejections.set(resp.getNotEnoughReplicasRejections());
+            m.produceQuotaDenials.set(resp.getProduceQuotaDenials());
+            m.fetchQuotaDenials.set(resp.getFetchQuotaDenials());
+            m.produceQuotaThrottleMillis.set(resp.getProduceQuotaThrottleMillis());
+            m.fetchQuotaThrottleMillis.set(resp.getFetchQuotaThrottleMillis());
         }
+        long offline = 0;
+        for (var resp : snap.responses()) {
+            offline = Math.max(offline, resp.getOfflinePartitions());
+        }
+        offlinePartitions.set(offline);
         // A broker that failed the fan-out is simply absent from the
         // snapshot, so its gauges above freeze at their last values.
         // Flip scrape_ok per known broker so that absence is visible:
@@ -184,6 +210,30 @@ public class PrometheusMetricsBinder {
                 .tag("broker_id", bid)
                 .description("1 if the broker answered the latest DescribeMetrics fan-out, 0 if it did not")
                 .register(registry);
+        Gauge.builder("jbroker_not_enough_replicas_rejections", m.notEnoughReplicasRejections, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .description("Produces rejected with NOT_ENOUGH_REPLICAS since broker start")
+                .register(registry);
+        Gauge.builder("jbroker_quota_denials", m.produceQuotaDenials, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .tag("op", "produce")
+                .description("Admissions denied with QUOTA_VIOLATED since broker start")
+                .register(registry);
+        Gauge.builder("jbroker_quota_denials", m.fetchQuotaDenials, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .tag("op", "fetch")
+                .description("Admissions denied with QUOTA_VIOLATED since broker start")
+                .register(registry);
+        Gauge.builder("jbroker_quota_throttle_millis", m.produceQuotaThrottleMillis, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .tag("op", "produce")
+                .description("Cumulative back-off milliseconds carried by quota denials")
+                .register(registry);
+        Gauge.builder("jbroker_quota_throttle_millis", m.fetchQuotaThrottleMillis, AtomicLong::doubleValue)
+                .tag("broker_id", bid)
+                .tag("op", "fetch")
+                .description("Cumulative back-off milliseconds carried by quota denials")
+                .register(registry);
         return m;
     }
 
@@ -212,5 +262,10 @@ public class PrometheusMetricsBinder {
         final AtomicLong diskUsableBytes = new AtomicLong();
         final AtomicLong diskHeadroomLow = new AtomicLong();
         final AtomicLong scrapeOk = new AtomicLong();
+        final AtomicLong notEnoughReplicasRejections = new AtomicLong();
+        final AtomicLong produceQuotaDenials = new AtomicLong();
+        final AtomicLong fetchQuotaDenials = new AtomicLong();
+        final AtomicLong produceQuotaThrottleMillis = new AtomicLong();
+        final AtomicLong fetchQuotaThrottleMillis = new AtomicLong();
     }
 }

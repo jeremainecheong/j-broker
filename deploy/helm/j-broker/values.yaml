@@ -224,14 +224,8 @@ metrics:
       # JBrokerRaftTermFlapping: metadata-Raft term increases tolerated
       # within a 10-minute window before the alert fires.
       raftTermIncreasesPer10m: 3
-    # Failure modes with NO backing metric today. No alert ships for
-    # them — better absent than one that can never fire:
-    #   - offline partitions: partition gauges are leader-reported, so
-    #     a leaderless partition silently vanishes from the exposition;
-    #     needs a controller-side offline-partitions gauge.
-    #   - min-ISR produce rejections: NOT_ENOUGH_REPLICAS rejections go
-    #     back to clients but are never counted; needs a rejection
-    #     counter in DescribeMetrics.
+    # Every failure mode this ledger has declared now has a backing
+    # metric and an alert above; nothing ships alert-less by design.
 
 # Optional bundled Redis for quota enforcement + SSE pub/sub fan-out.
 # Off by default — a single admin replica serves SSE from its in-process

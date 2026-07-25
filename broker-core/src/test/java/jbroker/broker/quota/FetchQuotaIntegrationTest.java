@@ -89,6 +89,22 @@ final class FetchQuotaIntegrationTest {
     }
 
     @Test
+    void overQuotaFetchCountsDenialAndThrottleTime() {
+        var enforcer = new InMemoryQuotaEnforcer(10_000_000, 64);
+        var metrics = new jbroker.broker.BrokerMetrics();
+        var handler = new FetchHandler(logManager, topicManager, new FetchSessionCache(), metrics, enforcer);
+
+        var resp = handler.handle(fetchRequest());
+        assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.QUOTA_VIOLATED);
+        // The denial and its back-off hint land on the fetch-side
+        // counters; the produce side stays untouched.
+        assertThat(metrics.fetchQuotaDenials()).isEqualTo(1L);
+        assertThat(metrics.fetchQuotaThrottleMillis()).isPositive();
+        assertThat(metrics.produceQuotaDenials()).isZero();
+        assertThat(metrics.produceQuotaThrottleMillis()).isZero();
+    }
+
+    @Test
     void belowQuotaFetchPassesThrough() {
         var enforcer = new InMemoryQuotaEnforcer(10_000_000, 10_000_000);
         var handler = new FetchHandler(

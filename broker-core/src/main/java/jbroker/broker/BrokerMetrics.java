@@ -33,6 +33,58 @@ public final class BrokerMetrics {
         return incrementalFetchHits.sum();
     }
 
+    // ---- Rejection + quota counters ----
+
+    /**
+     * NOT_ENOUGH_REPLICAS produce rejections: the acks=all pre-append
+     * floor check and every post-append replication-wait failure alike.
+     * Counted per response sent, so a client retry that fails again
+     * counts again — the counter tracks min-ISR pressure, not unique
+     * batches.
+     */
+    private final LongAdder notEnoughReplicasRejections = new LongAdder();
+
+    private final LongAdder produceQuotaDenials = new LongAdder();
+    private final LongAdder fetchQuotaDenials = new LongAdder();
+    private final LongAdder produceQuotaThrottleMillis = new LongAdder();
+    private final LongAdder fetchQuotaThrottleMillis = new LongAdder();
+
+    public void recordNotEnoughReplicasRejection() {
+        notEnoughReplicasRejections.increment();
+    }
+
+    public long notEnoughReplicasRejections() {
+        return notEnoughReplicasRejections.sum();
+    }
+
+    /**
+     * One QUOTA_VIOLATED admission denial plus the back-off hint it
+     * carried, attributed to the denied op. Throttle time accumulates
+     * the milliseconds clients were told to wait, so its growth rate
+     * approximates how throttled the principal population is.
+     */
+    public void recordQuotaDenial(jbroker.broker.quota.QuotaEnforcer.Op op, long throttleMillis) {
+        boolean produce = op == jbroker.broker.quota.QuotaEnforcer.Op.PRODUCE;
+        (produce ? produceQuotaDenials : fetchQuotaDenials).increment();
+        (produce ? produceQuotaThrottleMillis : fetchQuotaThrottleMillis).add(Math.max(0L, throttleMillis));
+    }
+
+    public long produceQuotaDenials() {
+        return produceQuotaDenials.sum();
+    }
+
+    public long fetchQuotaDenials() {
+        return fetchQuotaDenials.sum();
+    }
+
+    public long produceQuotaThrottleMillis() {
+        return produceQuotaThrottleMillis.sum();
+    }
+
+    public long fetchQuotaThrottleMillis() {
+        return fetchQuotaThrottleMillis.sum();
+    }
+
     // ---- Produce / fetch latency + throughput ----
 
     private final Reservoir produceLatency = new Reservoir(1024);

@@ -145,7 +145,8 @@ class ProduceHandlerAcksAllTest {
         tm.onPartitionChange("t", 0, 1, List.of(1), List.of(1, 2, 3), 0, 0);
 
         try (var lmgr = lm(dir)) {
-            var handler = new ProduceHandler(lmgr, tm, 1, new FollowerStateTracker());
+            var metrics = new BrokerMetrics();
+            var handler = new ProduceHandler(lmgr, tm, 1, new FollowerStateTracker(), metrics);
 
             long start = System.nanoTime();
             var resp = handler.handle(ProduceRequest.newBuilder()
@@ -163,6 +164,9 @@ class ProduceHandlerAcksAllTest {
             // Rejected pre-append: fast, and the log is untouched.
             assertThat(elapsedMs).isLessThan(1_000L);
             assertThat(lmgr.logFor("t", 0).nextOffset()).isZero();
+            // The rejection is observable: the pre-append floor check is
+            // one of the NOT_ENOUGH_REPLICAS counter's increment sites.
+            assertThat(metrics.notEnoughReplicasRejections()).isEqualTo(1L);
         }
     }
 
@@ -176,7 +180,8 @@ class ProduceHandlerAcksAllTest {
             var tracker = new FollowerStateTracker();
             tracker.record("t", 0, 2, 0L, 1_000L);
 
-            var handler = new ProduceHandler(lmgr, tm, 1, tracker);
+            var metrics = new BrokerMetrics();
+            var handler = new ProduceHandler(lmgr, tm, 1, tracker, metrics);
 
             // Produce blocks: follower 2 never advances past LEO 0.
             var future =
@@ -199,6 +204,8 @@ class ProduceHandlerAcksAllTest {
             var resp = future.get(3, TimeUnit.SECONDS);
             assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NOT_ENOUGH_REPLICAS);
             assertThat(resp.getError().getMessage()).contains("min.insync.replicas");
+            // Post-append replication-wait failures count too.
+            assertThat(metrics.notEnoughReplicasRejections()).isEqualTo(1L);
         }
     }
 

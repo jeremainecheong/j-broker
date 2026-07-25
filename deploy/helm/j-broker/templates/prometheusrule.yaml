@@ -131,6 +131,44 @@ spec:
               STORAGE_FULL. Free space — tighten retention, delete topics, or grow the
               volume — and the broker recovers on its own once usable space clears the
               watermark. jbroker_disk_usable_bytes has the remaining bytes.
+
+        # Partitions with no live leader at all (leader <= 0 in the
+        # replicated partition table — every ISR member died). Cluster-
+        # level gauge with no broker_id label: only the controller
+        # reports a non-zero count and the admin binder takes the max
+        # across the DescribeMetrics fan-out.
+        - alert: JBrokerOfflinePartitions
+          expr: jbroker_offline_partitions{namespace="{{ $ns }}"} > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: '{{ "{{ $value }}" }} partition(s) have no live leader'
+            description: >-
+              The controller has counted {{ "{{ $value }}" }} partition(s) whose entire ISR
+              is down for 5 minutes. Those partitions accept no produces and serve no
+              fetches. Bring back any preserved-ISR member pod — recovery is automatic
+              once one heartbeats again — and never wipe a returning replica's data dir:
+              the preserved ISR is what guarantees no acked record is lost.
+
+        # acks=all produces failing the min.insync.replicas floor. The
+        # metric is a monotonic per-broker counter mirrored as a gauge,
+        # so growth is detected with delta() rather than rate(), same as
+        # JBrokerRaftTermFlapping above.
+        - alert: JBrokerMinIsrRejections
+          expr: delta(jbroker_not_enough_replicas_rejections{namespace="{{ $ns }}"}[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Broker {{ "{{ $labels.broker_id }}" }} is rejecting produces below the min-ISR floor'
+            description: >-
+              Broker {{ "{{ $labels.broker_id }}" }} keeps returning NOT_ENOUGH_REPLICAS to
+              acks=all produces — its ISR for one or more partitions has been below
+              min.insync.replicas for at least 5 minutes while producers retry. Check the
+              out-of-sync follower pods (JBrokerUnderReplicatedPartitions names the
+              partitions); one more replica loss makes those partitions go offline
+              entirely.
 {{- if .Values.metrics.serviceMonitor.enabled }}
 
         # Only meaningful with the chart's ServiceMonitor: the job label

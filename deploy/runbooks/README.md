@@ -175,14 +175,17 @@ Every ISR member of a partition is down; the controller has set
   the leader badge and "HWM / LEO unavailable — partition has no live
   leader". The ISR list is **preserved** — it records which replicas hold
   every committed record.
-- **No alert, and no metric.** Partition gauges (`jbroker_isr_size`,
-  `jbroker_hwm`, `jbroker_leader_log_end_offset`) are leader-reported, so
-  a leaderless partition silently disappears from the exposition — its
-  series go stale rather than going to zero. The ledger in `values.yaml`
-  calls this out; a controller-side offline-partitions gauge is the
-  missing metric. Until then the alert you will actually see is whatever
-  preceded the outage (`JBrokerUnderReplicatedPartitions`, broker-down
-  symptoms from runbook 1).
+- **`JBrokerOfflinePartitions` fires (critical, >0 for 5m)** on the
+  `jbroker_offline_partitions` gauge — the controller's count of
+  partitions with `leader <= 0`, reported by it alone so the exposition
+  has one authoritative source. This gauge exists precisely because the
+  per-partition gauges (`jbroker_isr_size`, `jbroker_hwm`,
+  `jbroker_leader_log_end_offset`) are leader-reported: a leaderless
+  partition disappears from those series (they go stale, not to zero),
+  so they can never alert on this state themselves. Expect
+  `JBrokerMinIsrRejections` and `JBrokerUnderReplicatedPartitions` (and
+  broker-down symptoms from runbook 1) to have fired first as the ISR
+  drained.
 
 ### Diagnosis
 
@@ -213,9 +216,11 @@ replica cannot be promoted safely.
   last replica dies, instead of after.
 - Act on `JBrokerUnderReplicatedPartitions` and `JBrokerReplicationLagHigh`
   — an offline partition is almost always preceded by a shrinking ISR.
-- Note the ledger's second gap: `NOT_ENOUGH_REPLICAS` produce rejections
-  are returned to clients but never counted, so min-ISR pressure has no
-  metric either.
+- Min-ISR pressure is measurable: `jbroker_not_enough_replicas_rejections`
+  counts every `NOT_ENOUGH_REPLICAS` produce rejection per broker, and
+  `JBrokerMinIsrRejections` (warning) fires while the counter is rising —
+  the produce path is already failing fast, so act before the last
+  replica goes too.
 
 ---
 

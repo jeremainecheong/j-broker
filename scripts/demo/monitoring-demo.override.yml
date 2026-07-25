@@ -1,0 +1,12 @@
+# Compose overlay used by scripts/demo/full-demo.sh when DEMO_MONITORING=1.
+#
+# scripts/monitoring/prometheus.yml targets an admin-app running straight on
+# the host (host.docker.internal:9090). The demo runs the admin-app inside
+# the compose stack on host port 15672 instead, so Prometheus needs a config
+# that points there. Volumes merge by container path, so this mount replaces
+# the one in docker-compose.monitoring.yml. Relative paths resolve against
+# the first -f file's directory (the repo root).
+services:
+  prometheus:
+    volumes:
+      - ./scripts/demo/prometheus-demo.yml:/etc/prometheus/prometheus.yml:ro

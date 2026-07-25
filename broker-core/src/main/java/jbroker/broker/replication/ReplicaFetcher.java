@@ -171,7 +171,10 @@ public final class ReplicaFetcher {
             // Audit-finding #1 — every applied idempotent batch advances our
             // local ProducerStateManager so a future takeover as leader
             // already has the dedup state needed to recognize retries.
-            if (producerState != null && decoded.producerId() > 0) {
+            // Control batches are excluded: markers carry the producer id
+            // with baseSequence = -1 and never consume a sequence slot, so
+            // observing one would drag the dedup window backwards.
+            if (producerState != null && decoded.producerId() > 0 && !decoded.control()) {
                 var key = new ProducerStateManager.DedupKey(
                         topic, partition, decoded.producerId(), (int) decoded.producerEpoch());
                 producerState.observeAppend(

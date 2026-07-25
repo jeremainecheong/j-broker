@@ -49,7 +49,13 @@ public final class ProducerStateRecovery {
             var batches = partitionLog.read(offset, READ_CHUNK_BYTES);
             if (batches.isEmpty()) break; // truncated/compacted gap we cannot advance past
             for (var b : batches) {
-                if (b.producerId() > 0) {
+                // Control batches (transaction markers) carry the producer id
+                // with baseSequence = -1 — they never consume an idempotent
+                // sequence slot, so observing them would corrupt the dedup
+                // window (a marker seen before the producer's next data batch
+                // would make the expected-next-sequence computation start
+                // from -1). Skip them; only data batches advance dedup state.
+                if (b.producerId() > 0 && !b.control()) {
                     producerState.observeAppend(
                             new ProducerStateManager.DedupKey(topic, partition, b.producerId(), b.producerEpoch()),
                             b.baseSequence(),

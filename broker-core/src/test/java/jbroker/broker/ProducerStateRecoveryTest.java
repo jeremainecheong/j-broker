@@ -115,6 +115,41 @@ class ProducerStateRecoveryTest {
         }
     }
 
+    @Test
+    void controlBatchesAreSkippedWhenRebuildingDedupState(@TempDir Path dir) throws Exception {
+        try (var lm = lm(dir)) {
+            var log = lm.logFor("orders", 0);
+            // Transactional data batch at epoch 0, then an abort marker at
+            // the bumped epoch 1 — the shape an init-with-ongoing abort
+            // leaves in a partition log. The marker carries the producer id
+            // with baseSequence -1.
+            log.append(
+                    List.of(new Record(0, 0L, null, "v0".getBytes())),
+                    1L,
+                    PRODUCER_ID,
+                    (short) 0,
+                    /*baseSequence*/ 0,
+                    /*partitionLeaderEpoch*/ 0,
+                    jbroker.storage.Compression.NONE,
+                    /*transactional*/ true);
+            log.appendControl(
+                    PRODUCER_ID,
+                    (short) 1,
+                    new jbroker.storage.ControlRecord(jbroker.storage.ControlRecord.Type.ABORT, 0),
+                    2L,
+                    /*partitionLeaderEpoch*/ 0);
+
+            var state = new ProducerStateManager();
+            int observed = ProducerStateRecovery.rebuild(lm, "orders", 0, state);
+            assertThat(observed).as("only the data batch is dedup-relevant").isEqualTo(1);
+            assertThat(state.get(new ProducerStateManager.DedupKey("orders", 0, PRODUCER_ID, 0)))
+                    .isPresent();
+            assertThat(state.get(new ProducerStateManager.DedupKey("orders", 0, PRODUCER_ID, 1)))
+                    .as("a marker must never seed dedup state for its epoch")
+                    .isEmpty();
+        }
+    }
+
     // --- helpers (mirrors ProduceHandlerDedupTest) ---
 
     private static LogManager lm(Path dir) throws Exception {

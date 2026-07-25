@@ -28,11 +28,14 @@ import org.slf4j.LoggerFactory;
  *       flushing its queue; refused with
  *       {@link ErrorCodes#INVALID_TXN_STATE}.</li>
  *   <li><b>Idempotent redelivery</b> — a retry identical to the last
- *       applied marker re-runs only the replication wait instead of
- *       appending a second control batch, so per-partition retries and
- *       coordinator-failover redelivery don't pile up duplicates. (The
- *       memory is per-process; after a restart one duplicate may land,
- *       which the storage layer treats as a no-op.)</li>
+ *       applied marker that is STILL the log's final entry re-runs only
+ *       the replication wait instead of appending a second control batch,
+ *       so per-partition retries and coordinator-failover redelivery
+ *       don't pile up duplicates. Anything appended since — in
+ *       particular the producer's next transaction, whose marker under a
+ *       stable epoch is byte-shape-identical — forces a fresh control
+ *       batch. (The memory is per-process; after a restart one duplicate
+ *       may land, which the storage layer treats as a no-op.)</li>
  *   <li><b>Durability</b> — the append is confirmed only after the
  *       {@link IsrReplicationWait acks=all wait}: a marker confirmed to
  *       the coordinator but lost with its leader would leave the
@@ -123,10 +126,17 @@ public final class TxnMarkerWriter {
         if (last != null
                 && last.producerEpoch() == producerEpoch
                 && last.commit() == commit
-                && last.coordinatorEpoch() == coordinatorEpoch) {
+                && last.coordinatorEpoch() == coordinatorEpoch
+                && isStillLastAppend(topic, partition, last.offset())) {
             // Duplicate delivery (per-partition retry or failover
             // redelivery): the marker bytes are already in the log — only
-            // the replication wait may still be outstanding.
+            // the replication wait may still be outstanding. Shape equality
+            // alone is NOT enough: consecutive transactions under a stable
+            // producer epoch and coordinator produce identical-shaped
+            // markers, and swallowing the next transaction's marker would
+            // leave it undecided forever (LSO wedge). Only a marker that is
+            // still the log's last entry — nothing appended since — is a
+            // true redelivery.
             offset = last.offset();
         } else {
             try {
@@ -173,6 +183,17 @@ public final class TxnMarkerWriter {
             return replicated ? ErrorCodes.NONE : ErrorCodes.NOT_ENOUGH_REPLICAS;
         } catch (IOException e) {
             return ErrorCodes.IO_ERROR;
+        }
+    }
+
+    /** True when {@code offset} is the log's final entry — no data or marker has landed since. */
+    private boolean isStillLastAppend(String topic, int partition, long offset) {
+        try {
+            return logManager.logFor(topic, partition).nextOffset() == offset + 1;
+        } catch (IOException e) {
+            // Can't tell — append fresh; a duplicate marker is a storage
+            // no-op, a swallowed one is not.
+            return false;
         }
     }
 }

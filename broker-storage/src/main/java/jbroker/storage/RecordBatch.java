@@ -20,6 +20,17 @@ import java.util.zip.CRC32C;
  * byte-identically without decompression. {@link #decode} decompresses
  * transparently and rejects codec ids this binary does not implement.
  *
+ * <p>Bit 3 ({@link #ATTR_CONTROL}) marks a control batch: exactly one
+ * record, never compressed, whose value is a {@link ControlRecord}
+ * transaction marker rather than application data — callers must check
+ * {@link Parsed#control()} before treating records as payload. Bit 4
+ * ({@link #ATTR_TRANSACTIONAL}) marks a data batch as part of the writing
+ * producer's open transaction. Two separate bits because neither implies
+ * the other: {@code producerId >= 0} alone already means idempotent (not
+ * necessarily transactional), and a control batch is not itself
+ * transactional data. Both flags live in the plaintext header so scans and
+ * replication classify batches without decoding records.
+ *
  * <p>Wire format (big-endian):
  *
  * <pre>
@@ -28,7 +39,8 @@ import java.util.zip.CRC32C;
  *  [12..15] partitionLeaderEpoch            int32
  *  [16]     magic (= 2)                     int8
  *  [17..20] crc (CRC-32C of bytes [21..])   uint32
- *  [21..22] attributes (low 3 bits: codec)  int16
+ *  [21..22] attributes                      int16
+ *           (bits 0-2: codec, bit 3: control, bit 4: transactional)
  *  [23..26] lastOffsetDelta                 int32
  *  [27..34] firstTimestamp                  int64
  *  [35..42] maxTimestamp                    int64
@@ -60,7 +72,28 @@ public final class RecordBatch {
     public static final byte MAGIC_V2 = 2;
     public static final int BATCH_OVERHEAD = 61; // bytes before records[]
     private static final int CRC_OFFSET = 17;
-    private static final int ATTRIBUTES_OFFSET = 21;
+
+    /** Byte offset of the attributes field — plaintext, peekable without decode. */
+    public static final int ATTRIBUTES_OFFSET = 21;
+
+    /** Byte offset of the producerId field — plaintext, peekable without decode. */
+    public static final int PRODUCER_ID_OFFSET = 43;
+
+    /** Attributes bit marking a control batch (transaction marker, not application data). */
+    public static final short ATTR_CONTROL = 0x08;
+
+    /** Attributes bit marking a data batch written inside an open transaction. */
+    public static final short ATTR_TRANSACTIONAL = 0x10;
+
+    /** True when {@code attributes} carries the control bit. */
+    public static boolean isControl(short attributes) {
+        return (attributes & ATTR_CONTROL) != 0;
+    }
+
+    /** True when {@code attributes} carries the transactional bit. */
+    public static boolean isTransactional(short attributes) {
+        return (attributes & ATTR_TRANSACTIONAL) != 0;
+    }
 
     private RecordBatch() {}
 
@@ -68,6 +101,12 @@ public final class RecordBatch {
      * Parsed batch returned by {@link #decode}. {@code records} are always
      * decompressed; {@code codec} reports how the batch was stored so
      * re-encoding paths (produce append, compaction) can preserve it.
+     *
+     * <p>{@code control} is the application-facing distinction: a control
+     * batch's single record is a transaction marker, not payload — callers
+     * that hand records to applications must skip control batches and may
+     * read the marker via {@link #controlRecord()}. {@code transactional}
+     * reports the transactional data bit as stored.
      */
     public record Parsed(
             long baseOffset,
@@ -80,6 +119,8 @@ public final class RecordBatch {
             short producerEpoch,
             int baseSequence,
             Compression codec,
+            boolean transactional,
+            boolean control,
             List<Record> records) {
 
         public long lastOffset() {
@@ -88,6 +129,17 @@ public final class RecordBatch {
 
         public int totalBytes() {
             return 12 + batchLength; // baseOffset(8) + batchLength(4) + rest
+        }
+
+        /**
+         * The transaction marker of a control batch.
+         *
+         * @throws IllegalStateException if this is not a control batch
+         * @throws IllegalArgumentException if the marker value is malformed
+         */
+        public ControlRecord controlRecord() {
+            if (!control) throw new IllegalStateException("not a control batch");
+            return ControlRecord.decode(records.get(0).value());
         }
     }
 
@@ -136,7 +188,43 @@ public final class RecordBatch {
             int baseSequence,
             List<Record> records,
             Compression codec) {
+        return encode(
+                out,
+                baseOffset,
+                partitionLeaderEpoch,
+                firstTimestamp,
+                maxTimestamp,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                records,
+                codec,
+                /*transactional*/ false);
+    }
+
+    /**
+     * Encode a data batch, additionally stamping {@link #ATTR_TRANSACTIONAL}
+     * when {@code transactional} is set. A transactional batch requires
+     * producer identity ({@code producerId >= 0}) — without it no control
+     * batch could ever close the transaction.
+     */
+    public static int encode(
+            ByteBuffer out,
+            long baseOffset,
+            int partitionLeaderEpoch,
+            long firstTimestamp,
+            long maxTimestamp,
+            long producerId,
+            short producerEpoch,
+            int baseSequence,
+            List<Record> records,
+            Compression codec,
+            boolean transactional) {
         if (records.isEmpty()) throw new IllegalArgumentException("records must be non-empty");
+        if (transactional && producerId < 0) {
+            throw new IllegalArgumentException("transactional batch requires producerId >= 0, got " + producerId);
+        }
+        short flagBits = transactional ? ATTR_TRANSACTIONAL : 0;
         int lastOffsetDelta = records.get(records.size() - 1).offsetDelta();
         if (codec != Compression.NONE) {
             byte[] raw = encodeRecordsSection(records);
@@ -151,7 +239,7 @@ public final class RecordBatch {
                         producerId,
                         producerEpoch,
                         baseSequence,
-                        (short) codec.id(),
+                        (short) (codec.id() | flagBits),
                         lastOffsetDelta,
                         records.size(),
                         o -> o.put(compressed));
@@ -167,12 +255,45 @@ public final class RecordBatch {
                 producerId,
                 producerEpoch,
                 baseSequence,
-                (short) 0,
+                flagBits,
                 lastOffsetDelta,
                 records.size(),
                 o -> {
                     for (var r : records) encodeRecord(o, r);
                 });
+    }
+
+    /**
+     * Encode a control batch: {@link #ATTR_CONTROL} set, exactly one record
+     * (null key, {@code marker} as value, offsetDelta 0), never compressed.
+     * The batch consumes one offset. {@code baseSequence} is stored as -1 —
+     * markers do not participate in idempotent-producer sequencing.
+     */
+    public static int encodeControl(
+            ByteBuffer out,
+            long baseOffset,
+            int partitionLeaderEpoch,
+            long timestamp,
+            long producerId,
+            short producerEpoch,
+            ControlRecord marker) {
+        if (producerId < 0) {
+            throw new IllegalArgumentException("control batch requires producerId >= 0, got " + producerId);
+        }
+        var record = new Record(0, 0L, null, marker.encode());
+        return writeBatch(
+                out,
+                baseOffset,
+                partitionLeaderEpoch,
+                timestamp,
+                timestamp,
+                producerId,
+                producerEpoch,
+                /*baseSequence*/ -1,
+                ATTR_CONTROL,
+                /*lastOffsetDelta*/ 0,
+                /*numRecords*/ 1,
+                o -> encodeRecord(o, record));
     }
 
     private static int writeBatch(
@@ -335,8 +456,10 @@ public final class RecordBatch {
      * Decode a batch from {@code in}, starting at its current position. On
      * return, the buffer's position is advanced to the byte after this batch.
      *
-     * @throws IllegalArgumentException if CRC fails, magic is wrong, or the
-     *         buffer runs short.
+     * @throws IllegalArgumentException if CRC fails, magic is wrong, the
+     *         buffer runs short, or a control batch violates its invariants
+     *         (compressed, or record count != 1). Recovery scans treat any
+     *         of these as corruption and truncate at the batch boundary.
      */
     public static Parsed decode(ByteBuffer in) {
         in.order(ByteOrder.BIG_ENDIAN);
@@ -376,9 +499,18 @@ public final class RecordBatch {
         short attributes = in.getShort();
         // Low bits name the codec; a reserved/unknown id throws here, after
         // the CRC proved the batch intact — a clean "this binary can't read
-        // that codec" error, never garbage records. Bits above the codec
-        // mask (transactional etc.) stay ignored.
+        // that codec" error, never garbage records. Bits 3/4 are the
+        // control/transactional flags; bits above them stay ignored.
         var codec = Compression.fromAttributes(attributes);
+        boolean control = isControl(attributes);
+        boolean transactional = isTransactional(attributes);
+        if (control && codec != Compression.NONE) {
+            // Control batches are written uncompressed by construction; a
+            // CRC-valid batch claiming both was written by nothing this
+            // format defines — refuse rather than decompress a marker.
+            throw new IllegalArgumentException("control batch must not be compressed: attributes 0x"
+                    + Integer.toHexString(attributes & 0xFFFF) + " at batch start=" + start);
+        }
         int lastOffsetDelta = in.getInt();
         long firstTimestamp = in.getLong();
         long maxTimestamp = in.getLong();
@@ -386,6 +518,10 @@ public final class RecordBatch {
         short producerEpoch = in.getShort();
         int baseSequence = in.getInt();
         int numRecords = in.getInt();
+        if (control && numRecords != 1) {
+            throw new IllegalArgumentException(
+                    "control batch must carry exactly one record, found " + numRecords + " at batch start=" + start);
+        }
 
         ByteBuffer rec = in;
         if (codec != Compression.NONE) {
@@ -451,6 +587,8 @@ public final class RecordBatch {
                 producerEpoch,
                 baseSequence,
                 codec,
+                transactional,
+                control,
                 records);
     }
 }

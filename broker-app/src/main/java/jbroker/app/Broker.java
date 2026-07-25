@@ -1855,16 +1855,20 @@ public final class Broker implements AutoCloseable {
                 ConsumerOffsetsCreator.fromMetadataProposer(proposer),
                 () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
                 config.consumerOffsetsPartitions());
-        // __transaction_state rides the same creator machinery. Its
-        // partition count is a protocol constant (transactional_id
-        // routing), not a config knob.
+        // __transaction_state rides the same creator machinery AND the
+        // same partition-count knob: both coordinator topics share the
+        // routing-stability caveat (the count is fixed at first boot) and
+        // the same scale — production configs default to the canonical 50
+        // ({@link jbroker.broker.txn.TxnStateTopic#PARTITION_COUNT}),
+        // test fixtures shrink both to 1 so 3-broker ITs don't pay a
+        // 100-replica-fetcher tax.
         var txnStateCreator = new ConsumerOffsetsCreator(
                 topicManager,
                 brokerRegistry::knownBrokerIds,
                 config.selfId().value(),
                 ConsumerOffsetsCreator.fromMetadataProposer(proposer),
                 () -> raftDriver.role() == jbroker.raft.core.Role.LEADER,
-                jbroker.broker.txn.TxnStateTopic.PARTITION_COUNT,
+                config.consumerOffsetsPartitions(),
                 jbroker.broker.txn.TxnStateTopic.NAME);
         // Offset expiry (R2.7): each coordinator drops idle groups' commits
         // once their newest commit outlives the retention window. Runs

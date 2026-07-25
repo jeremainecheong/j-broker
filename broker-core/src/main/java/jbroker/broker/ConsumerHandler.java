@@ -558,7 +558,7 @@ public final class ConsumerHandler {
                             pid,
                             (short) epoch,
                             /*baseSequence*/ -1,
-                            /*partitionLeaderEpoch*/ 0,
+                            leaderEpochOf(coordinatorPartition),
                             jbroker.storage.Compression.NONE,
                             /*transactional*/ true);
         } catch (IOException e) {
@@ -703,7 +703,7 @@ public final class ConsumerHandler {
         RecordBatch.encode(
                 buf,
                 baseOffset,
-                /*partitionLeaderEpoch*/ 0,
+                leaderEpochOf(partition),
                 /*firstTimestamp*/ nowMillis,
                 /*maxTimestamp*/ nowMillis,
                 /*producerId*/ -1L,
@@ -714,6 +714,21 @@ public final class ConsumerHandler {
         byte[] bytes = new byte[buf.remaining()];
         buf.get(bytes);
         log.appendRaw(bytes, baseOffset);
+    }
+
+    /**
+     * The current leader epoch of a {@code __consumer_offsets} partition,
+     * stamped into every batch appended there. The epoch lineage of a log
+     * must be non-decreasing — followers reconcile divergent tails from
+     * the batch headers — and transaction markers already stamp the true
+     * epoch, so an offset batch stamped 0 after a post-failover marker
+     * would fence the follower into a truncate/re-append livelock.
+     */
+    private int leaderEpochOf(int partition) {
+        return topicManager
+                .partitionState(ConsumerOffsetsTopic.NAME, partition)
+                .map(ps -> ps.leaderEpoch())
+                .orElse(0);
     }
 
     /**

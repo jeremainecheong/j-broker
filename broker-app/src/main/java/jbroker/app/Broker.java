@@ -2582,10 +2582,18 @@ public final class Broker implements AutoCloseable {
         var buf = java.nio.ByteBuffer.allocate(jbroker.storage.RecordBatch.estimatedSize(records));
         long base = log.nextOffset();
         long now = System.currentTimeMillis();
+        // Stamp the current leader epoch: the partition's epoch lineage
+        // must stay non-decreasing (transaction markers stamp the true
+        // epoch, and a 0-stamped batch after a post-failover marker would
+        // livelock follower reconciliation).
+        int leaderEpoch = topicManager
+                .partitionState(jbroker.broker.ConsumerOffsetsTopic.NAME, partition)
+                .map(ps -> ps.leaderEpoch())
+                .orElse(0);
         jbroker.storage.RecordBatch.encode(
                 buf,
-                base, /*partitionLeaderEpoch*/
-                0,
+                base,
+                leaderEpoch,
                 now,
                 now, /*producerId*/
                 -1L, /*producerEpoch*/

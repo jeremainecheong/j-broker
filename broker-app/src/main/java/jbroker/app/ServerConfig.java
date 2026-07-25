@@ -48,6 +48,13 @@ final class ServerConfig {
                     "",
                     "Client-facing address overlay, `ID=HOST:PORT,...`. Ids absent from the overlay "
                             + "advertise their bind address."),
+            new Key(
+                    "rack",
+                    "--rack",
+                    "",
+                    "Rack / availability-zone label for this broker (e.g. the "
+                            + "`topology.kubernetes.io/zone` value). When brokers span two or more "
+                            + "racks, topic placement spreads replicas across them. Empty = no rack."),
             new Key("chaos.port", "--chaos-port", "-1", "Cooperative chaos HTTP port. -1 disables."),
             new Key(
                     "chaos.enabled",

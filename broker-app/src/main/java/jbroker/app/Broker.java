@@ -158,7 +158,15 @@ public final class Broker implements AutoCloseable {
              * in-memory per broker — the same convention the admin event
              * fan-out uses for its Redis URL.
              */
-            String quotaRedisUrl) {
+            String quotaRedisUrl,
+            /**
+             * Rack / availability-zone label this broker declares for
+             * itself (e.g. the K8s {@code topology.kubernetes.io/zone}
+             * value). Peers learn it from heartbeats; topic placement and
+             * drain planning spread replicas across the racks they see.
+             * Blank (the default) = no rack.
+             */
+            String rack) {
 
         /**
          * Cluster defaults behind the per-topic keys: {@code
@@ -238,6 +246,85 @@ public final class Broker implements AutoCloseable {
                 throw new IllegalArgumentException("fetchQuotaBytesPerSec must be ≥ 0, got " + fetchQuotaBytesPerSec);
             }
             if (quotaRedisUrl == null) quotaRedisUrl = "";
+            if (rack == null) rack = "";
+        }
+
+        /** Pre-rack canonical shape kept callable: no rack declared. */
+        public Config(
+                NodeId selfId,
+                Path dataDir,
+                int raftPort,
+                int brokerPort,
+                List<VoterAddress> voters,
+                int consumerOffsetsPartitions,
+                int chaosPort,
+                long balancerTickMillis,
+                long balancerStabilityMillis,
+                TlsConfig tls,
+                int minInsyncReplicas,
+                long logCleanerIntervalMillis,
+                long storageHeadroomBytes,
+                TopicDefaults topicDefaults,
+                long offsetsRetentionMillis,
+                AuthMode authMode,
+                java.util.Set<String> superUsers,
+                String chaosAuthToken,
+                long reassignmentThrottleBytesPerSec,
+                long produceQuotaBytesPerSec,
+                long fetchQuotaBytesPerSec,
+                String quotaRedisUrl) {
+            this(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl,
+                    "");
+        }
+
+        /** Declare the rack / availability zone this broker runs in. Blank = none. */
+        public Config withRack(String newRack) {
+            return new Config(
+                    selfId,
+                    dataDir,
+                    raftPort,
+                    brokerPort,
+                    voters,
+                    consumerOffsetsPartitions,
+                    chaosPort,
+                    balancerTickMillis,
+                    balancerStabilityMillis,
+                    tls,
+                    minInsyncReplicas,
+                    logCleanerIntervalMillis,
+                    storageHeadroomBytes,
+                    topicDefaults,
+                    offsetsRetentionMillis,
+                    authMode,
+                    superUsers,
+                    chaosAuthToken,
+                    reassignmentThrottleBytesPerSec,
+                    produceQuotaBytesPerSec,
+                    fetchQuotaBytesPerSec,
+                    quotaRedisUrl,
+                    newRack);
         }
 
         /** Pre-quota canonical shape kept callable: quotas disabled. */
@@ -351,7 +438,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /** Pre-super-users canonical shape kept callable: empty super-user set. */
@@ -416,7 +504,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /** Pre-auth-mode canonical shape kept callable: auth.mode=none. */
@@ -479,7 +568,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /** Default idle-group offset retention: 7 days, matching Kafka. */
@@ -576,7 +666,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /** Override the idle-group offset retention window. Non-positive disables expiry. */
@@ -603,7 +694,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /** Pre-headroom canonical shape kept callable: 1 GiB watermark. */
@@ -770,7 +862,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /** Set or replace the TLS bundle on an existing Config. */
@@ -797,7 +890,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -828,7 +922,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -886,7 +981,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -918,7 +1014,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -949,7 +1046,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -980,7 +1078,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -1011,7 +1110,8 @@ public final class Broker implements AutoCloseable {
                     bytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -1042,7 +1142,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceBytesPerSec,
                     fetchBytesPerSec,
-                    quotaRedisUrl);
+                    quotaRedisUrl,
+                    rack);
         }
 
         /**
@@ -1073,7 +1174,8 @@ public final class Broker implements AutoCloseable {
                     reassignmentThrottleBytesPerSec,
                     produceQuotaBytesPerSec,
                     fetchQuotaBytesPerSec,
-                    url);
+                    url,
+                    rack);
         }
     }
 
@@ -1249,6 +1351,10 @@ public final class Broker implements AutoCloseable {
             }
         };
         var brokerRegistry = new jbroker.broker.BrokerRegistry();
+        // Self-declared rack. Peers learn it from this broker's heartbeats;
+        // the local note makes the controller's own rack visible to
+        // placement without waiting for a heartbeat round-trip.
+        brokerRegistry.noteRack(config.selfId().value(), config.rack());
         // Audit-finding #1 — one ProducerStateManager per broker, shared
         // between this broker's ProduceHandler (leader dedup) and every
         // ReplicaFetcher (follower observe). Keeps idempotent-producer
@@ -1414,7 +1520,8 @@ public final class Broker implements AutoCloseable {
         var initProducerId = new InitProducerIdHandler(producerIdRegistry, proposer);
 
         var brokerLiveness = new jbroker.broker.BrokerLiveness();
-        var heartbeatHandler = new jbroker.broker.BrokerHeartbeatHandler(brokerLiveness, System::nanoTime);
+        var heartbeatHandler =
+                new jbroker.broker.BrokerHeartbeatHandler(brokerLiveness, System::nanoTime, brokerRegistry::noteRack);
 
         // Decommission orchestration: drain every replica off a leaving
         // broker via reassignments, then drop it from the Raft voter set.
@@ -1449,6 +1556,11 @@ public final class Broker implements AutoCloseable {
                             }
                         }
                         return out;
+                    }
+
+                    @Override
+                    public java.util.Map<Integer, String> racks() {
+                        return brokerRegistry.racks();
                     }
 
                     @Override
@@ -1983,7 +2095,8 @@ public final class Broker implements AutoCloseable {
                 /*intervalMs*/ 250L,
                 chaosState::isPaused,
                 config.tls(),
-                chaosInterceptorFactory);
+                chaosInterceptorFactory,
+                config.rack());
         heartbeatSender.start();
 
         return new Broker(

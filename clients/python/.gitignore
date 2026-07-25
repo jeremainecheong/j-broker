@@ -1,0 +1,9 @@
+# Python build/test artifacts. The generated gRPC stubs
+# (jbroker/generated/) are already covered by the repo-root **/generated/
+# rule; regenerate them with ./generate.sh.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+dist/

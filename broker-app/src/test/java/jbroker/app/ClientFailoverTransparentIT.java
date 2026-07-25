@@ -32,9 +32,15 @@ import org.junit.jupiter.api.io.TempDir;
  * (ClusterClient-backed {@link BatchingProducer}) and a consume loop
  * (cluster-aware {@link Consumer}) run with ZERO try/catch and no
  * app-written retries. Mid-stream the partition leader is killed
- * abruptly; the loops keep running. The killed broker is then restarted
- * and a second leader killed — the loops still survive. At the end,
- * every acked record is consumed exactly once, in order.
+ * abruptly, twice, and after EACH kill the loops must recover on the
+ * surviving replicas alone: the surviving follower re-points its
+ * fetcher to the new leader, the dead broker is shrunk out of the ISR,
+ * and acks=all (min.insync.replicas=2) resumes on the two survivors
+ * while the victim is still down. The first victim is restarted only
+ * between the kills, after survivor-only recovery has completed, and
+ * only because the second kill would otherwise leave a single broker —
+ * a Raft minority that can commit neither metadata nor produces. At
+ * the end, every acked record is consumed exactly once, in order.
  *
  * <p>The application code is confined to {@link #produceLoop} and
  * {@link #consumeLoop}: plain loops calling send/poll. A structural
@@ -144,17 +150,30 @@ class ClientFailoverTransparentIT {
             int firstVictim = killPartitionLeader(running);
             awaitNewLeader(running, firstVictim);
 
-            // Restart the killed broker and wait until it is back in the
-            // ISR: with min.insync.replicas=2 the acks=all pipeline needs a
-            // second in-sync replica, and the next kill must leave a
-            // fully-caught-up successor.
-            running.put(firstVictim, Broker.start(configs.get(firstVictim)));
-            awaitBackInIsr(running, firstVictim);
+            // Recovery must come from the survivors alone: the surviving
+            // follower re-points its fetcher to the new leader, the dead
+            // broker is shrunk out, and the ISR settles on exactly the two
+            // survivors — the victim stays down throughout. Only that
+            // two-member ISR lets acks=all (min.insync.replicas=2) resume,
+            // so segment 2's acks prove the survivor-only pipeline works.
+            awaitIsrOfExactlyTheSurvivors(running);
             awaitAcked(futures, 2 * SEGMENT, producerFailure, "segment 2 across the first leader kill");
 
+            // Restart the first victim only now, for Raft majority: the
+            // second kill drops the cluster to two brokers, and with a
+            // single voter left neither metadata changes nor acks=all
+            // produces could commit. ISR recovery above already completed
+            // without it. Waiting for its rejoin exercises a cold restart
+            // catching up under a leader it never fetched from, and leaves
+            // the next kill a fully-caught-up successor.
+            running.put(firstVictim, Broker.start(configs.get(firstVictim)));
+            awaitBackInIsr(running, firstVictim);
+
             // Segment 3 in flight, then kill the CURRENT leader (a broker
-            // that survived round one). No restart this time — recovery
-            // must come entirely from the remaining replicas.
+            // that survived round one). Recovery again comes only from the
+            // two remaining brokers: one is promoted, and the other — a
+            // follower of the newly dead leader — must re-point its fetcher
+            // before acks=all can complete the segment.
             feed.addAll(sent.subList(2 * SEGMENT, TOTAL));
             killPartitionLeader(running);
             awaitAcked(futures, TOTAL, producerFailure, "segment 3 across the second leader kill");
@@ -239,6 +258,39 @@ class ClientFailoverTransparentIT {
             Thread.sleep(50);
         }
         throw new AssertionError("no new leader emerged within " + budget + "ms after killing broker " + oldLeader);
+    }
+
+    /**
+     * Wait until every running broker's view of the partition ISR is exactly
+     * the running brokers. With the victim still down this pins survivor-only
+     * recovery: the dead broker has been shrunk out AND the surviving
+     * follower is (still or again) in sync via its re-pointed fetcher.
+     */
+    private static void awaitIsrOfExactlyTheSurvivors(ConcurrentHashMap<Integer, Broker> running)
+            throws InterruptedException {
+        var survivors = List.copyOf(running.keySet());
+        long budget = ciBudget(90_000, 45_000);
+        long deadline = System.currentTimeMillis() + budget;
+        List<Integer> lastIsr = List.of();
+        while (System.currentTimeMillis() < deadline) {
+            boolean all = true;
+            for (var broker : running.values()) {
+                var state = broker.topics().partitionState(TOPIC, 0);
+                if (state.isEmpty()) {
+                    all = false;
+                    break;
+                }
+                lastIsr = state.get().isr();
+                if (lastIsr.size() != survivors.size() || !lastIsr.containsAll(survivors)) {
+                    all = false;
+                    break;
+                }
+            }
+            if (all) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError(
+                "ISR did not settle on the survivors " + survivors + " within " + budget + "ms; last isr=" + lastIsr);
     }
 
     /** Wait until {@code brokerId} is back in the partition's ISR on some survivor's view. */

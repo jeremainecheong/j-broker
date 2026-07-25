@@ -17,7 +17,9 @@ import java.util.Set;
  * broker not already hosting it), the whole plan is refused up front rather
  * than leaving the cluster half-drained. Replacements are spread across the
  * eligible brokers by current replica count so the drain doesn't pile every
- * moved replica onto one node.
+ * moved replica onto one node. When broker racks are known, a replacement
+ * that keeps the partition spanning distinct racks is preferred over a
+ * merely lighter one.
  *
  * <p>Leadership needs no special handling here: when the leaving broker leads
  * a partition, {@link ReassignmentPlanner}'s contract step moves leadership
@@ -45,6 +47,11 @@ public final class DecommissionPlanner {
 
     private DecommissionPlanner() {}
 
+    /** Rack-blind overload kept for callers with no rack view. */
+    public static Result plan(int leaving, Set<Integer> liveBrokers, List<PartitionAssignment> assignments) {
+        return plan(leaving, liveBrokers, assignments, java.util.Map.of());
+    }
+
     /**
      * Plan the reassignments that drain broker {@code leaving}.
      *
@@ -52,8 +59,14 @@ public final class DecommissionPlanner {
      * @param liveBrokers brokers eligible to receive replicas (registered and
      *                    alive; the caller excludes any it distrusts)
      * @param assignments the cluster's partition assignments
+     * @param racks       rack label per broker id; brokers without one absent.
+     *                    An empty map reproduces the rack-blind plan exactly.
      */
-    public static Result plan(int leaving, Set<Integer> liveBrokers, List<PartitionAssignment> assignments) {
+    public static Result plan(
+            int leaving,
+            Set<Integer> liveBrokers,
+            List<PartitionAssignment> assignments,
+            java.util.Map<Integer, String> racks) {
         // Spread replacements: start from each candidate's current replica
         // count and charge every planned move against its target, so a drain
         // of N partitions doesn't dump all N onto the least-loaded broker.
@@ -72,15 +85,33 @@ public final class DecommissionPlanner {
             var replicas = a.state().replicas();
             if (!replicas.contains(leaving)) continue;
 
+            // Racks the partition keeps covering once the leaver is gone. A
+            // candidate in a rack outside this set preserves (or restores)
+            // the partition's rack spread and is preferred; when none
+            // exists, the pick falls back to the rack-blind rule.
+            var keptRacks = new java.util.HashSet<String>();
+            for (int r : replicas) {
+                if (r == leaving) continue;
+                var rack = racks.getOrDefault(r, "");
+                if (!rack.isEmpty()) keptRacks.add(rack);
+            }
+
             // Deterministic pick: fewest replicas, ties to the lowest broker
             // id — so the same inputs always plan the same drain.
+            Integer preferred = null;
             Integer replacement = null;
             for (int candidate : load.keySet().stream().sorted().toList()) {
                 if (replicas.contains(candidate)) continue;
                 if (replacement == null || load.get(candidate) < load.get(replacement)) {
                     replacement = candidate;
                 }
+                var rack = racks.getOrDefault(candidate, "");
+                if (rack.isEmpty() || keptRacks.contains(rack)) continue;
+                if (preferred == null || load.get(candidate) < load.get(preferred)) {
+                    preferred = candidate;
+                }
             }
+            if (preferred != null) replacement = preferred;
             if (replacement == null) {
                 return new Result.Refused("partition " + a.topic() + "-" + a.partition()
                         + " has no eligible replacement broker; decommissioning " + leaving

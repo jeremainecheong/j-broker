@@ -28,6 +28,19 @@ enum ErrorCode {
   // on this resource (default-deny whenever auth.mode != none). Fatal —
   // an operator must grant access.
   UNAUTHORIZED = 87;
+  // Transactions.
+  // Request carried a (producer_id, producer_epoch) older than the
+  // coordinator's current grant for the transactional_id — a newer
+  // InitTransactions fenced this producer. Fatal for the fenced instance.
+  PRODUCER_FENCED = 88;
+  // Request is not legal in the transaction's current state (e.g. EndTxn
+  // with no open transaction, or commit while an abort is already
+  // prepared). Fatal — indicates a client protocol violation.
+  INVALID_TXN_STATE = 89;
+  // The previous transaction for this transactional_id is still
+  // completing (markers in flight). Retriable — back off and retry once
+  // the completion lands.
+  CONCURRENT_TRANSACTIONS = 90;
 }
 
 message BrokerEndpoint {

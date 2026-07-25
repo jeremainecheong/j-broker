@@ -1,0 +1,129 @@
+syntax = "proto3";
+package jbroker.txn;
+import "common.proto";
+option java_multiple_files = true;
+option java_package = "jbroker.proto.txn";
+
+// ===== Transactions =====
+//
+// Client-facing transaction coordinator surface. Every RPC routes on
+// transactional_id: the coordinator for a transactional_id is the leader
+// of __transaction_state partition
+// Math.floorMod(transactional_id.hashCode(), partitionCount) — the same
+// coordinator-as-partition-leader scheme the consumer-group surface uses
+// with __consumer_offsets. Clients discover the coordinator via
+// Consumer.FindCoordinator (its key field is reserved for exactly this);
+// a non-coordinator broker answers NOT_COORDINATOR with the
+// suggested_coordinator_* hints filled in, COORDINATOR_NOT_AVAILABLE while
+// the coordinator partition has no leader.
+service Txn {
+  // Register (or re-register) a transactional producer. Allocates a
+  // producer_id on first contact with a transactional_id, loads the
+  // existing one afterwards, and bumps producer_epoch so any zombie
+  // holding the previous epoch is fenced (PRODUCER_FENCED on its next
+  // call). An in-flight transaction left by the previous epoch is
+  // aborted as a side effect.
+  rpc InitTransactions(InitTransactionsRequest) returns (InitTransactionsResponse);
+  // Declare the partitions the current transaction will write to. Must
+  // cover every partition before the first transactional produce lands
+  // there — the coordinator can only deliver commit/abort markers to
+  // partitions it was told about. First call opens the transaction;
+  // later calls extend it.
+  rpc AddPartitionsToTxn(AddPartitionsToTxnRequest) returns (AddPartitionsToTxnResponse);
+  // Commit or abort the current transaction. The coordinator logs the
+  // decision (PrepareCommit / PrepareAbort) before answering; marker
+  // delivery to the data partitions continues in the background. A
+  // retried EndTxn with the same outcome is idempotent.
+  rpc EndTxn(EndTxnRequest) returns (EndTxnResponse);
+}
+
+// Inter-broker marker delivery. After EndTxn (or a coordinator-side
+// abort), the coordinator broker calls WriteTxnMarkers on each data
+// partition's leader; the leader appends a control batch that resolves
+// the open transaction for consumers reading with read_committed.
+service TxnMarkers {
+  rpc WriteTxnMarkers(WriteTxnMarkersRequest) returns (WriteTxnMarkersResponse);
+}
+
+message InitTransactionsRequest {
+  string transactional_id = 1;
+  // How long an open transaction may sit without progress before the
+  // coordinator aborts it and fences the producer. 0 (proto3 default)
+  // selects the broker default.
+  int32 transaction_timeout_ms = 2;
+}
+
+message InitTransactionsResponse {
+  jbroker.common.ErrorCode error = 1;
+  int64 producer_id = 2;
+  // Producer epoch is an int32 on the wire (proto3 lacks int16). Valid
+  // range is [0, 65535]; consumers that need to feed this to the v2 batch
+  // header cast it to int16.
+  int32 producer_epoch = 3;
+  // When error == NOT_COORDINATOR, points at the broker that leads the
+  // transactional_id's __transaction_state partition so the client can retry.
+  int32 suggested_coordinator_id = 4;
+  string suggested_coordinator_host = 5;
+  int32 suggested_coordinator_port = 6;
+}
+
+message AddPartitionsToTxnRequest {
+  string transactional_id = 1;
+  // Echo of the InitTransactions grant; a stale pair answers PRODUCER_FENCED.
+  int64 producer_id = 2;
+  int32 producer_epoch = 3;
+  repeated jbroker.common.TopicPartition partitions = 4;
+}
+
+message AddPartitionsToTxnResponse {
+  // CONCURRENT_TRANSACTIONS (retriable) while the previous transaction's
+  // markers are still being delivered; the client retries after a short
+  // backoff.
+  jbroker.common.ErrorCode error = 1;
+  int32 suggested_coordinator_id = 2;
+  string suggested_coordinator_host = 3;
+  int32 suggested_coordinator_port = 4;
+}
+
+message EndTxnRequest {
+  string transactional_id = 1;
+  int64 producer_id = 2;
+  int32 producer_epoch = 3;
+  // true = commit, false = abort.
+  bool commit = 4;
+}
+
+message EndTxnResponse {
+  jbroker.common.ErrorCode error = 1;
+  int32 suggested_coordinator_id = 2;
+  string suggested_coordinator_host = 3;
+  int32 suggested_coordinator_port = 4;
+}
+
+// One marker fan-out from the coordinator. Partitions led by the
+// receiving broker get a control batch appended; the rest are answered
+// NOT_LEADER so the coordinator can re-route.
+message WriteTxnMarkersRequest {
+  repeated TxnMarker markers = 1;
+}
+
+message TxnMarker {
+  int64 producer_id = 1;
+  int32 producer_epoch = 2;
+  bool commit = 3;
+  // Epoch of the coordinator's leadership over the __transaction_state
+  // partition (its leader_epoch). Data-partition leaders reject markers
+  // from a lower coordinator_epoch than one they already applied, which
+  // fences a deposed coordinator still flushing its queue.
+  int32 coordinator_epoch = 4;
+  repeated jbroker.common.TopicPartition partitions = 5;
+}
+
+message WriteTxnMarkersResponse {
+  repeated TxnMarkerResult results = 1;
+}
+
+message TxnMarkerResult {
+  jbroker.common.TopicPartition tp = 1;
+  jbroker.common.ErrorCode error = 2;
+}

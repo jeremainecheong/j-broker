@@ -322,6 +322,9 @@ wait "$DRAIN_PID" 2>/dev/null || true
 say "Act 1 final counts:"
 tail -n 1 "$LOG_DIR/feed-events.log" | indent
 grep 'total' "$LOG_DIR/drain-events.log" | tail -n 1 | indent
+say "(The plain group is at-least-once: after a failover it can re-read records past its"
+say "last commit, so its total can exceed the produced count. The transactional pipeline"
+say "above is the exactly-once path.)"
 
 # ---------------------------------------------------------------- epilogue
 

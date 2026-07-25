@@ -848,6 +848,20 @@ message DescribeMetricsResponse {
   // with STORAGE_FULL.
   int64 disk_usable_bytes = 22;
   bool disk_headroom_low = 23;
+  // Monotonic-since-boot counters (the admin binder mirrors them as
+  // gauges). NOT_ENOUGH_REPLICAS produce rejections — both the
+  // pre-append floor check and the post-append replication wait.
+  int64 not_enough_replicas_rejections = 24;
+  // Quota enforcement: admissions denied with QUOTA_VIOLATED, and the
+  // cumulative back-off time (ms) those denials told clients to wait.
+  int64 produce_quota_denials = 25;
+  int64 fetch_quota_denials = 26;
+  int64 produce_quota_throttle_millis = 27;
+  int64 fetch_quota_throttle_millis = 28;
+  // Partitions with no live leader (leader <= 0). Only the current
+  // controller (metadata-Raft leader) fills the real count; every other
+  // broker reports 0, so max() across a fan-out is the cluster value.
+  int64 offline_partitions = 29;
 }
 
 message PartitionMetrics {

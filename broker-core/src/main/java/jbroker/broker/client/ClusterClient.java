@@ -16,7 +16,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.random.RandomGenerator;
 import jbroker.broker.ErrorCodeNames;
 import jbroker.broker.ErrorCodes;
-import jbroker.broker.ProtocolVersion;
 import jbroker.proto.broker.AdminGrpc;
 import jbroker.proto.broker.ApiVersionsRequest;
 import jbroker.proto.broker.ApiVersionsResponse;
@@ -855,37 +854,11 @@ public final class ClusterClient implements AutoCloseable {
      * Protocol-version handshake, run once per endpoint before the first
      * real RPC on the channel (a failed handshake leaves nothing cached,
      * so a broker restarted with a different version is re-checked).
-     * Incompatibility — a disjoint range, or UNIMPLEMENTED from a broker
-     * predating the ApiVersions RPC — raises
-     * {@link UnsupportedBrokerException} and is never retried: a version
-     * mismatch cannot heal on its own, and rotating to another candidate
-     * would only mask a broker the operator must upgrade. Transport-level
-     * failures (UNAVAILABLE, ...) propagate as usual for the caller's
-     * rotation handling.
+     * Policy and error shapes live in {@link ProtocolHandshake}, shared
+     * with {@link BrokerClient}.
      */
     private static void verifyProtocolRange(Endpoint ep, Transport t) {
-        ApiVersionsResponse resp;
-        try {
-            resp = t.apiVersions(METADATA_TIMEOUT_MS);
-        } catch (StatusRuntimeException e) {
-            if (e.getStatus().getCode() == Status.Code.UNIMPLEMENTED) {
-                throw UnsupportedBrokerException.missingHandshake(
-                        ep.toString(), ProtocolVersion.MIN_SUPPORTED, ProtocolVersion.CURRENT);
-            }
-            throw e;
-        }
-        if (resp.getError() != ErrorCode.OK) {
-            throw new IllegalStateException("apiVersions failed against " + ep + ": " + resp.getError());
-        }
-        if (resp.getMinProtocolVersion() > ProtocolVersion.CURRENT
-                || resp.getMaxProtocolVersion() < ProtocolVersion.MIN_SUPPORTED) {
-            throw UnsupportedBrokerException.incompatibleRange(
-                    ep.toString(),
-                    resp.getMinProtocolVersion(),
-                    resp.getMaxProtocolVersion(),
-                    ProtocolVersion.MIN_SUPPORTED,
-                    ProtocolVersion.CURRENT);
-        }
+        ProtocolHandshake.verify(ep.toString(), () -> t.apiVersions(METADATA_TIMEOUT_MS));
     }
 
     private void closeTransport(Endpoint ep) {

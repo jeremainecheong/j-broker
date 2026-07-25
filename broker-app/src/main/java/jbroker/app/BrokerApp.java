@@ -42,12 +42,13 @@ public final class BrokerApp {
             case "console-consumer" -> runConsumer(Arrays.copyOfRange(args, 1, args.length));
             case "consume" -> runGroupConsume(Arrays.copyOfRange(args, 1, args.length));
             case "admin" -> AdminCli.run(Arrays.copyOfRange(args, 1, args.length));
+            case "demo" -> DemoCli.run(Arrays.copyOfRange(args, 1, args.length));
             default -> usage();
         }
     }
 
     private static void usage() {
-        System.err.println("Usage: j-broker server|topics|produce|console-consumer|consume|admin ...");
+        System.err.println("Usage: j-broker server|topics|produce|console-consumer|consume|admin|demo ...");
     }
 
     private static String flag(String[] args, String name, String defaultValue) {

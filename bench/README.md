@@ -1,6 +1,6 @@
 # bench
 
-HdrHistogram-backed perf harness with CSV append. `PerfMain` is the CLI entrypoint; `ProducerPerfTest` and `ConsumerPerfTest` are the two scenarios.
+HdrHistogram-backed perf harness with CSV append. `PerfMain` is the CLI entrypoint; verbs: `producer`, `consumer`, `acks-all`, `replication`, `compaction`, `check-batch`, plus the chaos-soak drivers `soak-produce` / `soak-verify` (`SoakRun` — the acks=all idempotent load and exactly-once verification halves of `scripts/chaos/scenario-chaos-with-load.sh`, held to the `SoakLedger` invariant: every acked record consumed exactly once).
 
 ## Harness layout
 

@@ -1,0 +1,63 @@
+/* j-broker documentation — shared stylesheet. No external assets. */
+:root {
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #57606a; --line: #d0d7de;
+  --accent: #0757ba; --code-bg: #f6f8fa; --nav-bg: #f6f8fa;
+  --note-bg: #ddf4ff; --warn-bg: #fff8c5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
+    --accent: #4493f8; --code-bg: #161b22; --nav-bg: #010409;
+    --note-bg: #121d2f; --warn-bg: #272115;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.6 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+nav.top {
+  background: var(--nav-bg); border-bottom: 1px solid var(--line);
+  padding: 0.6rem 1.2rem; display: flex; gap: 1.2rem; flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 10; align-items: baseline;
+}
+nav.top .brand { font-weight: 700; margin-right: 0.6rem; }
+nav.top a { color: var(--fg); text-decoration: none; }
+nav.top a:hover, nav.top a.here { color: var(--accent); }
+main {
+  max-width: 860px; margin: 0 auto; padding: 2rem 1.2rem 4rem;
+}
+h1 { font-size: 1.9rem; margin: 0.5rem 0 0.2rem; }
+h2 { font-size: 1.35rem; margin-top: 2.4rem; border-bottom: 1px solid var(--line); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; }
+p.lead { color: var(--muted); font-size: 1.05rem; margin-top: 0; }
+a { color: var(--accent); }
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+code { background: var(--code-bg); padding: 0.15em 0.35em; border-radius: 4px; }
+pre {
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.9rem 1rem; overflow-x: auto; line-height: 1.45;
+}
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--line); padding: 0.45rem 0.7rem; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); }
+.note, .warn {
+  border-left: 4px solid var(--accent); background: var(--note-bg);
+  padding: 0.7rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0;
+}
+.warn { border-left-color: #d4a72c; background: var(--warn-bg); }
+.pages { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin: 1.6rem 0; }
+.pages a {
+  display: block; border: 1px solid var(--line); border-radius: 10px;
+  padding: 1rem 1.1rem; text-decoration: none; color: var(--fg);
+}
+.pages a:hover { border-color: var(--accent); }
+.pages a b { color: var(--accent); display: block; margin-bottom: 0.25rem; }
+footer {
+  border-top: 1px solid var(--line); color: var(--muted);
+  max-width: 860px; margin: 0 auto; padding: 1rem 1.2rem 2rem; font-size: 0.9rem;
+}

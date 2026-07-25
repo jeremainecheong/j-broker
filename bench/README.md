@@ -61,23 +61,23 @@ Regenerate the README snapshot: `scripts/bench/run-readme-bench.sh`.
 
 ## Current snapshot
 
-From `scripts/bench/run-readme-bench.sh` on Apple-silicon laptop (Darwin 24.2, M-series, SSD). End-to-end gRPC path; producer bench is single-record-per-RPC with `acks=1`, consumer bench uses `Consumer.Fetch`. Multi-broker `acks=all` numbers will differ.
+From `scripts/bench/run-readme-bench.sh` on an Apple M2 MacBook Air (16 GB, internal SSD, Darwin 24.2), re-run 2026-07-25 on a warmed broker. End-to-end gRPC path; producer bench is single-record-per-RPC with `acks=1`, consumer bench uses `Consumer.Fetch`. Multi-broker `acks=all` numbers will differ.
 
 ### Producer
 
 | Payload | Records | rps | MiB/s | p50 | p99 | p999 |
 |---|---|---|---|---|---|---|
-| 256B | 5,000 | 5,362 | 1.31 | 0.14ms | 0.60ms | 1.21ms |
-| 1024B | 5,000 | 5,597 | 5.47 | 0.13ms | 0.56ms | 1.18ms |
-| 4096B | 5,000 | 5,494 | 21.46 | 0.13ms | 0.58ms | 2.89ms |
+| 256B | 5,000 | 4,888 | 1.19 | 0.15ms | 0.56ms | 1.02ms |
+| 1024B | 5,000 | 4,840 | 4.73 | 0.14ms | 0.64ms | 1.59ms |
+| 4096B | 5,000 | 4,774 | 18.65 | 0.15ms | 0.56ms | 1.18ms |
 
 ### Consumer
 
 | Payload | Records | rps | MiB/s | p50 | p99 | p999 |
 |---|---|---|---|---|---|---|
-| 256B | 5,100 | 37,057 | 9.05 | 5.40ms | 131.92ms | 131.92ms |
-| 1024B | 5,100 | 34,922 | 34.10 | 4.34ms | 124.72ms | 124.72ms |
-| 4096B | 5,020 | 25,189 | 98.40 | 3.37ms | 130.55ms | 130.55ms |
+| 256B | 6,427 | 48,292 | 11.79 | 9.59ms | 123.27ms | 123.27ms |
+| 1024B | 5,738 | 36,769 | 35.91 | 6.07ms | 124.26ms | 124.26ms |
+| 4096B | 5,020 | 25,324 | 98.92 | 3.87ms | 117.77ms | 117.77ms |
 
 Raw CSV in `docs/bench/results.csv`.
 

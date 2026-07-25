@@ -419,12 +419,12 @@ Requires Java 21 (Temurin). Gradle wrapper pinned to 8.7, SHA-256 verified on do
 
 ## Performance
 
-Single-broker snapshot on Apple-silicon laptop (re-run 2026-07-07). End-to-end gRPC, single-record-per-RPC, `acks=1`. See [bench/README.md](bench/README.md) for multi-payload-size tables + `acks=all` variants.
+Single-broker snapshot on an Apple M2 MacBook Air (16 GB, internal SSD, Darwin 24.2), re-run 2026-07-25 on a warmed broker. End-to-end gRPC, single-record-per-RPC, `acks=1`. See [bench/README.md](bench/README.md) for multi-payload-size tables + `acks=all` variants.
 
 | Workload | rps | MiB/s | p99 |
 |---|---|---|---|
-| Produce 1KiB | 5,390 | 5.26 | 0.57 ms |
-| Consume 1KiB | 34,651 | 33.84 | 121.8 ms |
+| Produce 1KiB | 4,840 | 4.73 | 0.64 ms |
+| Consume 1KiB | 36,769 | 35.91 | 124.3 ms |
 
 Consume latency is per-**fetch-RPC**, not per record: each fetch returns up to 1 MiB (hundreds of records), so the p99 is the cost of the largest disk-read + transfer round trips while per-record throughput stays at ~35k/s. Produce latency is per single-record RPC — hence the three-orders-of-magnitude difference.
 

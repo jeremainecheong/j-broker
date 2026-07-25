@@ -10,6 +10,8 @@ j-broker is a Kafka-shaped message broker built from scratch: a Raft-replicated 
 
 ![System architecture](docs/diagrams/architecture.png)
 
+> Deep-dive diagrams — component view, Kubernetes topology, the produce path, transaction two-phase commit, leader failover, release artifacts: [`docs/architecture/README.md`](docs/architecture/README.md).
+
 > Source: [`docs/diagrams/architecture.drawio`](docs/diagrams/architecture.drawio) — open in [draw.io](https://app.diagrams.net) to edit. Vendor SVG icons live in [`docs/icons/`](docs/icons/).
 
 ---
@@ -107,6 +109,14 @@ Deliberate boundaries, not gaps waiting for a fix:
 ```bash
 docker compose up
 ```
+
+Or watch the whole system exercise itself — a narrated four-act demo that boots the cluster, runs plain and transactional pipelines, kills a broker mid-transaction, audits exactly-once delivery, and leaves everything running for exploration:
+
+```bash
+scripts/demo/full-demo.sh
+```
+
+What each act shows and what to explore afterwards: [`scripts/demo/README.md`](scripts/demo/README.md).
 
 | Component | URL / host port |
 |---|---|
@@ -210,6 +220,26 @@ try (var cluster = new ClusterClient(List.of("localhost:9092", "localhost:9093",
         }
         consumer.commitSync();
     }
+}
+```
+
+A transactional producer makes a consume-transform-produce loop exactly-once end to end: records sent and offsets committed in the same transaction become visible atomically to `read_committed` consumers, or not at all:
+
+```java
+import jbroker.broker.client.ClusterClient;
+import jbroker.broker.client.TransactionalProducer;
+import jbroker.proto.common.TopicPartition;
+import java.util.List;
+import java.util.Map;
+
+try (var cluster = new ClusterClient(List.of("localhost:9092", "localhost:9093", "localhost:9094"));
+        var producer = new TransactionalProducer(cluster, "order-pipeline")) {
+    producer.initTransactions();
+    producer.beginTransaction();
+    producer.send("orders-enriched", 0, "o-1-enriched".getBytes());
+    producer.sendOffsetsToTransaction("order-processor",
+            Map.of(TopicPartition.newBuilder().setTopic("orders").setPartition(0).build(), 42L));
+    producer.commitTransaction();
 }
 ```
 

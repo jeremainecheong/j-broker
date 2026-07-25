@@ -31,6 +31,7 @@ The success metric was never feature count — it was *being able to explain eve
 - Raft-replicated metadata — topics, partition assignments, producer ids, consumer-group offsets, ACLs, and membership changes survive any minority failure.
 - Replicated partition logs — follower pull replication, ISR tracking, high-watermark gating of consumer visibility, `min.insync.replicas` floor on `acks=all`, leader-epoch fencing, ISR-only election.
 - Idempotent producer — `(producer_id, epoch, base_sequence)` dedup, rebuilt from the log on restart so it survives failover.
+- Transactions — a two-phase coordinator on a compacted internal topic, control-batch markers replicated like data, `read_committed` fetch capped at the last stable offset, and transactional consumer-offset commits, so a consume-transform-produce loop delivers exactly once end to end.
 - Log compaction that preserves original absolute offsets, plus time- and size-based retention with per-topic overrides.
 - Storage self-protection — CRC-verified crash recovery that logs exactly what it truncates, a disk-headroom watermark that degrades produce to retriable `STORAGE_FULL` instead of filling the volume, an on-disk format marker that refuses data written by a newer broker, and cold backup/restore gated by an offline `verify-log` check.
 
@@ -53,7 +54,8 @@ The success metric was never feature count — it was *being able to explain eve
 
 - `ClusterClient` — bootstrap-list discovery, leader/coordinator routing, `NOT_LEADER` hint following, bounded-backoff retries under a per-call deadline.
 - `BatchingProducer` — async size/linger batching with idempotent `acks=all` delivery; a completed future means exactly-once at the reported offsets, through failover.
-- `Consumer` — consumer groups with cooperative rebalance, `seek`/`pause`/`resume`, `max.poll.records`, async commits, optional dead-letter routing.
+- `Consumer` — consumer groups with cooperative rebalance, `seek`/`pause`/`resume`, `max.poll.records`, async commits, optional dead-letter routing, and an `isolation.level` switch for `read_committed` polling.
+- `TransactionalProducer` — init/begin/send/sendOffsets/commit/abort with an abort-and-retry loop that re-fences on every retry; `TransactionalExactlyOnceIT` kills the transaction coordinator and a partition leader mid-transaction and still requires committed-only, exactly-once, in-order output.
 - A protocol-version handshake on first use of every connection, and optional zstd compression of record batches.
 
 **Operations & observability**
@@ -138,7 +140,7 @@ echo -e "o-1\no-2\no-3" | ./broker-app/build/install/broker-app/bin/broker-app \
   --broker localhost:9092 --group order-processor --topic orders
 ```
 
-The plain CLI talks to exactly the broker you name: topic creation must reach the controller, and produce must reach the partition's leader. When you miss, the error names the right broker — `not the controller; leader is broker 2` means retry against `localhost:9093` in the compose port map. Group consume works against any broker. The cluster-aware client below does all of this routing itself.
+Topic creation must reach the controller and produce must reach the partition's leader; when you aim at the wrong broker, the CLI reads the broker's redirect from the refusal and retries once against the right one on its own. Group consume works against any broker. The cluster-aware client below does all of this routing continuously.
 
 Full CLI reference: [broker-app/README.md](broker-app/README.md).
 

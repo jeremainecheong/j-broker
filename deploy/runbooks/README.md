@@ -7,7 +7,7 @@ inventing one.
 
 Related files:
 
-- Alert pack + thresholds + the needs-metric ledger:
+- Alert pack + thresholds + metric-coverage notes:
   [`deploy/helm/j-broker/values.yaml`](../helm/j-broker/values.yaml)
   (`metrics.prometheusRule`), rendered by
   [`deploy/helm/j-broker/templates/prometheusrule.yaml`](../helm/j-broker/templates/prometheusrule.yaml).
@@ -99,8 +99,8 @@ dead broker was the sole ISR member of some partition (see runbook 3).
 - Keep the chart's PodDisruptionBudget (`maxUnavailable: 1`) and
   anti-affinity enabled — they cap voluntary evictions below Raft-majority
   loss.
-- Add an alert on `jbroker_broker_scrape_ok == 0` once you run the alert
-  pack; the gauge exists, the rule does not ship yet.
+- Run the alert pack: `JBrokerBrokerUnreachable` covers exactly this
+  failure mode.
 
 ---
 

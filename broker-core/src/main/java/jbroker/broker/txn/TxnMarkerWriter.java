@@ -50,6 +50,27 @@ public final class TxnMarkerWriter {
 
     private record LastMarker(long offset, int producerEpoch, boolean commit, int coordinatorEpoch) {}
 
+    /**
+     * Notified once per freshly-appended marker (idempotent redeliveries
+     * that only re-run the replication wait do NOT fire — their side
+     * effects already ran). The group-coordinator wiring hooks this to
+     * fold staged transactional offsets when a marker lands on a
+     * {@code __consumer_offsets} partition. Listener failures are logged
+     * and swallowed: the marker append itself already succeeded, and the
+     * fold is reproducible from the log (staged batch + marker) on the
+     * next recovery walk.
+     */
+    @FunctionalInterface
+    public interface MarkerListener {
+        void onMarkerAppended(String topic, int partition, long producerId, int producerEpoch, boolean commit);
+    }
+
+    private volatile MarkerListener markerListener = (topic, partition, pid, epoch, commit) -> {};
+
+    public void setMarkerListener(MarkerListener listener) {
+        this.markerListener = listener == null ? (topic, partition, pid, epoch, commit) -> {} : listener;
+    }
+
     private final LogManager logManager;
     private final TopicManager topicManager;
     private final FollowerStateTracker followerTracker;
@@ -127,6 +148,16 @@ public final class TxnMarkerWriter {
             // The marker's (possibly bumped) epoch fences older produces on
             // this partition from now on.
             txnEpochs.observe(topic, partition, producerId, producerEpoch);
+            try {
+                markerListener.onMarkerAppended(topic, partition, producerId, producerEpoch, commit);
+            } catch (RuntimeException e) {
+                log.warn(
+                        "marker listener failed for {}-{} pid {} (fold is replay-recoverable): {}",
+                        topic,
+                        partition,
+                        producerId,
+                        e.toString());
+            }
         }
         try {
             boolean replicated = IsrReplicationWait.await(

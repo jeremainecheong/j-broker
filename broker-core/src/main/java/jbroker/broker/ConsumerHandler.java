@@ -577,6 +577,50 @@ public final class ConsumerHandler {
         return b.build();
     }
 
+    /**
+     * A transaction marker (control batch) landed on {@code partition} of
+     * {@code __consumer_offsets} — the {@link jbroker.broker.txn.TxnMarkerWriter}
+     * listener routes it here. COMMIT folds the producer's staged offsets
+     * into the committed view ({@link OffsetCache}, so {@code FetchOffsets}
+     * sees them from now on) and re-appends them to the same partition as
+     * regular offset records; ABORT discards the stage. The re-append is a
+     * durability convenience for a future cleaner that drops decided
+     * staged batches + markers — the fold itself is already reproducible
+     * from the log, so a failure here (or a crash between the marker and
+     * the re-append) only loses the plain copy, never the offsets: the
+     * recovery walk re-folds from the staged batch + marker.
+     */
+    public void onTxnMarker(int partition, long producerId, int producerEpoch, boolean commit) {
+        if (groupCoordinator == null || offsetCache == null) return;
+        var folded = groupCoordinator.onTxnMarker(partition, producerId, producerEpoch, commit, offsetCache);
+        if (folded.isEmpty()) return;
+        long now = wallClockMillis.getAsLong();
+        for (var fold : folded) {
+            var records = new java.util.ArrayList<Record>(fold.offsets().size());
+            int i = 0;
+            for (var e : fold.offsets().entrySet()) {
+                byte[] key = ConsumerOffsetsTopic.keyForOffset(
+                        fold.groupId(), e.getKey().getTopic(), e.getKey().getPartition());
+                byte[] value = ConsumerOffsetsTopic.valueForOffset(
+                        e.getValue().offset(),
+                        e.getValue().leaderEpoch(),
+                        e.getValue().metadata(),
+                        now);
+                records.add(new Record(/*offsetDelta*/ i++, /*timestampDelta*/ 0L, key, value));
+            }
+            try {
+                appendOffsetBatch(partition, records, now);
+            } catch (IOException e) {
+                log.warn(
+                        "folded-offset re-append failed for group '{}' on __consumer_offsets-{} "
+                                + "(committed view is correct; replay re-folds from the marker): {}",
+                        fold.groupId(),
+                        partition,
+                        e.toString());
+            }
+        }
+    }
+
     private static jbroker.proto.txn.TxnOffsetCommitResponse txnOffsetCommitFailure(
             jbroker.proto.txn.TxnOffsetCommitResponse.Builder b,
             jbroker.proto.txn.TxnOffsetCommitRequest req,

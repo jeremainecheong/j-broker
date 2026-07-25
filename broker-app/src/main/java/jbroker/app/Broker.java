@@ -1650,6 +1650,14 @@ public final class Broker implements AutoCloseable {
         final int selfIdForTxn = config.selfId().value();
         var txnMarkerWriter = new jbroker.broker.txn.TxnMarkerWriter(
                 logManager, topicManager, followerTracker, selfIdForTxn, config.minInsyncReplicas(), txnEpochs);
+        // Markers landing on __consumer_offsets decide staged transactional
+        // offset commits: fold into the committed view + durable re-append
+        // of the folded records (see ConsumerHandler.onTxnMarker).
+        txnMarkerWriter.setMarkerListener((topic, partition, pid, epoch, commit) -> {
+            if (jbroker.broker.ConsumerOffsetsTopic.NAME.equals(topic)) {
+                consumerHandler.onTxnMarker(partition, pid, epoch, commit);
+            }
+        });
         var txnMarkersHandler = new jbroker.broker.txn.TxnMarkersHandler(txnMarkerWriter);
         // Marker fan-out to peers rides the internal addresses, like
         // replication; chaos partitions apply to it like any inter-broker

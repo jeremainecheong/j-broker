@@ -621,7 +621,12 @@ public final class MetadataServiceHandler {
                 .setFetchP999Nanos(fl.p999Nanos())
                 .setIncrementalFetchHits(brokerMetrics.incrementalFetchHits())
                 .setDiskUsableBytes(diskHeadroom.lastUsableBytes())
-                .setDiskHeadroomLow(diskHeadroom.low());
+                .setDiskHeadroomLow(diskHeadroom.low())
+                .setNotEnoughReplicasRejections(brokerMetrics.notEnoughReplicasRejections())
+                .setProduceQuotaDenials(brokerMetrics.produceQuotaDenials())
+                .setFetchQuotaDenials(brokerMetrics.fetchQuotaDenials())
+                .setProduceQuotaThrottleMillis(brokerMetrics.produceQuotaThrottleMillis())
+                .setFetchQuotaThrottleMillis(brokerMetrics.fetchQuotaThrottleMillis());
         // Raft observability (null when no voter; values defaulted to 0).
         if (raftObservability != null) {
             var obs = raftObservability.get();

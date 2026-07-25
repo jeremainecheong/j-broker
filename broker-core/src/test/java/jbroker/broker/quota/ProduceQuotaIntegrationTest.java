@@ -78,6 +78,29 @@ final class ProduceQuotaIntegrationTest {
     }
 
     @Test
+    void overQuotaProduceCountsDenialAndThrottleTime() throws Exception {
+        var enforcer = new InMemoryQuotaEnforcer(100, 10_000);
+        var metrics = new jbroker.broker.BrokerMetrics();
+        var handler = new ProduceHandler(logManager, topicManager, 1, new FollowerStateTracker(), metrics, enforcer);
+
+        byte[] batchBytes = encodeSingleton("k", new byte[128], System.currentTimeMillis());
+        var req = ProduceRequest.newBuilder()
+                .setTopic("orders")
+                .setPartition(0)
+                .setBatch(ByteString.copyFrom(batchBytes))
+                .build();
+
+        var resp = handler.handle(req);
+        assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.QUOTA_VIOLATED);
+        // The denial and its back-off hint land on the produce-side
+        // counters; the fetch side stays untouched.
+        assertThat(metrics.produceQuotaDenials()).isEqualTo(1L);
+        assertThat(metrics.produceQuotaThrottleMillis()).isPositive();
+        assertThat(metrics.fetchQuotaDenials()).isZero();
+        assertThat(metrics.fetchQuotaThrottleMillis()).isZero();
+    }
+
+    @Test
     void belowQuotaProducePassesThrough() throws Exception {
         var enforcer = new InMemoryQuotaEnforcer(10_000, 10_000);
         var handler = new ProduceHandler(logManager, topicManager, 1, new FollowerStateTracker(), null, enforcer);

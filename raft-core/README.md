@@ -13,7 +13,7 @@ This README walks the Raft algorithm section by section as the paper presents it
 The same `RaftCore` instance can be driven by either path:
 
 - **Production** (`raft-transport/`) — real gRPC, real timers, fsync'd `FileRaftLog` + `FilePersistentState`, Netty channel readiness checks, chunked `InstallSnapshot`.
-- **Simulator** (`simulator/`) — seeded scenario driver, mock event bus, virtual clock, in-memory log + state. Runs 10 000 scenarios per CI in seconds with deterministic reproduction via `--seed N`.
+- **Simulator** (`simulator/`) — seeded scenario driver, mock event bus, virtual clock, in-memory log + state. Runs 10 000 scenarios per CI in seconds; a violation names its seed, and `new Simulator(seed, ...)` replays it deterministically.
 
 ArchUnit enforces the invariant: `raft-core` cannot import `javax.*`, `jakarta.*`, `io.grpc.*`, or `org.springframework.*`. That compile-time gate is what makes the simulator's coverage trustworthy.
 

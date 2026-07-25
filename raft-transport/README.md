@@ -44,9 +44,14 @@ All state mutations happen on the pump thread. gRPC handlers are synchronous —
 | Type | Purpose |
 |---|---|
 | `RaftDriver` | The event loop. Pulls from a bounded queue, calls `RaftCore.step`, dispatches emitted `RaftEffect`s (send RPC, reset timer, persist state). Single virtual thread — no shared mutable state with outside callers. |
-| `RaftPeerClient` | Outbound gRPC client for `AppendEntries`, `RequestVote`, `TimeoutNow`, `InstallSnapshot`. |
-| `RaftServiceImpl` | Inbound gRPC service. Translates wire proto into `RaftEvent`s the driver enqueues. |
-| `TlsConfig`, `TlsContexts` | mTLS bundle. Optional — brokers without TLS configured get a plain Netty channel. |
+| `RaftPeerClient` | Outbound gRPC client for `AppendEntries`, `RequestVote`, `TimeoutNow`, `InstallSnapshot`, `Propose`. |
+| `RaftGrpcService` | Inbound gRPC service. Translates wire proto into `RaftEvent`s the driver enqueues. |
+| `RaftMessageCodec` | Wire ↔ `RaftEvent`/`RaftEffect` translation shared by client and service. |
+| `TlsConfig`, `TlsContexts` | mTLS bundle (`jbroker.tls`). Optional — brokers without TLS configured get a plain Netty channel. |
+
+## Propose forwarding
+
+A node that receives a local propose while not leader forwards the payload to the node it believes is leader (`Raft.Propose`), instead of silently dropping it — background proposers live on whatever broker owns a partition (ISR flips, leadership drains) and would otherwise freeze whenever that broker is not also the Raft leader. Hops are counted and capped, bounding ping-pong during leadership churn; a propose reply means "enqueued", never "committed" — callers own retries, and duplicate commits are tolerated by design (partition changes are CAS-guarded, producer-id assignment is idempotent under replay).
 
 ## Why separate from raft-core
 

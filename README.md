@@ -4,6 +4,8 @@
 
 j-broker is a Kafka-shaped message broker built from scratch: a Raft-replicated metadata plane, partitioned replicated logs with high-watermark semantics and a `min.insync.replicas` durability floor, consumer groups, idempotent producers, log compaction, mTLS with per-principal ACLs, online cluster membership changes, a cluster-aware failover-transparent client, and a RabbitMQ-management-style web admin UI. No Kafka libraries, no Apache Curator, no Jakarta EE — just Java 21 virtual threads, gRPC, and a small amount of Spring Boot on the admin side. It is a from-scratch distributed log built to production standards, not a Kafka replacement.
 
+**Documentation: [jeremainecheong.github.io/j-broker](https://jeremainecheong.github.io/j-broker/)** — install & deploy, producer/consumer guides with runnable snippets, operations, and security, with live terminal clips throughout.
+
 ![Overview dashboard](docs/screenshots/overview.png)
 
 ### System architecture

@@ -1,0 +1,125 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Security — j-broker</title><link rel="stylesheet" href="../assets/site.css"></head><body>
+<nav class="top"><span class="brand">j-broker</span><a href="../index.html">Overview</a><a href="install.html">Install &amp; deploy</a><a href="producers.html">Producers</a><a href="consumers.html">Consumers</a><a href="operations.html">Operations</a><a href="security.html" class="here">Security</a><a href="https://github.com/jeremainecheong/j-broker">GitHub</a></nav>
+<main>
+<!-- Sources: scripts/tls/bootstrap-ca.sh, broker-app/README.md (config table:
+     tls.*, auth.mode, super.users, chaos.*), raft-transport/src/main/java/jbroker/tls/TlsConfig.java,
+     broker-core/src/main/java/jbroker/broker/client/ClusterClient.java (TlsConfig ctor),
+     proto/src/main/proto/broker.proto (Admin service CreateAcl/DeleteAcl/ListAcls + AclEntry),
+     proto/src/main/proto/common.proto (UNAUTHORIZED=87), ErrorCodes.java,
+     admin-app/README.md (operator auth, tokens, audit), deploy/helm/j-broker/values.yaml
+     (broker.auth, admin.auth.existingSecret, tls.*, chaosTokenSecret),
+     deploy/runbooks/README.md (cert rotation). -->
+<h1>Security</h1>
+<p class="lead">Authentication, authorization, and the switches that separate a dev sandbox from something you can point real traffic at.</p>
+
+<p>The model in one paragraph: a fresh j-broker is <b>default-open for development</b> — plaintext gRPC, no client identity, no ACL checks, admin UI open. Security is layered on by explicit opt-in: <code>tls.enabled</code> puts mTLS on every gRPC hop (clients, inter-broker replication, admin-to-broker), <code>auth.mode=mtls</code> turns the client certificate CN into an authenticated principal and flips authorization to <b>default-deny ACLs</b>, operator accounts lock the admin UI/API, and the chaos control plane refuses to exist without its own opt-in plus a bearer token. Each layer is independent, but the order above is the sensible rollout order.</p>
+
+<h2 id="mtls">mTLS end to end</h2>
+<h3>1. Mint a dev CA and certs</h3>
+<pre><code>scripts/tls/bootstrap-ca.sh .tls        # default OUTDIR .tls/
+scripts/tls/bootstrap-ca.sh --clean     # wipe + regenerate</code></pre>
+<p>Produces, under a self-signed 3650-day CA: per-broker server certs <code>broker1</code>–<code>broker3</code> (SANs cover <code>DNS:brokerN</code>, <code>DNS:localhost</code>, <code>IP:127.0.0.1</code> so both Docker Compose and host-side clients validate), a client cert for the admin app (<code>CN=admin</code>), and two extra client principals <code>alice</code> and <code>bob</code> for ACL experiments. All certs are 825-day, keys are converted to PKCS#8 in place (what gRPC's <code>SslContextBuilder</code> expects). The script is idempotent and dev-only — keys are unencrypted and the SANs are hardcoded; use a real issuer such as cert-manager in production.</p>
+
+<h3>2. Enable TLS on the brokers</h3>
+<pre><code>j-broker server ... \
+  --tls-cert .tls/broker1.crt --tls-key .tls/broker1.key --tls-trust .tls/ca.crt
+# config keys / env: tls.enabled (JBROKER_TLS_ENABLED), tls.cert, tls.key, tls.trust</code></pre>
+<p>With <code>tls.enabled</code>, every gRPC listener and every inter-broker client speaks mTLS — peers are verified against the trust bundle in both directions. All three PEM paths are required. Plain mode stays fully supported for dev; nothing forces TLS on.</p>
+
+<h3>3. Client TLS config (Java)</h3>
+<p>The Java client takes a <code>jbroker.tls.TlsConfig</code> record — <code>enabled</code>, PEM <code>certChain</code>, PKCS#8 <code>privateKey</code>, and the <code>trustStore</code> CA bundle:</p>
+<pre><code>import jbroker.tls.TlsConfig;
+
+var tls = new TlsConfig(true,
+        Path.of(".tls/alice.crt"),   // cert chain this client presents
+        Path.of(".tls/alice.key"),   // matching PKCS#8 key
+        Path.of(".tls/ca.crt"),      // CA bundle to verify the brokers
+        false);
+var client = new ClusterClient(List.of("localhost:9092"), config, tls);
+// Plaintext: the two-arg constructor, equivalent to TlsConfig.DISABLED.</code></pre>
+
+<h3>4. Kubernetes / Helm wiring</h3>
+<pre><code>kubectl create secret generic jbroker-tls \
+    --from-file=tls.crt=.tls/broker1.crt \
+    --from-file=tls.key=.tls/broker1.key \
+    --from-file=ca.crt=.tls/ca.crt
+
+helm upgrade --install jb deploy/helm/j-broker \
+    --set tls.enabled=true --set tls.secretName=jbroker-tls</code></pre>
+<p>The chart mounts the Secret (<code>ca.crt</code> + <code>tls.crt</code> + <code>tls.key</code>) on every broker pod and the admin app dials brokers with the same bundle (<code>tls.adminClientSecretName</code> points the admin at a separate client-cert Secret if you keep identities apart). For in-cluster SANs use <code>scripts/tls/bootstrap-k8s.sh</code>, which mints certs against the headless service DNS. Certs are read at process start — rotation is a Secret replace plus a rolling restart, and same-CA rotation keeps every existing client working; the <a href="https://github.com/jeremainecheong/j-broker/blob/main/deploy/runbooks/README.md">certificate-expiry runbook</a> has the full procedure, including the two-step trust dance for rotating the CA itself.</p>
+
+<h2 id="principals">Principals</h2>
+<p>Identity is the client certificate's CN, nothing more: <code>--auth-mode mtls</code> (config <code>auth.mode</code>, env <code>JBROKER_AUTH_MODE</code>) derives the principal from the verified peer certificate's CN, rejects any RPC that arrives without one, and requires <code>tls.enabled</code>. So the cert <code>CN=alice</code> from the bootstrap script <em>is</em> the principal <code>alice</code>. Two consequences:</p>
+<ul>
+<li>Inter-broker replication and the admin app authenticate the same way. Their CNs must be in <code>super.users</code> <em>before</em> you flip <code>auth.mode=mtls</code>, or the cluster locks itself out — with the k8s bootstrap script's shared certs that is <code>super.users=broker,admin</code> (the Helm chart's <code>broker.auth.superUsers</code> default).</li>
+<li>Issuing a cert is granting an identity. Guard the CA key accordingly.</li>
+</ul>
+
+<h2 id="acls">ACLs</h2>
+<p>With <code>auth.mode=mtls</code>, authorization is <b>default-deny</b>: a principal may do exactly what an allow entry grants, and <code>super.users</code> bypass the checks entirely. Denied RPCs fail with <code>UNAUTHORIZED</code>. An ACL entry has five parts:</p>
+<table>
+<tr><th>Field</th><th>Values</th><th>Meaning</th></tr>
+<tr><td><code>principal</code></td><td>cert CN</td><td>Who the entry is about.</td></tr>
+<tr><td><code>resource_type</code></td><td><code>topic</code> | <code>group</code> | <code>cluster</code></td><td>What kind of resource.</td></tr>
+<tr><td><code>resource_name</code></td><td>name, or prefix with <code>prefix: true</code></td><td>Exact name unless <code>prefix</code> is set; <code>*</code> matches everything.</td></tr>
+<tr><td><code>operation</code></td><td><code>produce</code> | <code>consume</code> | <code>admin</code> | <code>*</code></td><td>What the principal may do.</td></tr>
+<tr><td><code>allow</code></td><td><code>true</code></td><td>Grant flag. Not part of the identity key on delete.</td></tr>
+</table>
+<p>Management is the three RPCs on the <code>jbroker.broker.Admin</code> gRPC service — <code>CreateAcl</code>, <code>DeleteAcl</code>, <code>ListAcls</code> (there is no <code>j-broker admin</code> CLI verb or REST path for ACLs). Create and delete propose a metadata record through Raft on the controller — non-leaders answer <code>NOT_LEADER</code> with the usual suggested-leader hints — and the replicated entry reaches every broker's cache, so <code>ListAcls</code> answers locally anywhere. A worked grant for one producing principal and one consuming principal, using <code>grpcurl</code> with the certs minted above (the caller must be a super-user or hold an <code>admin</code> grant). The broker does not serve gRPC reflection, so hand grpcurl the proto:</p>
+<pre><code>ACL() { grpcurl -import-path proto/src/main/proto -proto broker.proto \
+    -cacert .tls/ca.crt -cert .tls/admin.crt -key .tls/admin.key "$@"; }
+
+# alice may produce to any topic starting with "orders-":
+ACL \
+  -d '{"entry": {"principal": "alice", "resource_type": "topic",
+       "resource_name": "orders-", "prefix": true,
+       "operation": "produce", "allow": true}}' \
+  localhost:9092 jbroker.broker.Admin/CreateAcl
+
+# bob may consume those topics, and needs his consumer group too:
+ACL \
+  -d '{"entry": {"principal": "bob", "resource_type": "topic",
+       "resource_name": "orders-", "prefix": true,
+       "operation": "consume", "allow": true}}' \
+  localhost:9092 jbroker.broker.Admin/CreateAcl
+ACL \
+  -d '{"entry": {"principal": "bob", "resource_type": "group",
+       "resource_name": "orders-readers", "prefix": false,
+       "operation": "consume", "allow": true}}' \
+  localhost:9092 jbroker.broker.Admin/CreateAcl
+
+# List everything; delete by the same identity key (allow is ignored):
+ACL localhost:9092 jbroker.broker.Admin/ListAcls
+ACL \
+  -d '{"entry": {"principal": "alice", "resource_type": "topic",
+       "resource_name": "orders-", "prefix": true, "operation": "produce"}}' \
+  localhost:9092 jbroker.broker.Admin/DeleteAcl</code></pre>
+<div class="note">Deleting an unknown key is a no-op, and entries replicate to every broker before they take effect there — <code>AclReplicationIT</code> pins both behaviors.</div>
+
+<h2 id="admin-auth">Admin UI / API auth</h2>
+<p>Operator login is opt-in via <code>jbroker.admin.auth.users</code> — comma-separated <code>name:bcrypt-hash</code> pairs. Empty means the admin app is <b>open</b> (it logs a startup warning, matching pre-auth deployments). When set, every surface is gated: browsers authenticate through the <code>/login</code> form (session), scripts send <code>Authorization: Bearer</code> tokens. Unauthenticated API calls get <code>401</code> JSON; UI paths redirect to <code>/login</code>. <code>POST /api/v1/tokens</code> mints an API token and <code>POST /api/v1/tokens/revoke</code> kills one. <code>/login</code>, <code>/logout</code>, static assets and <code>/actuator/*</code> (the Prometheus scrape point) stay open. Every authenticated mutation is written to the <code>jbroker.audit</code> logger as <code>who method path</code>.</p>
+<p>On Helm, point <code>admin.auth.existingSecret</code> at a Secret whose <code>users</code> key holds the same pairs:</p>
+<pre><code>kubectl create secret generic jbroker-admin-users \
+    --from-literal=users="op:$(htpasswd -bnBC 10 '' 's3cret' | tr -d ':\n')"
+helm upgrade jb deploy/helm/j-broker --set admin.auth.existingSecret=jbroker-admin-users</code></pre>
+
+<h2 id="chaos">Chaos endpoint gating</h2>
+<p>Every broker can expose a cooperative chaos HTTP control plane (kill, pause, force-election, network partition, latency injection) — the engine behind the UI's Chaos page. It is triple-gated: <code>chaos.port</code> is <code>-1</code> (disabled) by default, the port refuses to bind without the explicit <code>chaos.enabled</code> opt-in, and once enabled every request must present the <code>chaos.token</code> bearer token — the broker refuses a chaos port without one. On Helm the token lives in a Secret named by <code>broker.chaosTokenSecret</code>, and the chart's NetworkPolicy keeps the chaos port admin-only. Leave the whole surface off outside failure-testing environments.</p>
+<p><img src="../screenshots/chaos.png" alt="Admin UI chaos page with live topology and per-broker actions" style="max-width:100%;border:1px solid var(--line);border-radius:8px"><br>The chaos page's per-broker kill/pause/partition actions — exactly why this surface is disabled by default and token-gated when on.</p>
+
+<h2 id="hardening">Hardening checklist</h2>
+<p>What to flip before pointing real traffic at a cluster, in rollout order:</p>
+<table>
+<tr><th>Switch</th><th>Setting</th><th>Default</th><th>Do</th></tr>
+<tr><td>TLS on every gRPC hop</td><td><code>tls.enabled</code> + <code>tls.cert/key/trust</code> (Helm: <code>tls.enabled</code>, <code>tls.secretName</code>)</td><td>off</td><td>Enable with certs from a real issuer; calendar the expiry — no metric warns you.</td></tr>
+<tr><td>Super-users seeded</td><td><code>super.users</code> (Helm: <code>broker.auth.superUsers</code>)</td><td>empty</td><td>Add the inter-broker and admin-app cert CNs <em>before</em> enabling mtls auth.</td></tr>
+<tr><td>Client authentication</td><td><code>auth.mode=mtls</code></td><td><code>none</code></td><td>Enable; principal-less RPCs are then rejected and ACLs enforce default-deny.</td></tr>
+<tr><td>ACL grants</td><td><code>Admin/CreateAcl</code></td><td>none (deny all)</td><td>Grant each workload principal the minimum produce/consume/admin scope.</td></tr>
+<tr><td>Admin operator login</td><td><code>jbroker.admin.auth.users</code> (Helm: <code>admin.auth.existingSecret</code>)</td><td>open + warning</td><td>Set before exposing the UI beyond the cluster; use bearer tokens for automation.</td></tr>
+<tr><td>Chaos control plane</td><td><code>chaos.enabled</code> / <code>chaos.port</code> / <code>chaos.token</code></td><td>disabled</td><td>Keep off. If used for drills, token-gate it and never expose the port.</td></tr>
+<tr><td>Network reachability</td><td>Helm <code>networkPolicy.enabled</code> + <code>clientFrom</code>/<code>adminFrom</code></td><td>off</td><td>Lock Raft to brokers, chaos/Redis to the admin, and scope client + UI ports (needs an enforcing CNI; add Prometheus to <code>adminFrom</code>).</td></tr>
+<tr><td>Admin exposure</td><td>Helm <code>admin.ingress.enabled</code></td><td>off</td><td>Only behind HTTPS, only with operator auth on.</td></tr>
+</table>
+
+<p>Vulnerability reports: see <a href="https://github.com/jeremainecheong/j-broker/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+</main><footer>j-broker documentation — Apache-2.0.</footer></body></html>

@@ -1,0 +1,171 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Operations — j-broker</title><link rel="stylesheet" href="../assets/site.css"></head><body>
+<nav class="top"><span class="brand">j-broker</span><a href="../index.html">Overview</a><a href="install.html">Install &amp; deploy</a><a href="producers.html">Producers</a><a href="consumers.html">Consumers</a><a href="operations.html" class="here">Operations</a><a href="security.html">Security</a><a href="https://github.com/jeremainecheong/j-broker">GitHub</a></nav>
+<main>
+<!-- Sources: broker-app/src/main/java/jbroker/app/AdminCli.java (CLI verbs/flags),
+     broker-app/README.md (config table, CLI synopsis), admin-app/README.md (REST paths),
+     deploy/runbooks/README.md, deploy/helm/j-broker/values.yaml,
+     deploy/helm/j-broker/templates/prometheusrule.yaml (alert names),
+     broker-app/src/main/java/jbroker/app/DemoCli.java (demo verbs),
+     broker-app/src/main/java/jbroker/app/Broker.java Config (quota fields),
+     broker-core/src/main/java/jbroker/broker/ProduceHandler.java (QUOTA_VIOLATED path).
+     Live outputs below were captured against the local 3-broker cluster
+     (localhost:9092-9094, admin http://localhost:15672) on docso-* topics. -->
+<h1>Operations</h1>
+<p class="lead">Day-to-day administration: topics, consumer groups, cluster lifecycle, monitoring, quotas, and storage. Every command here is the <code>j-broker</code> CLI (<code>broker-app/build/install/broker-app/bin/broker-app</code>) or the admin REST API it wraps.</p>
+
+<div class="note">The <code>admin</code> subcommand talks to the admin app's REST API, default <code>--admin http://localhost:9090</code>. Against the Docker Compose or Helm deployment, pass <code>--admin http://localhost:15672</code>. Every REST path lives under <code>/api/v1/</code> and uses snake_case JSON.</div>
+
+<h2 id="topics">Topics</h2>
+<pre><code>j-broker admin [--admin URL] topics list
+j-broker admin [--admin URL] topics describe --topic NAME
+j-broker admin [--admin URL] topics create   --topic NAME [--partitions N] [--rf N]
+j-broker admin [--admin URL] topics delete   --topic NAME</code></pre>
+<p>REST equivalents: <code>GET /api/v1/topics</code>, <code>GET /api/v1/topics/{name}</code>, <code>POST /api/v1/topics</code> with <code>{"name": "...", "partitions": N, "replication_factor": N, "config": {}}</code>, <code>DELETE /api/v1/topics/{name}</code>. Create answers <code>201</code>, delete <code>204</code>. Describe fans out to every broker and merges the leader-reported high watermark and log end offset per partition — run against the live cluster:</p>
+<pre><code>$ j-broker admin --admin http://localhost:15672 topics create --topic docso-ops --partitions 3 --rf 3
+HTTP 201
+$ j-broker admin --admin http://localhost:15672 topics describe --topic docso-ops
+HTTP 200
+{"name":"docso-ops","partitions":3,"replication_factor":3,"internal":false,"compact":false,
+ "partition_states":[{"partition":0,"leader":2,"isr":[2,3,1],"replicas":[2,3,1],
+   "leader_epoch":0,"partition_epoch":0,"high_watermark":0,"log_end_offset":0}, ...]}</code></pre>
+<p><img src="../screenshots/topic-detail.png" alt="Admin UI topic detail page" style="max-width:100%;border:1px solid var(--line);border-radius:8px"><br>The same describe merge in the admin UI: per-partition leader, ISR, HWM/LEO, force-compact buttons, and the edit-config modal.</p>
+
+<h3>Per-topic configuration</h3>
+<p>Topic config is a flat string map. <code>PATCH /api/v1/topics/{name}/config</code> takes the map directly and returns the merged effective config:</p>
+<pre><code>$ curl -X PATCH http://localhost:15672/api/v1/topics/docso-ops/config \
+    -H 'Content-Type: application/json' -d '{"retention.ms":"86400000"}'
+{"retention.ms":"86400000"}</code></pre>
+<p>These per-topic keys override the cluster defaults set on the broker (<code>broker-app/README.md</code> has the full cluster-default table):</p>
+<table>
+<tr><th>Key</th><th>Meaning</th></tr>
+<tr><td><code>retention.ms</code></td><td>Time retention. Cluster default 7 days; <code>-1</code> = unlimited.</td></tr>
+<tr><td><code>retention.bytes</code></td><td>Size-retention budget per partition. Default <code>-1</code> (unlimited).</td></tr>
+<tr><td><code>segment.bytes</code></td><td>Segment roll threshold. Cluster default 128 MiB.</td></tr>
+<tr><td><code>min.insync.replicas</code></td><td>acks=all durability floor for this topic. Cluster default 2; RF-1 topics clamp down.</td></tr>
+<tr><td><code>max.message.bytes</code></td><td>Largest serialized produce batch. Cluster default 1 MiB, hard cap 8 MiB.</td></tr>
+<tr><td><code>flush.messages</code> / <code>flush.ms</code></td><td>Explicit fsync triggers. Default off (fsync on segment roll + replication).</td></tr>
+<tr><td><code>cleanup.policy</code></td><td>Set to <code>compact</code> for key-based log compaction instead of deletion.</td></tr>
+</table>
+
+<h3>Force compaction</h3>
+<p>The cleaner ticks every 5 minutes (<code>log.cleaner.interval.ms</code>). To compact a partition now instead of waiting — also a button on the UI topic page:</p>
+<pre><code>$ curl -X POST http://localhost:15672/api/v1/topics/docso-ops/partitions/0/compact
+{"records_kept":0,"brokers_compacted":3}</code></pre>
+<p>The admin app fans the compaction out to every broker so all replicas converge to the compacted view.</p>
+
+<h2 id="groups">Consumer groups</h2>
+<pre><code>j-broker admin [--admin URL] groups list
+j-broker admin [--admin URL] groups describe --group ID</code></pre>
+<p>REST: <code>GET /api/v1/consumer-groups</code> and <code>GET /api/v1/consumer-groups/{id}</code>. Describe returns per partition the committed offset, high watermark, lag, and owning member — the raw material for lag diagnosis (read it twice a minute apart; the <a href="https://github.com/jeremainecheong/j-broker/blob/main/deploy/runbooks/README.md">lagging-consumer runbook</a> interprets the patterns). Live:</p>
+<pre><code>$ j-broker admin --admin http://localhost:15672 groups describe --group demo-pipeline
+HTTP 200
+{"group_id":"demo-pipeline","state":"Empty","generation":2,"assignor":"range","members":[],
+ "partitions":[{"topic":"demo-source","partition":0,"committed_offset":561,
+   "high_watermark":-1,"lag":-1,"owner_member_id":""}]}</code></pre>
+<p>Two group mutations exist on the REST/UI surface (no CLI verb):</p>
+<table>
+<tr><th>Operation</th><th>Call</th><th>Notes</th></tr>
+<tr><td>Reset offsets</td><td><code>POST /api/v1/consumer-groups/{id}/reset-offsets</code><br>body <code>{"resets": [{"topic": "T", "partition": 0, "offset": N}]}</code></td><td>Per-partition error codes come back in the response. Stop the consumers first — a live member's next commit overwrites the reset. Also a modal on the UI group page.</td></tr>
+<tr><td>Delete group</td><td><code>DELETE /api/v1/consumer-groups/{id}</code></td><td>Drops the group and its offsets; the next join re-forms it fresh.</td></tr>
+</table>
+<div class="note">Committed offsets of groups with no live members expire after <code>offsets.retention.ms</code> (default 7 days). A group idle longer than that loses its commits and the bundled consumer falls back to the log start — which reads as sudden huge lag plus reprocessing.</div>
+
+<h2 id="lifecycle">Cluster lifecycle</h2>
+<p>All lifecycle verbs route through <code>/api/v1/cluster/*</code> to the controller (the Raft leader); a non-leader answers <code>NOT_LEADER</code> with a suggested-leader hint and the admin app's broker pool retries there. Mutations answer <code>202</code> — joins, drains, and reassignments advance asynchronously on the controller tick, so you poll <code>cluster membership</code> / <code>cluster reassignments</code> to watch them. Start from the membership view (live):</p>
+<pre><code>$ j-broker admin --admin http://localhost:15672 cluster membership
+HTTP 200
+{"voter_ids":[1,2,3],"join":{"phase":"IDLE","broker_id":0,"lag":0},
+ "decommission":{"phase":"IDLE","broker_id":-1,"remaining_partitions":0,"detail":""}}</code></pre>
+<p><img src="../screenshots/raft.png" alt="Admin UI Raft state page" style="max-width:100%;border:1px solid var(--line);border-radius:8px"><br>The UI Raft page during lifecycle operations: one LEADER, converged terms and commit indexes across all voters.</p>
+
+<h3>Add a broker (learner → voter)</h3>
+<!-- Not run against the live cluster by instruction; verbs/flags from AdminCli.java,
+     flow from the membership join phases + ClusterLifecycle ITs. -->
+<pre><code>j-broker admin --admin URL cluster add-broker --id 4 --host broker4 --raft-port 9192 --broker-port 9092
+# REST: POST /api/v1/cluster/add-broker
+#       {"broker_id": 4, "host": "broker4", "raft_port": 9192, "broker_port": 9092}</code></pre>
+<p>Start the new broker process first (same voter list plus itself), then issue the join. The call returns <code>202</code>; the controller admits the broker as a non-voting learner, feeds it the Raft log, and promotes it to voter only once its replication lag closes. Watch <code>cluster membership</code>: <code>join.phase</code> leaves <code>IDLE</code>, <code>join.lag</code> counts down, and on completion the id appears in <code>voter_ids</code>. In the UI, the overview page's cluster-lifecycle panel drives the same call and the nodes table gains the new broker; <code>broker_registered</code> arrives on the SSE event stream. <em>Not run against the demo cluster.</em></p>
+
+<h3>Decommission a broker</h3>
+<pre><code>j-broker admin --admin URL cluster decommission --id 3
+# REST: POST /api/v1/cluster/decommission/3</code></pre>
+<p>Also <code>202</code>. The controller drains the broker: partition leaderships move to other ISR members, replicas are reassigned off it, and finally the id is removed from the voter set. Watch <code>cluster membership</code> — <code>decommission.phase</code>, <code>decommission.remaining_partitions</code> counting to zero, and <code>detail</code> for what it is currently moving. Expect <code>leader_changed</code> and <code>isr_shrink</code>/<code>isr_expand</code> events on the SSE stream while the drain runs. Keep the voter count odd afterwards: Raft write availability needs a majority. <em>Not run against the demo cluster.</em></p>
+
+<h3>Partition reassignment</h3>
+<pre><code>j-broker admin --admin URL cluster reassign --topic T --partition 0 --replicas 1,2,4
+j-broker admin --admin URL cluster reassignments
+j-broker admin --admin URL cluster cancel-reassignment --topic T --partition 0
+# REST: POST   /api/v1/cluster/reassignments   {"topic": "T", "partition": 0, "replicas": [1,2,4]}
+#       GET    /api/v1/cluster/reassignments
+#       DELETE /api/v1/cluster/reassignments/T/0</code></pre>
+<p>The new replica set is copied via the ordinary replica-fetch path: added replicas catch up from the leader, join the ISR, and only then do removed replicas drop out. Catch-up traffic on a broker that is gaining a replica is rate-limited by the broker config <code>reassignmentThrottleBytesPerSec</code> (a <code>Broker.Config</code> field; 0 disables the throttle) so a move cannot starve client traffic. <code>GET /api/v1/cluster/reassignments</code> lists what is still in flight (an empty <code>[]</code> means done — live output above); <code>DELETE</code> cancels an in-flight move and the UI overview panel exposes the same cancel action. While a move runs, the Partitions Grafana dashboard shows the new follower's <code>jbroker_replication_lag_records</code> falling and <code>jbroker_isr_size</code> stepping up when it joins. <em>Reassignment was not exercised on the demo cluster; the list/cancel calls were.</em></p>
+
+<h3>Preferred-leader rebalance</h3>
+<pre><code>$ curl -X POST http://localhost:15672/api/v1/cluster/rebalance-leadership   # live: HTTP 200
+# CLI: j-broker admin --admin URL cluster rebalance-leaders</code></pre>
+<p>Re-spreads partition leadership toward each partition's preferred (first-listed) replica after failovers have piled leadership onto few brokers. A background balancer does this continuously; the verb forces a pass now. Watch the topic describe output (leader ids) or the <code>leader_changed</code> SSE events; on the demo cluster with balanced leadership it is a no-op, which is the healthy answer.</p>
+
+<h3>What failover looks like</h3>
+<p>Broker failure needs no lifecycle verb at all — the controller's fencer demotes a dead broker's leaderships to surviving ISR members within about 3.5 seconds of its last heartbeat, and clients re-route on the leader hints:</p>
+<video src="../media/leader-failover.mp4" autoplay loop muted playsinline style="max-width:100%;border:1px solid var(--line);border-radius:8px"></video>
+<p>A producer and consumer running through <code>docker kill</code> of the partition leader: both log the reroute to the new leader and continue without message loss.</p>
+
+<h2 id="monitoring">Monitoring</h2>
+<p>The admin app is the single scrape point. Its <code>MetricsScraper</code> fans <code>DescribeMetrics</code> out to every broker every 5s and re-exposes the merged snapshot as <code>jbroker_*</code> gauges tagged by <code>broker_id</code> at <code>/actuator/prometheus</code> — broker pods have no metrics port of their own. One consequence to internalize: when a broker stops answering, its gauges <em>freeze</em> at their last values rather than dropping to zero; <code>jbroker_broker_scrape_ok</code> is the staleness signal.</p>
+<p>Local Prometheus + Grafana stack (Prometheus on <a href="http://localhost:9091">:9091</a>, Grafana on <a href="http://localhost:3000">:3000</a>, dashboards auto-provisioned from <code>scripts/monitoring/grafana/dashboards/</code> — <em>Cluster Overview</em> and <em>Partitions</em>):</p>
+<pre><code>docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up</code></pre>
+<p><img src="../screenshots/metrics.png" alt="Admin UI metrics page with throughput and latency charts" style="max-width:100%;border:1px solid var(--line);border-radius:8px"><br>The admin UI's own metrics page: rolling throughput and p50/p99/p999 latency, backed by <code>GET /api/v1/metrics/throughput</code>, <code>/metrics/latency</code>, and <code>/metrics/timeseries?window=5m</code>.</p>
+
+<h3>Alert pack</h3>
+<p>On Kubernetes with prometheus-operator, enable <code>metrics.serviceMonitor.enabled</code> (scrapes the admin's <code>/actuator/prometheus</code>; keep the interval at or above the admin's own 5s broker-scrape cadence) and <code>metrics.prometheusRule.enabled</code> together — the rule expressions assume the <code>namespace</code> target label the ServiceMonitor attaches. The full pack, from <code>deploy/helm/j-broker/templates/prometheusrule.yaml</code>:</p>
+<table>
+<tr><th>Alert</th><th>Severity</th><th>Fires when</th></tr>
+<tr><td><code>JBrokerUnderReplicatedPartitions</code></td><td>warning</td><td>A partition's ISR has been smaller than its assigned replica set for 10m. Precursor to <code>NOT_ENOUGH_REPLICAS</code> produce failures.</td></tr>
+<tr><td><code>JBrokerReplicationLagHigh</code></td><td>warning</td><td>A follower has stayed more than <code>thresholds.replicationLagRecords</code> (default 1000) records behind its leader for 15m — about to fall out of the ISR.</td></tr>
+<tr><td><code>JBrokerReplicationStalled</code></td><td>critical</td><td>The leader holds records past the high watermark and the watermark has not moved in 10m — follower fetch is wedged, not slow. Consumers cannot see the stuck records.</td></tr>
+<tr><td><code>JBrokerRaftTermFlapping</code></td><td>warning</td><td>The metadata-Raft term rose more than <code>thresholds.raftTermIncreasesPer10m</code> (default 3) times in 10m — the controller quorum keeps re-electing; metadata operations stall.</td></tr>
+<tr><td><code>JBrokerBrokerUnreachable</code></td><td>critical</td><td><code>jbroker_broker_scrape_ok == 0</code> for 5m — a broker stopped answering the admin's metrics fan-out. Its other gauges are stale while this fires.</td></tr>
+<tr><td><code>JBrokerDiskHeadroomLow</code></td><td>critical</td><td><code>jbroker_disk_headroom_low == 1</code> for 5m — the broker is refusing produces with <code>STORAGE_FULL</code>. Keyed on the broker's own flag so the chart carries no byte threshold that could drift.</td></tr>
+<tr><td><code>JBrokerOfflinePartitions</code></td><td>critical</td><td><code>jbroker_offline_partitions &gt; 0</code> for 5m — partitions whose entire ISR is down. Controller-reported, because per-partition gauges go stale (not zero) when leaderless and can never alert on this themselves.</td></tr>
+<tr><td><code>JBrokerMinIsrRejections</code></td><td>warning</td><td><code>jbroker_not_enough_replicas_rejections</code> keeps growing — acks=all produces are failing the <code>min.insync.replicas</code> floor while producers retry.</td></tr>
+<tr><td><code>JBrokerAdminMetricsDown</code></td><td>critical</td><td>Rendered only with the ServiceMonitor: Prometheus has not scraped the admin endpoint for 5m. Every other alert in the pack is blind while this fires.</td></tr>
+</table>
+
+<h2 id="quotas">Quotas</h2>
+<!-- Source: Broker.java Config record (produceQuotaBytesPerSec / fetchQuotaBytesPerSec /
+     quotaRedisUrl), QuotaEnforcer.java, ProduceHandler.java, ErrorCodes.QUOTA_VIOLATED=86. -->
+<p>Per-principal byte-rate quotas on the produce and fetch paths. Configured on the broker's <code>Broker.Config</code>: <code>produceQuotaBytesPerSec</code> and <code>fetchQuotaBytesPerSec</code> (a rate of <code>0</code>, the default, disables that quota entirely) and <code>quotaRedisUrl</code>. Follower replication traffic rides the separate <code>ReplicaFetch</code> RPC, which has no quota gate — capping clients can never stall the ISR.</p>
+<p><b>Deny semantics:</b> an over-budget request is rejected — not silently delayed — with error <code>QUOTA_VIOLATED</code> and a message carrying the configured rate and a retry-after: <code>produce quota exceeded: N B/s; retry in Mms</code>. Well-behaved clients back off for the stated <code>throttleMillis</code> and retry. Denials are counted into the metrics snapshot (<code>produce_quota_throttle_millis</code> / <code>fetch_quota_throttle_millis</code> in <code>DescribeMetrics</code>).</p>
+<p><b>Scope:</b> with no Redis URL, each broker enforces its own in-memory bucket, so a principal's effective cluster budget is per-broker. Point <code>quotaRedisUrl</code> at a shared Redis (the Helm chart's <code>redis.enabled</code> bundles one) and the counters become cluster-wide — one budget per principal across all brokers.</p>
+
+<h2 id="storage">Storage operations</h2>
+<h3>Retention sizing</h3>
+<p>With <code>retention.bytes</code> set, each partition's on-disk footprint converges to the band <code>[retention.bytes, retention.bytes + segment.bytes)</code> — the cleaner (5-minute tick) only deletes whole segments. Size volumes as <code>partitions × (retention.bytes + segment.bytes)</code> per broker plus headroom, and alert on <code>jbroker_disk_usable_bytes</code> well above the watermark.</p>
+<h3>Disk headroom</h3>
+<p>Each broker probes its data volume every 10s. Below the <code>storage.headroom.bytes</code> watermark (default 1 GiB, env <code>JBROKER_STORAGE_HEADROOM_BYTES</code>) it refuses client produces with retriable <code>STORAGE_FULL</code> while fetch, replication, offset commits, and admin RPCs keep serving — the degradation is produce-only by design, and produces resume on the first probe after space frees. Remediation order: tighten retention, force-compact, delete topics, grow the volume.</p>
+<h3>Backup and restore</h3>
+<pre><code># Back up from a cleanly stopped broker: copy the ENTIRE data dir —
+# partition logs AND Raft state together, never separately.
+
+# Gate every backup (and every restore) on the offline integrity check:
+$ j-broker admin verify-log /path/to/backup/data
+OK      docso-ops-0  segments=1 batches=12 records=48 nextOffset=48
+...
+N partition(s) verified clean</code></pre>
+<p><code>verify-log</code> CRC-verifies every batch of every partition without modifying anything and exits <code>1</code> on any corrupt batch, so restore scripts can gate on it. It accepts the data dir or its <code>topics/</code> subdirectory. To restore, boot a broker on the copy with the same id and ports. Run it when you <em>take</em> the backup, not when you need it.</p>
+<h3>The format-version marker</h3>
+<p>A <code>format.version</code> marker at the data-dir root records the on-disk format the data was written with. Upgrades read older data forward; a rolling <em>downgrade</em> onto newer data fails loudly at boot instead of corrupting silently. A broker that refuses to start right after a version change is this marker doing its job — not corruption.</p>
+
+<h2 id="incidents">Incident response</h2>
+<p>The <a href="https://github.com/jeremainecheong/j-broker/blob/main/deploy/runbooks/README.md">operations runbooks</a> cover the six failure modes an operator actually meets — broker down, disk full, offline partition, lagging consumer group, certificate expiry, and full-cluster cold start — each with symptoms (including which alerts fire), diagnosis commands, remediation, and prevention. They are the incident-time reference; this page is the steady-state one.</p>
+
+<h2 id="demo">The demo as a learning tool</h2>
+<p>The built-in demo drives a real workload you can watch through every surface on this page — the UI, the CLI, and the metrics:</p>
+<pre><code>j-broker demo feed     --bootstrap H:P,... --topic T --count N [--rate R] [--partitions K] [--prefix S]
+j-broker demo drain    --bootstrap H:P,... --group G --topic T [--topic T2 ...]
+j-broker demo pipeline --bootstrap H:P,... --source S --sink D --group G --txn-id ID --expected N
+j-broker demo verify   --bootstrap H:P,... --source S --sink D --group G --expected N</code></pre>
+<p><code>feed</code> produces at a controllable rate, <code>drain</code> consumes with a group, <code>pipeline</code> runs a transactional consume-transform-produce stage, and <code>verify</code> audits the result end to end (it prints <code>verify: PASS, exactly-once contract holds</code> on success). Run a feed, then watch lag move in <code>groups describe</code>, throughput on the metrics page, and per-partition state in <code>topics describe</code> — the fastest way to connect the admin surfaces to real traffic.</p>
+
+<p>For how the pieces fit together underneath — Raft metadata, replication, the controller — see the <a href="https://github.com/jeremainecheong/j-broker/blob/main/docs/architecture/README.md">architecture deep dive</a>.</p>
+</main><footer>j-broker documentation — Apache-2.0.</footer></body></html>

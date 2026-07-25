@@ -83,6 +83,7 @@ Highlights:
 | `broker.persistence.size` | `10Gi` | Per-broker PVC size. |
 | `broker.podDisruptionBudget.enabled` | `true` | PDB capping voluntary evictions at `maxUnavailable: 1` so drains never cost Raft its majority. |
 | `broker.podAntiAffinity.enabled` | `true` | Soft anti-affinity spreading brokers across nodes; single-node clusters still schedule. |
+| `broker.rack.enabled` | `false` | Rack awareness: each pod reads its `topology.kubernetes.io/zone` **pod** label via the downward API (`JBROKER_RACK`) and topic placement spreads replicas across the racks brokers report. The pods themselves must carry the label (downward API cannot read node labels); a pod missing it fails with `CreateContainerConfigError`. Leave off on single-zone clusters. |
 | `broker.advertisedHostTemplate` | `""` | `sprintf`-style template used to build `--advertised-listeners` for external clients. Empty → skip the flag. |
 | `admin.replicaCount` | `1` | Bump + enable Redis for multi-pod SSE fan-out. |
 | `admin.ingress.enabled` | `false` | Stand up an Ingress for the admin UI. |

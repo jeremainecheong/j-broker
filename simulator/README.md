@@ -10,22 +10,22 @@ flowchart LR
         Driver[Seeded scenario driver<br/>--seed N reproduces exactly]
         Bus[Mock event bus]
         Clock[Virtual clock]
-        Inv[Invariant checkers:<br/>· election safety<br/>· log matching<br/>· leader completeness<br/>· state-machine safety]
+        Inv[Invariant checkers:<br/>· election safety<br/>· state-machine safety<br/>· log matching<br/>· commit monotonicity]
     end
 
     subgraph Core[raft-core]
         RC[RaftCore.step<br/>pure step-function]
     end
 
-    Pinned[(pinned-seeds/<br/>seeds that ever<br/>caught a real bug)]
+    Injected[InjectedBugTest<br/>deliberately broken Raft<br/>must be caught ≤1000 seeds]
 
     Driver -->|RaftEvents| Bus
     Bus --> RC
     RC -->|RaftEffects| Bus
     Clock -->|tick events| Bus
     Bus --> Inv
-    Inv -->|on violation| Trace[Failure trace<br/>full event log]
-    Pinned -->|always run| Driver
+    Inv -->|on violation| Trace[Failure names its seed<br/>replay = same Simulator&lpar;seed&rpar;]
+    Injected -->|gates detector strength| Inv
 
     Real[Real ITs in integration-tests/<br/>real gRPC · real timing] -.complement.-> Sim
 ```
@@ -34,11 +34,11 @@ The pure step-function design in `raft-core` is what enables this: no I/O, no th
 
 ## What it checks
 
-Across 10k seeded scenarios per CI run:
+Across 10k seeded scenarios per CI run (`ChaosSoakTest` under message loss/duplication, `MembershipSoakTest` under config churn), the four invariants from `Invariants.java`:
 - **Election safety** — at most one leader per term.
-- **Log-matching** — two logs with the same (term, index) entry agree on every prior entry.
-- **Leader-completeness** — any committed entry is present in the log of every future leader.
-- **State-machine safety** — followers apply entries in commit order.
+- **State-machine safety** — no two nodes apply different entries at the same index.
+- **Log matching** — two logs with the same (index, term) entry agree on every prior entry.
+- **Commit monotonicity** — a node's committed entry at some index is never replaced.
 
 ## Why separate from integration-tests
 
@@ -52,12 +52,11 @@ This split is what the pure step-function design in `raft-core` (no IO, no threa
 ## Running
 
 ```bash
-./gradlew :simulator:test               # 10k scenarios, random seeds
-./gradlew :simulator:test --seed 42     # reproduce one seed
+./gradlew :simulator:test   # seeds 1..10,000 under chaos + membership churn
 ```
 
-A failed seed prints the full event trace leading to the invariant violation so you can replay it in the `raft-core` debugger.
+The seed range is fixed, so every CI run covers the same scenario space. A violation fails with the offending seed in the assertion message; reproduce it by constructing `new Simulator(seed, nodes, chaos)` with that seed in a scratch test and stepping it under the `raft-core` debugger — same seed, same event order, every time.
 
-## Counterexample archive
+## Detector strength
 
-Seeds that ever surfaced real bugs get pinned in `simulator/src/test/resources/pinned-seeds/` so regressions land as clean failures instead of slipping back in.
+`InjectedBugTest` keeps the checkers honest: it runs a deliberately broken Raft (persists `currentTerm` but drops `votedFor` — a node can vote twice in one term) and asserts the invariants catch it within 1000 seeds. Bugs the simulator found in the real implementation were fixed and then pinned as deterministic unit tests in `raft-core` (see the conflict-index and commit-rule entries in that README's pitfalls table), so regressions land as clean failures.

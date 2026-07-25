@@ -2539,7 +2539,16 @@ public final class Broker implements AutoCloseable {
             if (recovered.containsKey(p)) continue;
             var ps = topicManager.partitionState(jbroker.broker.ConsumerOffsetsTopic.NAME, p);
             if (ps.isEmpty() || ps.get().leader() != selfBrokerId) continue;
-            int offsetsApplied = jbroker.broker.group.OffsetCacheRecovery.rebuild(logManager, p, offsetCache);
+            // Staging-aware walk: transactional offset batches replay into
+            // the coordinator's live staging (so a marker arriving after
+            // activation still decides them), markers fold/discard in log
+            // order, plain records apply directly.
+            int offsetsApplied = jbroker.broker.group.OffsetCacheRecovery.rebuild(
+                    logManager,
+                    jbroker.broker.ConsumerOffsetsTopic.NAME,
+                    p,
+                    offsetCache,
+                    groupCoordinator.txnOffsetStaging());
             jbroker.broker.group.GroupMetadataRecovery.rebuild(logManager, p, groupCoordinator, System.nanoTime());
             recovered.put(p, Boolean.TRUE);
             log.info(

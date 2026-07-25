@@ -637,6 +637,20 @@ public final class MetadataServiceHandler {
                         .setRaftLastLogIndex(obs.lastLogIndex());
             }
         }
+        // Offline partitions, counted from the replicated partition table
+        // (leader <= 0 after the fencer demotes a dead sole-ISR leader).
+        // Reported only while this broker is the controller so the fan-out
+        // has exactly one authoritative non-zero reporter and the admin
+        // binder can take max() without double counting. Non-controllers
+        // report 0 — present, not absent — so a controller change zeroes
+        // the previous reporter on its next scrape instead of freezing it.
+        if (topicManager != null
+                && currentLeaderId.get().map(id -> id == selfBrokerId).orElse(false)) {
+            long offline = topicManager.allPartitionAssignments().stream()
+                    .filter(a -> a.state().leader() <= 0)
+                    .count();
+            builder.setOfflinePartitions(offline);
+        }
         // Per-partition metrics (leader-only).
         for (var s : partitionMetricsProvider.snapshot()) {
             var p = jbroker.proto.broker.PartitionMetrics.newBuilder()

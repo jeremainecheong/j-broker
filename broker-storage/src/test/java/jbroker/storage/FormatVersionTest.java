@@ -37,24 +37,73 @@ class FormatVersionTest {
     @Test
     void olderMarkerProceedsWithoutRestamping(@TempDir Path dir) throws Exception {
         Files.writeString(marker(dir), "1\n");
-        // A hypothetical newer binary proceeds and leaves the marker alone:
+        // This binary proceeds on an older marker and leaves it alone:
         // only a completed migration may move it forward, so a crash before
         // that still rolls back cleanly to the older binary.
-        assertThat(FormatVersion.check(dir, 2)).isEqualTo(1);
+        assertThat(FormatVersion.check(dir)).isEqualTo(1);
         assertThat(Files.readString(marker(dir))).isEqualTo("1\n");
     }
 
     @Test
     void newerMarkerRefuses(@TempDir Path dir) throws Exception {
-        Files.writeString(marker(dir), "2\n");
+        int newer = FormatVersion.CURRENT + 1;
+        Files.writeString(marker(dir), newer + "\n");
         assertThatThrownBy(() -> FormatVersion.check(dir))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("format 2")
-                .hasMessageContaining("format 1")
+                .hasMessageContaining("format " + newer)
+                .hasMessageContaining("format " + FormatVersion.CURRENT)
                 .hasMessageContaining("newer broker")
                 .hasMessageContaining("upgrade the binary or restore from backup");
         // Refusal never rewrites operator data.
-        assertThat(Files.readString(marker(dir))).isEqualTo("2\n");
+        assertThat(Files.readString(marker(dir))).isEqualTo(newer + "\n");
+    }
+
+    @Test
+    void downgradedBinaryRefusesATransactionsMarker(@TempDir Path dir) throws Exception {
+        // The point of the control-batch gate: once a directory is stamped
+        // with the transactions format, a binary from before control
+        // batches (current = 1) must refuse it at open.
+        Files.writeString(marker(dir), FormatVersion.TRANSACTIONS + "\n");
+        assertThatThrownBy(() -> FormatVersion.check(dir, 1))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("format " + FormatVersion.TRANSACTIONS)
+                .hasMessageContaining("newer broker");
+    }
+
+    @Test
+    void ensureAtLeastRaisesAnOlderMarker(@TempDir Path dir) throws Exception {
+        Files.writeString(marker(dir), "1\n");
+        assertThat(FormatVersion.ensureAtLeast(dir, FormatVersion.TRANSACTIONS)).isEqualTo(FormatVersion.TRANSACTIONS);
+        assertThat(Files.readString(marker(dir)).trim()).isEqualTo(Integer.toString(FormatVersion.TRANSACTIONS));
+    }
+
+    @Test
+    void ensureAtLeastLeavesAnEqualOrNewerMarkerAlone(@TempDir Path dir) throws Exception {
+        Files.writeString(marker(dir), FormatVersion.TRANSACTIONS + "\n");
+        assertThat(FormatVersion.ensureAtLeast(dir, FormatVersion.TRANSACTIONS)).isEqualTo(FormatVersion.TRANSACTIONS);
+        assertThat(Files.readString(marker(dir))).isEqualTo(FormatVersion.TRANSACTIONS + "\n");
+    }
+
+    @Test
+    void ensureAtLeastStampsAFreshDir(@TempDir Path dir) throws Exception {
+        assertThat(FormatVersion.ensureAtLeast(dir, FormatVersion.TRANSACTIONS)).isEqualTo(FormatVersion.CURRENT);
+        assertThat(Files.readString(marker(dir)).trim()).isEqualTo(Integer.toString(FormatVersion.CURRENT));
+    }
+
+    @Test
+    void ensureAtLeastRefusesVersionsThisBinaryCannotWrite(@TempDir Path dir) {
+        assertThatThrownBy(() -> FormatVersion.ensureAtLeast(dir, FormatVersion.CURRENT + 1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("only writes up to " + FormatVersion.CURRENT);
+    }
+
+    @Test
+    void ensureAtLeastStillRefusesUnreadableMarkers(@TempDir Path dir) throws Exception {
+        Files.writeString(marker(dir), "garbage\n");
+        assertThatThrownBy(() -> FormatVersion.ensureAtLeast(dir, FormatVersion.TRANSACTIONS))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("unreadable format marker");
+        assertThat(Files.readString(marker(dir))).isEqualTo("garbage\n");
     }
 
     @Test

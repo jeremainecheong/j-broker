@@ -121,13 +121,22 @@ public final class LogManager implements AutoCloseable {
         }
     }
 
+    /**
+     * The data dir's marker version as of the last {@link FormatVersion}
+     * interaction. Fast-path read for the control-append gate; only ever
+     * moves forward, under {@link #formatLock}.
+     */
+    private volatile int diskFormat;
+
+    private final Object formatLock = new Object();
+
     public LogManager(Path rootDir, Config config) throws IOException {
         this.rootDir = rootDir;
         this.config = config;
         Files.createDirectories(rootDir);
         // Refuse before spawning anything: a data dir written by a newer
         // broker must fail the open, not be reinterpreted.
-        FormatVersion.check(rootDir);
+        this.diskFormat = FormatVersion.check(rootDir);
         this.cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = Thread.ofVirtual().unstarted(r);
             t.setName("log-cleaner");
@@ -154,8 +163,24 @@ public final class LogManager implements AutoCloseable {
             var logConfig =
                     new Log.Config(effective.segmentBytes(), effective.retentionMillis(), config.indexIntervalBytes());
             var log = Log.open(dir, logConfig);
+            log.setControlAppendGate(this::ensureControlWritable);
             logs.put(key, log);
             return log;
+        }
+    }
+
+    /**
+     * Gate run before any log under this root writes its first control
+     * batch: a data dir still marked format 1 (written before control
+     * batches existed) is re-stamped to {@link FormatVersion#TRANSACTIONS}
+     * so a rolling downgrade to a binary that would misread markers as
+     * application data refuses at open. Idempotent and cheap once stamped.
+     */
+    public void ensureControlWritable() throws IOException {
+        if (diskFormat >= FormatVersion.TRANSACTIONS) return;
+        synchronized (formatLock) {
+            if (diskFormat >= FormatVersion.TRANSACTIONS) return;
+            diskFormat = FormatVersion.ensureAtLeast(rootDir, FormatVersion.TRANSACTIONS);
         }
     }
 

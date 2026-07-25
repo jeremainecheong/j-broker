@@ -44,6 +44,7 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
     private final LongSupplier metadataOffset;
     private final long intervalMs;
     private final BooleanSupplier paused;
+    private final String rack;
     private final ScheduledExecutorService scheduler;
     private final io.grpc.netty.shaded.io.netty.handler.ssl.SslContext sslCtx;
     private final java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory;
@@ -103,6 +104,19 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             BooleanSupplier paused,
             TlsConfig tls,
             java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory) {
+        this(selfBrokerId, peers, metadataOffset, intervalMs, paused, tls, chaosInterceptorFactory, "");
+    }
+
+    /** Rack-aware constructor: {@code rack} rides every heartbeat so peers learn it. Blank = none. */
+    public BrokerHeartbeatSender(
+            int selfBrokerId,
+            java.util.List<PeerAddress> peers,
+            LongSupplier metadataOffset,
+            long intervalMs,
+            BooleanSupplier paused,
+            TlsConfig tls,
+            java.util.function.IntFunction<io.grpc.ClientInterceptor> chaosInterceptorFactory,
+            String rack) {
         this.selfBrokerId = selfBrokerId;
         this.peers = java.util.List.copyOf(peers);
         this.metadataOffset = metadataOffset;
@@ -119,6 +133,7 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
             throw new IllegalStateException("TLS client context build failed", e);
         }
         this.chaosInterceptorFactory = chaosInterceptorFactory;
+        this.rack = rack == null ? "" : rack;
         for (var p : this.peers) {
             var ch = buildChannel(p);
             channels.put(p.brokerId(), ch);
@@ -157,6 +172,7 @@ public final class BrokerHeartbeatSender implements AutoCloseable {
                 .setCurrentMetadataOffset(offset)
                 .setSupportedProtocolMin(ProtocolVersion.MIN_SUPPORTED)
                 .setSupportedProtocolMax(ProtocolVersion.CURRENT)
+                .setRack(rack)
                 .build();
         for (var p : peers) {
             var stub = stubs.get(p.brokerId());

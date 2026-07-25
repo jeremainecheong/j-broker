@@ -18,10 +18,23 @@ public final class BrokerHeartbeatHandler {
 
     private final BrokerLiveness liveness;
     private final LongSupplier clockNanos;
+    private final java.util.function.BiConsumer<Integer, String> rackSink;
 
     public BrokerHeartbeatHandler(BrokerLiveness liveness, LongSupplier clockNanos) {
+        this(liveness, clockNanos, null);
+    }
+
+    /**
+     * Rack-aware constructor: {@code rackSink} (typically
+     * {@link BrokerRegistry#noteRack}) receives the rack label each peer
+     * declares on its heartbeat, blank included so a peer restarted
+     * without a rack sheds its old label.
+     */
+    public BrokerHeartbeatHandler(
+            BrokerLiveness liveness, LongSupplier clockNanos, java.util.function.BiConsumer<Integer, String> rackSink) {
         this.liveness = liveness;
         this.clockNanos = clockNanos;
+        this.rackSink = rackSink;
     }
 
     public BrokerHeartbeatResponse handle(BrokerHeartbeatRequest req) {
@@ -31,6 +44,9 @@ public final class BrokerHeartbeatHandler {
         if (req.getSupportedProtocolMax() > 0) {
             liveness.recordProtocolRange(
                     req.getBrokerId(), req.getSupportedProtocolMin(), req.getSupportedProtocolMax());
+        }
+        if (rackSink != null) {
+            rackSink.accept(req.getBrokerId(), req.getRack());
         }
         return BrokerHeartbeatResponse.newBuilder().build();
     }

@@ -836,4 +836,115 @@ class ClusterClientTest {
         // surfaces to the caller instead of being masked by rotation.
         assertThat(h.world.calls).noneMatch(c -> c.startsWith("2:"));
     }
+
+    // ---- stats ----
+
+    @Test
+    void statsStartAtZeroAndStayZeroOnCleanCalls() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        var client = h.client();
+
+        produceOne(client, "t");
+        produceOne(client, "t");
+
+        assertThat(client.stats().retries()).isZero();
+        assertThat(client.stats().rotations()).isZero();
+        assertThat(client.stats().hintFollows()).isZero();
+        assertThat(client.stats().retriesExhausted()).isZero();
+    }
+
+    @Test
+    void statsCountEachCompletedBackoffAsARetry() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        var client = h.client();
+        for (int i = 0; i < 2; i++) {
+            h.world.script(
+                    1,
+                    "produce",
+                    ProduceResponse.newBuilder()
+                            .setError(retriable(jbroker.broker.ErrorCodes.NOT_ENOUGH_REPLICAS, "isr below floor"))
+                            .build());
+        }
+
+        assertThat(produceOne(client, "t")).isEqualTo(0L);
+
+        assertThat(client.stats().retries())
+                .as("one retry per completed backoff sleep")
+                .isEqualTo(h.ticker.sleepsMs.size())
+                .isEqualTo(2L);
+        assertThat(client.stats().rotations()).isZero();
+        assertThat(client.stats().retriesExhausted()).isZero();
+    }
+
+    @Test
+    void statsCountChannelDropsAsRotations() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        var client = h.client();
+        produceOne(client, "t");
+
+        h.world.down.add(1);
+        h.world.partitionLeaders.put("t", 2);
+
+        assertThat(produceOne(client, "t")).isEqualTo(1L);
+
+        assertThat(client.stats().rotations())
+                .as("the UNAVAILABLE attempt dropped broker 1's channel")
+                .isEqualTo(1L);
+        assertThat(client.stats().retries()).isPositive();
+    }
+
+    @Test
+    void statsCountFollowedLeaderHints() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        var client = h.client();
+        produceOne(client, "t");
+
+        h.world.script(
+                1,
+                "produce",
+                ProduceResponse.newBuilder()
+                        .setError(Error.newBuilder()
+                                .setCode(jbroker.broker.ErrorCodes.NOT_LEADER)
+                                .setMessage("leader moved")
+                                .putHint("suggested_leader_id", "2")
+                                .putHint("suggested_leader_host", B2.host())
+                                .putHint("suggested_leader_port", Integer.toString(B2.port())))
+                        .build());
+        h.world.partitionLeaders.put("t", 2);
+
+        produceOne(client, "t");
+
+        assertThat(client.stats().hintFollows()).isEqualTo(1L);
+        assertThat(client.stats().retries())
+                .as("a hint follow retries without backing off")
+                .isZero();
+    }
+
+    @Test
+    void statsCountRetriesExhaustedOnce() {
+        var h = new Harness().threeBrokers();
+        h.world.partitionLeaders.put("t", 1);
+        var client = h.client(List.of(B1), config(3_000));
+        h.ticker.onSleep = () -> h.world.script(
+                1,
+                "produce",
+                ProduceResponse.newBuilder()
+                        .setError(retriable(jbroker.broker.ErrorCodes.NOT_ENOUGH_REPLICAS, "isr below floor"))
+                        .build());
+        h.world.script(
+                1,
+                "produce",
+                ProduceResponse.newBuilder()
+                        .setError(retriable(jbroker.broker.ErrorCodes.NOT_ENOUGH_REPLICAS, "isr below floor"))
+                        .build());
+
+        assertThatThrownBy(() -> produceOne(client, "t")).isInstanceOf(ClusterClient.RetriesExhaustedException.class);
+
+        assertThat(client.stats().retriesExhausted()).isEqualTo(1L);
+        assertThat(client.stats().retries()).isEqualTo(h.ticker.sleepsMs.size());
+    }
 }

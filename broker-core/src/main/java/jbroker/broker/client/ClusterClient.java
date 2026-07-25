@@ -149,6 +149,49 @@ public final class ClusterClient implements AutoCloseable {
     }
 
     /**
+     * Live counters over the client's failure-handling machinery,
+     * readable any time via {@link #stats()}. Plain {@link LongAdder}s
+     * behind long accessors — the client stays free of any metrics
+     * library; an application that wants these in a registry polls the
+     * accessors from its own gauges.
+     */
+    public static final class Stats {
+        private final java.util.concurrent.atomic.LongAdder retries = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder rotations = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder hintFollows = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder retriesExhausted =
+                new java.util.concurrent.atomic.LongAdder();
+
+        /**
+         * Backed-off re-attempts across all calls: counted once per
+         * completed backoff sleep. Hint follows are excluded — they
+         * retry immediately without sleeping and have their own counter.
+         */
+        public long retries() {
+            return retries.sum();
+        }
+
+        /**
+         * Channels dropped after a retriable transport failure on a
+         * routed call — each one forces the retry onto a refreshed (or
+         * different) broker.
+         */
+        public long rotations() {
+            return rotations.sum();
+        }
+
+        /** NOT_LEADER envelopes whose {@code suggested_leader_*} hints were followed directly. */
+        public long hintFollows() {
+            return hintFollows.sum();
+        }
+
+        /** Calls that gave up entirely: one per {@link RetriesExhaustedException} raised. */
+        public long retriesExhausted() {
+            return retriesExhausted.sum();
+        }
+    }
+
+    /**
      * Per-endpoint wire seam. Production code connects real gRPC channels
      * via the default factory; unit tests substitute a scripted fake so the
      * routing, cache-refresh, and backoff logic runs without a broker.
@@ -233,6 +276,7 @@ public final class ClusterClient implements AutoCloseable {
     private final Map<Endpoint, Transport> transports = new ConcurrentHashMap<>();
     private final Map<Tp, PartitionInfo> leaders = new ConcurrentHashMap<>();
     private final Map<String, Endpoint> coordinators = new ConcurrentHashMap<>();
+    private final Stats stats = new Stats();
     private volatile ClusterView view = ClusterView.EMPTY;
     private final Object refreshLock = new Object();
     private volatile boolean closed;
@@ -267,6 +311,11 @@ public final class ClusterClient implements AutoCloseable {
     /** The retry/deadline tuning this client was built with. */
     public Config config() {
         return config;
+    }
+
+    /** Live retry/rotation/hint counters; see {@link Stats}. */
+    public Stats stats() {
+        return stats;
     }
 
     // ---- Producer path ----
@@ -386,6 +435,7 @@ public final class ClusterClient implements AutoCloseable {
                 // views can't ping-pong the client in a hot loop.
                 if (!lastWasHintFollow && applyLeaderHint(tp, resp.getError())) {
                     lastWasHintFollow = true;
+                    stats.hintFollows.increment();
                     continue;
                 }
                 lastWasHintFollow = false;
@@ -451,6 +501,7 @@ public final class ClusterClient implements AutoCloseable {
                     hinted = hintedEndpoint(resp.getError());
                     if (hinted != null) {
                         lastWasHintFollow = true;
+                        stats.hintFollows.increment();
                         continue;
                     }
                 }
@@ -874,6 +925,7 @@ public final class ClusterClient implements AutoCloseable {
     private RuntimeException onTransportFailure(Endpoint ep, StatusRuntimeException e, String what) {
         if (!retriableTransport(e)) throw e;
         closeTransport(ep);
+        stats.rotations.increment();
         return new RuntimeException(what + " failed against " + ep + ": " + e.getStatus(), e);
     }
 
@@ -924,8 +976,14 @@ public final class ClusterClient implements AutoCloseable {
 
     private void checkDeadline(long deadlineNanos, String what, RuntimeException last) {
         if (ticker.nanoTime() >= deadlineNanos) {
-            throw new RetriesExhaustedException(what + ": retries exhausted", last);
+            throw exhausted(what + ": retries exhausted", last);
         }
+    }
+
+    /** Every give-up funnels through here so {@link Stats#retriesExhausted()} counts them all. */
+    private RetriesExhaustedException exhausted(String message, RuntimeException last) {
+        stats.retriesExhausted.increment();
+        return new RetriesExhaustedException(message, last);
     }
 
     /**
@@ -941,14 +999,17 @@ public final class ClusterClient implements AutoCloseable {
         long half = rawMs / 2;
         long sleepMs = half + random.nextLong(rawMs - half + 1);
         if (ticker.nanoTime() + TimeUnit.MILLISECONDS.toNanos(sleepMs) >= deadlineNanos) {
-            throw new RetriesExhaustedException(what + ": retries exhausted", last);
+            throw exhausted(what + ": retries exhausted", last);
         }
         try {
             ticker.sleep(sleepMs);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RetriesExhaustedException(what + ": interrupted during backoff", last);
+            throw exhausted(what + ": interrupted during backoff", last);
         }
+        // Counted after the sleep completes: only a backoff that leads to
+        // another attempt is a retry.
+        stats.retries.increment();
     }
 
     // ---- gRPC transport ----

@@ -5,6 +5,10 @@ description: >
   consensus. This chart ships a StatefulSet broker + Deployment admin UI,
   optional bundled Redis for quota + SSE fan-out, and opt-in mTLS wiring.
 type: application
+# version/appVersion here only apply to installs straight from a source
+# checkout. Released packages are stamped at package time by
+# .github/workflows/release.yml (`helm package --version --app-version`
+# from the git tag) — never bump these two by hand for a release.
 version: 0.1.0
 appVersion: "1.4.0"
 keywords:

@@ -1,0 +1,172 @@
+name: Release
+
+# Dormant until a v* tag is pushed. Publishes, all with the workflow's own
+# GITHUB_TOKEN (no external registries, no user-supplied secrets):
+#   ghcr.io/jeremainecheong/jbroker-broker + jbroker-admin — container images
+#   ghcr.io/jeremainecheong/charts/j-broker                — Helm chart (OCI)
+#   maven.pkg.github.com/jeremainecheong/j-broker          — client jars
+# plus a GitHub Release with generated notes and the packaged chart attached.
+#
+# workflow_dispatch lets the pipeline be rehearsed before any tag exists:
+# dry_run=true (the default) builds and packages everything but pushes
+# nothing. Dispatching on a tag ref with dry_run=false re-runs the full
+# release for that tag. Branch dispatches never publish — there is no tag
+# to derive a version from — so they are forced to dry-run behaviour.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and package everything, push nothing
+        type: boolean
+        default: true
+
+# packages: write — GHCR images, OCI chart, GitHub Packages jars.
+# contents: write — creating the GitHub Release.
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NS: ghcr.io/jeremainecheong
+
+jobs:
+  release:
+    # Images are linux/amd64 only for now: both Dockerfiles run the full
+    # Gradle build inside the builder stage, and emulating that under QEMU
+    # for arm64 would multiply the wall clock and add a flaky moving part.
+    # Revisit with a dist-copying Dockerfile if arm64 demand shows up.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Derive release version
+        id: rel
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            # Branch dispatch: no tag to derive from. The g<sha> prerelease
+            # suffix keeps it valid semver for helm regardless of the sha's
+            # digits (a purely numeric identifier may not lead with 0).
+            version="0.0.0-g$(git rev-parse --short HEAD)"
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$DRY_RUN" != "true" ]; then
+            publish=true
+          else
+            publish=false
+          fi
+          # A semver prerelease (any hyphen: -rc.1, -beta) must not move
+          # the floating "latest" image tags and gets a prerelease-marked
+          # GitHub Release.
+          case "$version" in
+            *-*) stable=false ;;
+            *)   stable=true ;;
+          esac
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+            echo "stable=$stable"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version publish=$publish stable=$stable"
+
+      - name: Build and test
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: ./gradlew build --no-daemon "-PreleaseVersion=$VERSION"
+
+      - name: Build images
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: |
+          docker build -f Dockerfile.broker --build-arg RELEASE_VERSION="$VERSION" \
+            -t "$IMAGE_NS/jbroker-broker:$VERSION" -t "$IMAGE_NS/jbroker-broker:latest" .
+          docker build -f Dockerfile.admin --build-arg RELEASE_VERSION="$VERSION" \
+            -t "$IMAGE_NS/jbroker-admin:$VERSION" -t "$IMAGE_NS/jbroker-admin:latest" .
+
+      - name: Package Helm chart
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: helm package deploy/helm/j-broker --version "$VERSION" --app-version "$VERSION" -d dist
+
+      # Dry runs still exercise jar packaging + POM generation end to end,
+      # just against the local repository instead of GitHub Packages.
+      - name: Package client jars (dry run)
+        if: steps.rel.outputs.publish != 'true'
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: ./gradlew publishToMavenLocal --no-daemon "-PreleaseVersion=$VERSION"
+
+      - name: Upload packaged chart (dry run)
+        if: steps.rel.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart
+          path: dist/*.tgz
+
+      - name: Log in to GHCR
+        if: steps.rel.outputs.publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push images
+        if: steps.rel.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+          STABLE: ${{ steps.rel.outputs.stable }}
+        run: |
+          docker push "$IMAGE_NS/jbroker-broker:$VERSION"
+          docker push "$IMAGE_NS/jbroker-admin:$VERSION"
+          if [ "$STABLE" = "true" ]; then
+            docker push "$IMAGE_NS/jbroker-broker:latest"
+            docker push "$IMAGE_NS/jbroker-admin:latest"
+          fi
+
+      - name: Publish client jars to GitHub Packages
+        if: steps.rel.outputs.publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: ./gradlew publish --no-daemon "-PreleaseVersion=$VERSION"
+
+      - name: Push Helm chart to GHCR
+        if: steps.rel.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: helm push "dist/j-broker-$VERSION.tgz" "oci://$IMAGE_NS/charts"
+
+      - name: Create GitHub release
+        if: steps.rel.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.rel.outputs.version }}
+          STABLE: ${{ steps.rel.outputs.stable }}
+        run: |
+          extra=""
+          if [ "$STABLE" != "true" ]; then extra="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" "dist/j-broker-$VERSION.tgz" \
+            --generate-notes --verify-tag $extra
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: '**/build/reports/tests/'

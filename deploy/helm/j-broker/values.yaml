@@ -10,6 +10,11 @@ broker:
   # typical. Changing this on a running release requires manual Raft
   # voter reconfiguration — plan for it.
   replicaCount: 3
+  # Local/dev default matching the build-and-kind-load flow in this chart's
+  # README. Release installs override repository+tag with the GHCR images
+  # published by .github/workflows/release.yml, e.g.
+  #   --set broker.image.repository=ghcr.io/jeremainecheong/jbroker-broker \
+  #   --set broker.image.tag=<release version>
   image:
     repository: jbroker-broker
     tag: "1.4.0"
@@ -91,6 +96,9 @@ admin:
   # without the Redis pub/sub bridge each browser only sees events from
   # the replica its SSE connection is pinned to.
   replicaCount: 1
+  # Local/dev default — releases override with
+  # ghcr.io/jeremainecheong/jbroker-admin:<release version>, same shape as
+  # broker.image above.
   image:
     repository: jbroker-admin
     tag: "1.4.0"

@@ -5,8 +5,10 @@
 # of cluster state once it's ready.
 #
 # Expects:
-#   JBROKER_CHAOS_PORT=9100 docker compose up -d
-# already run from the repo root.
+#   docker compose up -d
+# already run from the repo root. (Chaos endpoints are not needed here;
+# to enable them separately, set JBROKER_CHAOS_ENABLED=true plus
+# JBROKER_CHAOS_PORT and JBROKER_CHAOS_TOKEN.)
 #
 # Tear down at end with:
 #   docker stop jb-consumer jb-producer jb-prices && docker rm jb-consumer jb-producer jb-prices

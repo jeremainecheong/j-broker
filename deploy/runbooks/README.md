@@ -58,9 +58,10 @@ keeps serving.
 - `broker_fenced` event on the admin SSE stream (`GET /api/v1/events`).
 - After 10 minutes, `JBrokerUnderReplicatedPartitions` fires for every
   partition whose ISR shrank below its replica set.
-- No dedicated single-broker-down alert ships yet (see the ledger in
-  `values.yaml`); `jbroker_broker_scrape_ok` is the metric an
-  `== 0 for: 5m` rule would use.
+- `JBrokerBrokerUnreachable` fires after 5 minutes of
+  `jbroker_broker_scrape_ok == 0` — the broker stopped answering the
+  admin's metrics fan-out. Its other per-broker gauges freeze at their
+  last-reported values while it is silent, so treat them as stale.
 
 ### Diagnosis
 
@@ -118,8 +119,10 @@ A broker's data volume drops below the headroom watermark.
   refusing produces; `jbroker_disk_usable_bytes{broker_id="N"}` trends
   toward the watermark first ("Disk usable bytes per broker" panel on the
   cluster-overview dashboard).
-- No shipped alert (ledger). A rule on `jbroker_disk_usable_bytes` below a
-  byte threshold, or `jbroker_disk_headroom_low == 1`, would back this.
+- `JBrokerDiskHeadroomLow` fires after 5 minutes of
+  `jbroker_disk_headroom_low == 1` — keyed on the broker's own flag so
+  the chart never carries a byte threshold that could drift from the
+  broker's configured watermark.
 
 ### Diagnosis
 

@@ -91,7 +91,7 @@ Highlights:
 | `redis.enabled` | `false` | Bundled Redis Deployment for quota + SSE fan-out. |
 | `networkPolicy.enabled` | `false` | Ingress lockdown: Raft stays broker-only, chaos/redis ports admin-only, client + UI ports scoped by `clientFrom`/`adminFrom`. Needs a NetworkPolicy-enforcing CNI. |
 | `metrics.serviceMonitor.enabled` | `false` | prometheus-operator ServiceMonitor scraping the admin `/actuator/prometheus` endpoint (the merged per-broker view). Needs the monitoring.coreos.com CRDs. |
-| `metrics.prometheusRule.enabled` | `false` | Alert pack: under-replicated partitions, sustained follower lag, stuck high watermark, metadata-Raft term flapping, and (with the ServiceMonitor) scrape-down. Thresholds under `metrics.prometheusRule.thresholds`. |
+| `metrics.prometheusRule.enabled` | `false` | Alert pack: under-replicated partitions, sustained follower lag, stuck high watermark, metadata-Raft term flapping, unreachable broker, low disk headroom, and (with the ServiceMonitor) scrape-down. Thresholds under `metrics.prometheusRule.thresholds`. |
 
 ## Enabling mTLS
 

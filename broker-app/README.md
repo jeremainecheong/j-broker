@@ -8,7 +8,7 @@ How `Broker.main` assembles a running broker out of the four core modules:
 
 ```mermaid
 flowchart TB
-    Args[CLI flags<br/>--data-dir · --broker-port · --raft-port ·<br/>--id · --voters · --chaos-port ·<br/>--advertised-host/port · --tls-*]
+    Args[CLI flags<br/>--data-dir · --broker-port · --raft-port ·<br/>--id · --voters · --rack · --chaos-port ·<br/>--advertised-listeners · --tls-*]
 
     subgraph Storage[broker-storage]
         LM[LogManager]
@@ -24,7 +24,7 @@ flowchart TB
     subgraph Core[broker-core]
         State[TopicManager · GroupCoordinator ·<br/>ProducerIdRegistry · OffsetCache ·<br/>BrokerRegistry · BrokerLiveness]
         Bg[BrokerFencer · PreferredLeaderBalancer<br/>controller tickers]
-        Handlers[Handlers:<br/>Produce · Consumer · Admin ·<br/>ReplicaFetch · Metadata · BrokerHeartbeat]
+        Handlers[Handlers:<br/>Produce · Fetch · Consumer · Admin ·<br/>Txn · TxnMarkers · ReplicaFetch ·<br/>Metadata · BrokerHeartbeat]
     end
     subgraph Servers[Servers]
         Grpc[gRPC :brokerPort]
@@ -54,17 +54,24 @@ No Spring, no DI container — just constructor wiring inside `Broker.start()`. 
 ```text
 j-broker server   [--config j-broker.yaml] [--validate-config]
                   [--data-dir DIR] [--broker-port P] [--raft-port P] [--id N]
-                  [--voters ID@HOST:RAFT:BROKER,...] [--chaos-port P]
-                  [--consumer-offsets-partitions N]
+                  [--voters ID@HOST:RAFT:BROKER,...] [--rack ZONE]
+                  [--chaos-port P] [--enable-chaos]
+                  [--consumer-offsets-partitions N] [--min-insync-replicas N]
                   [--advertised-listeners ID=HOST:PORT,...]
-                  [--tls-cert PATH --tls-key PATH --tls-trust PATH]
+                  [--auth-mode none|mtls]
+                  [--tls-enabled --tls-cert PATH --tls-key PATH --tls-trust PATH]
 
 j-broker topics   create|list|describe --broker HOST:PORT [...]
 j-broker produce  --broker HOST:PORT --topic T --partition N   (stdin = one msg per line)
 j-broker console-consumer --broker HOST:PORT --topic T --partition N [--from-beginning]
 j-broker consume  --broker HOST:PORT --group G --topic T [--topic T2 ...]   (coordinator-aware)
-j-broker admin    cluster-info | topics ... | groups ... | raft  [--admin URL]
+j-broker admin    cluster-info | topics ... | groups ... | raft
+                  | cluster membership|add-broker|decommission|reassign|reassignments
+                            |cancel-reassignment|rebalance-leaders
+                  | verify-log  [--admin URL]
 ```
+
+`topics` and `produce` follow leader hints: a `NOT_LEADER`-shaped refusal naming broker N gets one redial against the hinted broker instead of a bare failure — `topics` retries the failed call there, `produce` retries the failed line and keeps the redirected connection for the rest of stdin. `admin` verbs go through the admin REST API (default `http://localhost:9090`, the bare `bootRun` port — pass `--admin http://localhost:15672` against the Docker/Helm deployment), whose broker pool does its own leader routing; `admin cluster ...` drives the lifecycle surface (membership view, join, drain/decommission, partition reassignment, preferred-leader rebalance).
 
 ## Configuration
 
@@ -80,6 +87,7 @@ The table below is generated from the same key table that drives validation (`Se
 | `raft.port` | `9192` | `JBROKER_RAFT_PORT` | `--raft-port` | Raft peer RPC port. |
 | `voters` | `(empty)` | `JBROKER_VOTERS` | `--voters` | Cluster voter list, `ID@HOST:RAFT:BROKER,...`. Empty runs a single-broker cluster with self as the only voter. |
 | `advertised.listeners` | `(empty)` | `JBROKER_ADVERTISED_LISTENERS` | `--advertised-listeners` | Client-facing address overlay, `ID=HOST:PORT,...`. Ids absent from the overlay advertise their bind address. |
+| `rack` | `(empty)` | `JBROKER_RACK` | `--rack` | Rack / availability-zone label for this broker (e.g. the `topology.kubernetes.io/zone` value). When brokers span two or more racks, topic placement spreads replicas across them. Empty = no rack. |
 | `chaos.port` | `-1` | `JBROKER_CHAOS_PORT` | `--chaos-port` | Cooperative chaos HTTP port. -1 disables. |
 | `chaos.enabled` | `false` | `JBROKER_CHAOS_ENABLED` | `--enable-chaos` | Explicit opt-in for the chaos control plane. chaos.port refuses to bind without it. |
 | `chaos.token` | `(empty)` | `JBROKER_CHAOS_TOKEN` | — | Bearer token every chaos HTTP request must present. Required when the chaos port is enabled. |
@@ -106,7 +114,7 @@ Per-topic keys (`min.insync.replicas`, `max.message.bytes`, `retention.ms`, `ret
 
 ## Chaos HTTP endpoints
 
-When the broker is started with `--chaos-port P`, it exposes a cooperative chaos HTTP server on that port:
+When the broker is started with `--chaos-port P` (plus the explicit `--enable-chaos` opt-in and a `chaos.token` bearer token — see the config table), it exposes a cooperative chaos HTTP server on that port:
 
 | Endpoint | Effect |
 |---|---|
@@ -127,8 +135,8 @@ Pass `--tls-cert --tls-key --tls-trust` and the gRPC server binds on the configu
 
 ## Advertised listeners
 
-`--advertised-host` + `--advertised-port` override what the broker announces in `DescribeCluster`. Useful when brokers run inside a docker bridge network but clients connect via published host ports: tell broker2 to advertise `localhost:9093` instead of `broker2:9092`.
+`--advertised-listeners ID=HOST:PORT,...` overlays what each broker announces in `DescribeCluster` (ids absent from the overlay advertise their bind address). Useful when brokers run inside a docker bridge network but clients connect via published host ports: tell broker 2 to advertise `localhost:9093` instead of `broker2:9092`.
 
 ## Tests
 
-~60 ITs wiring real 3-node clusters (loopback) — see `integration-tests/README.md` for the heavier scenarios.
+~50 ITs wiring real clusters on loopback — multi-broker replication/failover, transactions (`TxnCommitAbortIT`, `TransactionalExactlyOnceIT`), rack-aware placement (`RackSpreadPlacementIT`), compression round-trips, quotas, and the version handshake (`ApiVersionsIT`). See `integration-tests/README.md` for the heavier scenarios.

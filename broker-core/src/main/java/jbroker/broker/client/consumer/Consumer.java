@@ -568,6 +568,7 @@ public final class Consumer<K, V> implements AutoCloseable {
                     .setMaxBytes(cfg.fetchMaxBytes())
                     .setSessionId(fetchSessionId)
                     .setSessionEpoch(fetchSessionEpoch)
+                    .setIsolationLevel(cfg.isolationLevel().wireId())
                     .build());
             if (resp == null) continue; // partition unreachable this tick — try next poll
             if (resp.hasError() && resp.getError().getCode() != 0) {
@@ -588,20 +589,54 @@ public final class Consumer<K, V> implements AutoCloseable {
                 }
                 fetchSessionEpoch++;
             }
-            fetchState.buffer(tp, decodeBatch(resp.getRecords(), tp, offset));
+            fetchState.buffer(tp, decodeBatch(resp, tp, offset));
         }
         // Hand back at most max.poll.records; anything fetched beyond the
         // bound stays buffered (positions advance only for returned records).
         return new ConsumerRecords<>(fetchState.drain(cfg.maxPollRecords()));
     }
 
-    private List<ConsumerRecord<K, V>> decodeBatch(ByteString bytes, TopicPartition tp, long startOffset) {
-        var buf = ByteBuffer.wrap(bytes.toByteArray());
+    /**
+     * Decode the fetched batches into application records. Control batches
+     * (transaction markers) ship inline in the raw bytes under either
+     * isolation level — the broker's zero-copy path never strips them — and
+     * are skipped here, never surfaced. Under {@code read_committed} the
+     * response's aborted-transaction ranges additionally drop transactional
+     * batches of aborted producers: a range opens once the stream reaches
+     * its {@code first_offset} and closes at that producer's ABORT marker,
+     * so a later committed transaction of the same producer passes through.
+     */
+    private List<ConsumerRecord<K, V>> decodeBatch(
+            jbroker.proto.broker.FetchResponse resp, TopicPartition tp, long startOffset) {
+        var buf = ByteBuffer.wrap(resp.getRecords().toByteArray());
         var out = new ArrayList<ConsumerRecord<K, V>>();
+        boolean readCommitted = cfg.isolationLevel() == ConsumerConfig.IsolationLevel.READ_COMMITTED;
+        // Aborted ranges not yet reached by the stream, nearest first; the
+        // broker sends them sorted but a heap costs nothing to be sure.
+        var pendingAborts = new java.util.PriorityQueue<jbroker.proto.broker.AbortedTxn>(
+                java.util.Comparator.comparingLong(jbroker.proto.broker.AbortedTxn::getFirstOffset));
+        if (readCommitted) pendingAborts.addAll(resp.getAbortedTxnsList());
+        var abortedProducers = new HashSet<Long>();
         while (buf.remaining() >= RecordBatch.BATCH_OVERHEAD) {
             int mark = buf.position();
             try {
                 var parsed = RecordBatch.decode(buf);
+                if (parsed.control()) {
+                    // A marker, not payload. An ABORT closes its producer's
+                    // aborted range (if one is open in this response).
+                    if (readCommitted && parsed.controlRecord().type() == jbroker.storage.ControlRecord.Type.ABORT) {
+                        abortedProducers.remove(parsed.producerId());
+                    }
+                    continue;
+                }
+                if (readCommitted) {
+                    while (!pendingAborts.isEmpty() && pendingAborts.peek().getFirstOffset() <= parsed.lastOffset()) {
+                        abortedProducers.add(pendingAborts.poll().getProducerId());
+                    }
+                    if (parsed.transactional() && abortedProducers.contains(parsed.producerId())) {
+                        continue; // whole batch belongs to an aborted transaction
+                    }
+                }
                 for (var rec : parsed.records()) {
                     long absoluteOffset = parsed.baseOffset() + rec.offsetDelta();
                     if (absoluteOffset < startOffset) continue; // pre-fetch-offset records

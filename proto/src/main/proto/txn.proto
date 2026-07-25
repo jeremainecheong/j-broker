@@ -35,6 +35,30 @@ service Txn {
   // delivery to the data partitions continues in the background. A
   // retried EndTxn with the same outcome is idempotent.
   rpc EndTxn(EndTxnRequest) returns (EndTxnResponse);
+  // Declare that the current transaction commits consumer offsets for
+  // group_id. The coordinator resolves the group's __consumer_offsets
+  // coordinator partition and registers it in the transaction exactly
+  // like AddPartitionsToTxn — so the commit/abort marker reaches the
+  // offsets partition and decides the offsets staged there via
+  // TxnOffsetCommit. Must precede the first TxnOffsetCommit of the
+  // transaction.
+  rpc AddOffsetsToTxn(AddOffsetsToTxnRequest) returns (AddOffsetsToTxnResponse);
+}
+
+// Consumer-group half of transactional offsets. Unlike the Txn service
+// (which routes on transactional_id), TxnOffsetCommit routes on group_id
+// to the GROUP coordinator — the leader of the group's __consumer_offsets
+// partition — because that is where the offsets are staged and where the
+// transaction marker that decides them lands. A non-coordinator broker
+// answers NOT_COORDINATOR with suggested_coordinator_* hints.
+service TxnOffsets {
+  // Stage the transaction's offset commits with the group coordinator.
+  // Staged offsets are appended to the group's __consumer_offsets
+  // partition as a TRANSACTIONAL batch under (producer_id,
+  // producer_epoch) and are NOT visible to FetchOffsets until the
+  // transaction's COMMIT marker reaches that partition; an ABORT marker
+  // discards them. A stale producer_epoch answers PRODUCER_FENCED.
+  rpc TxnOffsetCommit(TxnOffsetCommitRequest) returns (TxnOffsetCommitResponse);
 }
 
 // Inter-broker marker delivery. After EndTxn (or a coordinator-side
@@ -98,6 +122,55 @@ message EndTxnResponse {
   int32 suggested_coordinator_id = 2;
   string suggested_coordinator_host = 3;
   int32 suggested_coordinator_port = 4;
+}
+
+message AddOffsetsToTxnRequest {
+  string transactional_id = 1;
+  // Echo of the InitTransactions grant; a stale pair answers PRODUCER_FENCED.
+  int64 producer_id = 2;
+  int32 producer_epoch = 3;
+  // Consumer group whose offsets this transaction will commit. The
+  // coordinator derives the partition to register as
+  // Math.floorMod(group_id.hashCode(), consumerOffsetsPartitionCount).
+  string group_id = 4;
+}
+
+message AddOffsetsToTxnResponse {
+  jbroker.common.ErrorCode error = 1;
+  int32 suggested_coordinator_id = 2;
+  string suggested_coordinator_host = 3;
+  int32 suggested_coordinator_port = 4;
+}
+
+message TxnOffsetCommitRequest {
+  string transactional_id = 1;
+  string group_id = 2;
+  // Echo of the InitTransactions grant; a stale pair answers PRODUCER_FENCED.
+  int64 producer_id = 3;
+  int32 producer_epoch = 4;
+  repeated TxnOffsetCommitEntry offsets = 5;
+}
+
+message TxnOffsetCommitEntry {
+  jbroker.common.TopicPartition tp = 1;
+  int64 offset = 2;
+  int32 leader_epoch = 3;
+  string metadata = 4;
+}
+
+message TxnOffsetCommitResponse {
+  repeated TxnOffsetCommitResult results = 1;
+  // When the top-level routing fails (NOT_COORDINATOR /
+  // COORDINATOR_NOT_AVAILABLE on every result), points at the group's
+  // coordinator so the client can retry there.
+  int32 suggested_coordinator_id = 2;
+  string suggested_coordinator_host = 3;
+  int32 suggested_coordinator_port = 4;
+}
+
+message TxnOffsetCommitResult {
+  jbroker.common.TopicPartition tp = 1;
+  jbroker.common.ErrorCode error = 2;
 }
 
 // One marker fan-out from the coordinator. Partitions led by the

@@ -171,6 +171,7 @@ public final class GroupCoordinator {
     private final PartitionAssignor assignor;
     private final Function<String, String> memberIdGenerator;
     private volatile SnapshotListener snapshotListener;
+    private final TxnOffsetStaging txnOffsetStaging = new TxnOffsetStaging();
 
     public GroupCoordinator(PartitionCountSource partitionSource, PartitionAssignor assignor) {
         this(partitionSource, assignor, instanceId -> UUID.randomUUID().toString());
@@ -714,5 +715,50 @@ public final class GroupCoordinator {
             // walk falls back to whatever's already on disk if a window
             // of writes was lost.
         }
+    }
+
+    // ---------- transactional offset commits ----------
+
+    /**
+     * The staged transactional offset commits of the groups this
+     * coordinator serves. The {@code TxnOffsetCommit} RPC path appends
+     * the offsets to the group's {@code __consumer_offsets} partition as
+     * a transactional batch and stages them here; the committed view
+     * ({@link OffsetCache}) is untouched until that partition observes
+     * the transaction's control batch. {@link OffsetCacheRecovery}
+     * accepts this instance so coordinator activation reconstructs
+     * staged-but-undecided transactions from the log.
+     */
+    public TxnOffsetStaging txnOffsetStaging() {
+        return txnOffsetStaging;
+    }
+
+    /**
+     * Stage a transaction's offset commits for {@code groupId} without
+     * touching the committed view. {@code coordinatorPartition} is the
+     * group's {@code __consumer_offsets} partition — the one the staged
+     * batch was appended to and the one whose marker will decide it.
+     * Answers {@link TxnOffsetStaging.StageOutcome#PRODUCER_FENCED} for
+     * a producer epoch below the staged or last-decided epoch.
+     */
+    public TxnOffsetStaging.StageOutcome stageTxnOffsets(
+            String groupId,
+            int coordinatorPartition,
+            long producerId,
+            int producerEpoch,
+            Map<TopicPartition, OffsetCache.OffsetAndMetadata> offsets) {
+        return txnOffsetStaging.stage(groupId, coordinatorPartition, producerId, producerEpoch, offsets);
+    }
+
+    /**
+     * A transaction marker (control batch) for {@code producerId} landed
+     * on {@code coordinatorPartition}. COMMIT folds the staged offsets
+     * into {@code cache} and returns them per group so the caller can
+     * append them to the same partition as regular offset records for
+     * durability; ABORT discards them and returns an empty list.
+     */
+    public List<TxnOffsetStaging.FoldedOffsets> onTxnMarker(
+            int coordinatorPartition, long producerId, int producerEpoch, boolean commit, OffsetCache cache) {
+        return txnOffsetStaging.onMarker(coordinatorPartition, producerId, producerEpoch, commit, cache);
     }
 }

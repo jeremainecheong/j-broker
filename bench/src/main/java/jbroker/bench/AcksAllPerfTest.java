@@ -60,7 +60,10 @@ public final class AcksAllPerfTest {
         List<String> endpoints;
         try {
             if (bootstrap != null && !bootstrap.isBlank()) {
-                endpoints = List.of(bootstrap.split(","));
+                endpoints = java.util.Arrays.stream(bootstrap.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .toList();
                 requireReachable(endpoints, rf);
             } else {
                 cluster = BenchCluster.start(3);

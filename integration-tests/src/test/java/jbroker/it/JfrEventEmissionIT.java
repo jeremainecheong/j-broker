@@ -76,12 +76,22 @@ class JfrEventEmissionIT {
                         && System.currentTimeMillis() < deadline) {
                     Thread.sleep(25);
                 }
-                // Produce enough records to trigger a segment flush + create
-                // lag between leader and a follower that just came online.
+                // Serial produces cover ProduceLatency and FsyncDuration.
+                // They cannot produce observable follower lag any more:
+                // replication is signal-driven, and a parked replica fetch
+                // catches up within a record of every append.
                 for (int i = 0; i < 200; i++) {
                     byte[] value = ("v" + i).getBytes(StandardCharsets.UTF_8);
                     client.produce("orders", 0, value);
                 }
+                // ReplicationLagEvent emits only at >= 10 records of lag,
+                // so land one batch as a single append — the follower's
+                // next fetch observes the whole burst at once.
+                var burst = new java.util.ArrayList<byte[]>();
+                for (int i = 0; i < 500; i++) {
+                    burst.add(("b" + i).getBytes(StandardCharsets.UTF_8));
+                }
+                client.produceBatch("orders", 0, burst);
                 // Drive a Fetch to hit FetchLatencyEvent.
                 client.fetch("orders", 0, 0L, 16 * 1024);
             }

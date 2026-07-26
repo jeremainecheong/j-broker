@@ -56,6 +56,16 @@ public final class FollowerStateTracker {
      * broker out of the ISR. The acks=all produce path will need a
      * shorter "initial stabilisation" window to avoid blocking.
      */
+    /**
+     * The committed HWM floor as of the last {@link #computeHwm}, without
+     * recomputing (0 when never computed). Lets the fetch handler detect
+     * an actual advance — signal-on-advance, not signal-on-recompute, is
+     * what keeps two long-polled followers from waking each other forever.
+     */
+    public long hwmFloor(String topic, int partition) {
+        return hwmFloor.getOrDefault(new PartitionKey(topic, partition), 0L);
+    }
+
     public long computeHwm(String topic, int partition, List<Integer> isr, int leaderBrokerId, long leaderLeo) {
         long min = leaderLeo;
         boolean anyMissing = false;

@@ -220,6 +220,142 @@ class ReplicaFetchHandlerTest {
         }
     }
 
+    @Test
+    void longPollServesAnAppendLandingMidPark(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, LEADER, List.of(LEADER, FOLLOWER), 0);
+
+        try (var lm = lm(dir)) {
+            var signals = new jbroker.broker.replication.ReplicationSignals();
+            lm.setAppendListener(signals::signalAppend);
+            var handler = new ReplicaFetchHandler(lm, tm, LEADER, tracker, clockFn, signals);
+
+            var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> handler.handle(
+                    request(FOLLOWER, 0, 0L).toBuilder().setMaxWaitMs(5_000).build()));
+            Thread.sleep(100);
+            assertThat(future.isDone())
+                    .as("empty fetch with max_wait_ms must park, not answer empty")
+                    .isFalse();
+            long appendedAt = System.nanoTime();
+            lm.logFor("orders", 0).append(List.of(new Record(0, 0L, null, new byte[] {42})), 1_000L);
+
+            var resp = future.get(2, TimeUnit.SECONDS);
+            long wakeMs = (System.nanoTime() - appendedAt) / 1_000_000;
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getRecords().size()).isGreaterThan(0);
+            assertThat(wakeMs)
+                    .as("append must wake the parked fetch, not the timeout")
+                    .isLessThan(1_000L);
+        }
+    }
+
+    @Test
+    void longPollAnswersEmptyAtTheWaitDeadline(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, LEADER, List.of(LEADER, FOLLOWER), 0);
+
+        try (var lm = lm(dir)) {
+            var signals = new jbroker.broker.replication.ReplicationSignals();
+            var handler = new ReplicaFetchHandler(lm, tm, LEADER, tracker, clockFn, signals);
+
+            long start = System.nanoTime();
+            var resp = handler.handle(
+                    request(FOLLOWER, 0, 0L).toBuilder().setMaxWaitMs(200).build());
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getRecords().size()).isZero();
+            assertThat(elapsedMs).isGreaterThanOrEqualTo(200L);
+        }
+    }
+
+    @Test
+    void longPollWithoutSignalsAnswersImmediately(@TempDir Path dir) throws Exception {
+        // The pre-long-poll leader shape: max_wait_ms is ignored and empty
+        // comes back instantly — what the follower's rolling-upgrade guard
+        // keys on.
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, LEADER, List.of(LEADER, FOLLOWER), 0);
+
+        try (var lm = lm(dir)) {
+            var handler = new ReplicaFetchHandler(lm, tm, LEADER, tracker, clockFn);
+            long start = System.nanoTime();
+            var resp = handler.handle(
+                    request(FOLLOWER, 0, 0L).toBuilder().setMaxWaitMs(5_000).build());
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getRecords().size()).isZero();
+            assertThat(elapsedMs).isLessThan(1_000L);
+        }
+    }
+
+    @Test
+    void longPollErrorAnswersImmediately(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, FOLLOWER, List.of(FOLLOWER, LEADER), 0);
+
+        try (var lm = lm(dir)) {
+            var signals = new jbroker.broker.replication.ReplicationSignals();
+            var handler = new ReplicaFetchHandler(lm, tm, LEADER, tracker, clockFn, signals);
+            long start = System.nanoTime();
+            var resp = handler.handle(
+                    request(FOLLOWER, 0, 0L).toBuilder().setMaxWaitMs(5_000).build());
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NOT_LEADER);
+            assertThat(elapsedMs).isLessThan(1_000L);
+        }
+    }
+
+    @Test
+    void longPollDoesNotRefreshFollowerLivenessWhileParked(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, LEADER, List.of(LEADER, FOLLOWER), 0);
+
+        try (var lm = lm(dir)) {
+            var signals = new jbroker.broker.replication.ReplicationSignals();
+            lm.setAppendListener(signals::signalAppend);
+            var handler = new ReplicaFetchHandler(lm, tm, LEADER, tracker, clockFn, signals);
+
+            long arrivalMillis = clock.get();
+            var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> handler.handle(
+                    request(FOLLOWER, 0, 0L).toBuilder().setMaxWaitMs(5_000).build()));
+            Thread.sleep(100);
+            // Wall time moves on while the fetch is parked; the wakeup
+            // re-run must not stamp it as a fresh fetch.
+            clock.addAndGet(60_000L);
+            lm.logFor("orders", 0).append(List.of(new Record(0, 0L, null, new byte[] {1})), 1_000L);
+            future.get(2, TimeUnit.SECONDS);
+
+            assertThat(tracker.get("orders", 0, FOLLOWER).orElseThrow().lastFetchMillis())
+                    .isEqualTo(arrivalMillis);
+        }
+    }
+
+    @Test
+    void shutdownReleasesAParkedLongPoll(@TempDir Path dir) throws Exception {
+        var tm = new TopicManager();
+        tm.onTopicCommitted("orders", 1, 3, 0L);
+        tm.onPartitionChange("orders", 0, LEADER, List.of(LEADER, FOLLOWER), 0);
+
+        try (var lm = lm(dir)) {
+            var signals = new jbroker.broker.replication.ReplicationSignals();
+            var handler = new ReplicaFetchHandler(lm, tm, LEADER, tracker, clockFn, signals);
+
+            var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> handler.handle(
+                    request(FOLLOWER, 0, 0L).toBuilder().setMaxWaitMs(10_000).build()));
+            Thread.sleep(100);
+            signals.shutdown();
+            var resp = future.get(2, TimeUnit.SECONDS);
+            assertThat(resp.getError().getCode()).isEqualTo(ErrorCodes.NONE);
+            assertThat(resp.getRecords().size()).isZero();
+        }
+    }
+
     private static ReplicaFetchRequest request(int follower, int epoch, long offset) {
         return ReplicaFetchRequest.newBuilder()
                 .setTopic("orders")

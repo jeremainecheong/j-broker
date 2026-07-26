@@ -79,6 +79,24 @@ public final class Log implements AutoCloseable {
         this.controlAppendGate = java.util.Objects.requireNonNull(gate);
     }
 
+    /**
+     * Invoked after every successful append ({@link #append},
+     * {@link #appendRaw}, {@link #appendControl}), outside {@link #lock} so
+     * a slow listener can never extend the append critical section.
+     * Opaque to storage — the replication layer parks its data-availability
+     * waits on it. Set post-construction; null keeps the fast path free.
+     */
+    private volatile Runnable appendListener;
+
+    public void setAppendListener(Runnable listener) {
+        this.appendListener = listener;
+    }
+
+    private void notifyAppend() {
+        var listener = appendListener;
+        if (listener != null) listener.run();
+    }
+
     private Log(Path dir, Config config) {
         this.dir = dir;
         this.config = config;
@@ -207,6 +225,7 @@ public final class Log implements AutoCloseable {
      * of the leader's batch header.
      */
     public long appendRaw(byte[] encodedBatch, long expectedBaseOffset) throws IOException {
+        long assignedLast;
         lock.lock();
         try {
             // Peek the plaintext attributes so replicated transactional and
@@ -225,7 +244,7 @@ public final class Log implements AutoCloseable {
             }
             var active = segments.get(segments.size() - 1);
             active.appendRaw(encodedBatch, expectedBaseOffset);
-            long assignedLast = active.nextOffset() - 1;
+            assignedLast = active.nextOffset() - 1;
             if (control) {
                 var parsed = RecordBatch.decode(java.nio.ByteBuffer.wrap(encodedBatch));
                 if (parsed.producerId() >= 0) {
@@ -246,10 +265,11 @@ public final class Log implements AutoCloseable {
             } else {
                 onAppendedLocked((int) (active.nextOffset() - expectedBaseOffset), System.currentTimeMillis());
             }
-            return assignedLast;
         } finally {
             lock.unlock();
         }
+        notifyAppend();
+        return assignedLast;
     }
 
     public long append(List<Record> records, long nowMillis) throws IOException {
@@ -328,6 +348,7 @@ public final class Log implements AutoCloseable {
             Compression codec,
             boolean transactional)
             throws IOException {
+        long assignedLast;
         lock.lock();
         try {
             var active = segments.get(segments.size() - 1);
@@ -344,7 +365,7 @@ public final class Log implements AutoCloseable {
                     partitionLeaderEpoch,
                     codec,
                     transactional);
-            long assignedLast = active.nextOffset() - 1;
+            assignedLast = active.nextOffset() - 1;
             if (transactional) {
                 txnState.onTransactionalData(producerId, baseOffset, assignedLast);
             }
@@ -358,10 +379,11 @@ public final class Log implements AutoCloseable {
                 // trigger bounds real elapsed time since the append.
                 onAppendedLocked(records.size(), System.currentTimeMillis());
             }
-            return assignedLast;
         } finally {
             lock.unlock();
         }
+        notifyAppend();
+        return assignedLast;
     }
 
     /**
@@ -380,12 +402,13 @@ public final class Log implements AutoCloseable {
         if (producerId < 0) {
             throw new IllegalArgumentException("control batch requires producerId >= 0, got " + producerId);
         }
+        long assigned;
         lock.lock();
         try {
             controlAppendGate.ensureControlWritable();
             var active = segments.get(segments.size() - 1);
             active.appendControl(nowMillis, producerId, producerEpoch, partitionLeaderEpoch, marker);
-            long assigned = active.nextOffset() - 1;
+            assigned = active.nextOffset() - 1;
             txnState.onControl(producerId, marker.type());
             if (active.sizeBytes() >= segmentBytes) {
                 var next = LogSegment.open(dir, active.nextOffset(), config.indexIntervalBytes());
@@ -395,10 +418,11 @@ public final class Log implements AutoCloseable {
             } else {
                 onAppendedLocked(1, System.currentTimeMillis());
             }
-            return assigned;
         } finally {
             lock.unlock();
         }
+        notifyAppend();
+        return assigned;
     }
 
     /**

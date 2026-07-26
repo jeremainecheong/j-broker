@@ -332,6 +332,15 @@ message ReplicaFetchRequest {
   // actually hold. Absent on legacy fetchers, empty logs, and logs
   // predating checkpoint maintenance — the leader then skips the check.
   optional int32 last_fetched_epoch = 7;
+  // Long-poll budget: when no records are available at fetch_offset, the
+  // leader holds the fetch open up to this many milliseconds for an
+  // append (or a leadership/epoch change) instead of answering empty
+  // immediately. 0 — and any leader predating the field — keeps the
+  // immediate-empty behavior.
+  int32 max_wait_ms = 8;
+  // Byte floor for ending a long-poll early. Advisory: the current
+  // leader answers as soon as ANY data is available at fetch_offset.
+  int32 min_bytes = 9;
 }
 
 message ReplicaFetchResponse {

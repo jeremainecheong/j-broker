@@ -1194,6 +1194,7 @@ public final class Broker implements AutoCloseable {
     private final jbroker.broker.BrokerHeartbeatSender heartbeatSender;
     private final jbroker.broker.replication.ReplicaFetcherManager fetcherManager;
     private final jbroker.broker.replication.DefaultFetcherFactory fetcherFactory;
+    private final jbroker.broker.replication.ReplicationSignals replicationSignals;
     private final jbroker.broker.BrokerMetrics metrics;
     private final jbroker.broker.chaos.ChaosHttpServer chaosHttp;
     private final jbroker.broker.DiskHeadroom diskHeadroom;
@@ -1221,6 +1222,7 @@ public final class Broker implements AutoCloseable {
             jbroker.broker.BrokerHeartbeatSender heartbeatSender,
             jbroker.broker.replication.ReplicaFetcherManager fetcherManager,
             jbroker.broker.replication.DefaultFetcherFactory fetcherFactory,
+            jbroker.broker.replication.ReplicationSignals replicationSignals,
             jbroker.broker.BrokerMetrics metrics,
             jbroker.broker.chaos.ChaosHttpServer chaosHttp,
             jbroker.broker.DiskHeadroom diskHeadroom,
@@ -1246,6 +1248,7 @@ public final class Broker implements AutoCloseable {
         this.heartbeatSender = heartbeatSender;
         this.fetcherManager = fetcherManager;
         this.fetcherFactory = fetcherFactory;
+        this.replicationSignals = replicationSignals;
         this.metrics = metrics;
         this.chaosHttp = chaosHttp;
         this.diskHeadroom = diskHeadroom;
@@ -1372,6 +1375,13 @@ public final class Broker implements AutoCloseable {
         // leadership fences with the same floor). Created before the
         // fetcher factory so no early fetcher misses the feed.
         var txnEpochs = new jbroker.broker.txn.TxnPartitionEpochs();
+        // Per-partition wakeup hub for replication-side waits: appends wake
+        // parked replica fetches, follower progress and partition-change
+        // applies wake acks=all waiters. Fed from three places — the
+        // storage append listener (here), the fetch handler's HWM advance,
+        // and the partition-change listener chain (both below).
+        var replicationSignals = new jbroker.broker.replication.ReplicationSignals();
+        logManager.setAppendListener(replicationSignals::signalAppend);
         // Audit-finding #3 — single ChaosState instance shared by the inbound
         // ChaosServerInterceptor (constructed later with the gRPC server) and
         // by outbound ChaosClientInterceptors threaded through RaftPeerClient,
@@ -1428,8 +1438,22 @@ public final class Broker implements AutoCloseable {
             // Same clean-slate rule for the transactional epoch floors.
             txnEpochs.evictTopic(deletedTopic);
         };
+        // Partition-change chain: reconcile fetchers, then wake every
+        // replication waiter on the partition — leadership loss and ISR
+        // shrink must interrupt parked acks=all waits and long-polled
+        // fetches so they re-run their exit checks instead of sleeping
+        // through the change.
+        MetadataStateMachine.PartitionChangeListener partitionChangeChain = (topic, partition, partitionState) -> {
+            fetcherManager.onPartitionChange(topic, partition, partitionState);
+            replicationSignals.signalHwmOrState(topic, partition);
+        };
         var metadataSm = new MetadataStateMachine(
-                topicManager, producerIdRegistry, leaderEpochListener, regChain, fetcherManager, topicDeletionChain);
+                topicManager,
+                producerIdRegistry,
+                leaderEpochListener,
+                regChain,
+                partitionChangeChain,
+                topicDeletionChain);
         var waitingSm = new WaitingStateMachine(metadataSm);
 
         // Meter reassignment catch-up: a fetcher whose partition is being
@@ -1500,7 +1524,12 @@ public final class Broker implements AutoCloseable {
                 diskHeadroom,
                 defaults.maxMessageBytes());
         var replicaFetch = new ReplicaFetchHandler(
-                logManager, topicManager, config.selfId().value(), followerTracker, System::currentTimeMillis);
+                logManager,
+                topicManager,
+                config.selfId().value(),
+                followerTracker,
+                System::currentTimeMillis,
+                replicationSignals);
         var offsetsForLeaderEpoch = new OffsetsForLeaderEpochHandler(
                 logManager, topicManager, config.selfId().value());
         AdminHandler.MetadataProposer proposer = (payload, timeoutMs) -> {
@@ -2239,6 +2268,7 @@ public final class Broker implements AutoCloseable {
                 heartbeatSender,
                 fetcherManager,
                 fetcherFactory,
+                replicationSignals,
                 brokerMetrics,
                 chaosHttp,
                 diskHeadroom,
@@ -2725,6 +2755,9 @@ public final class Broker implements AutoCloseable {
                 // best-effort socket release during shutdown
             }
         }
+        // Release long-polled replica fetches parked in the gRPC handlers
+        // before the hard server stop.
+        replicationSignals.shutdown();
         brokerServer.shutdownNow();
         raftDriver.close();
         heartbeatSender.close();
@@ -2773,6 +2806,9 @@ public final class Broker implements AutoCloseable {
         // their pollOnce calls can't race against closed resources.
         fetcherManager.close();
         fetcherFactory.close();
+        // Wake long-polled replica fetches parked in the gRPC handlers so
+        // the graceful drain below finishes promptly.
+        replicationSignals.shutdown();
         brokerServer.shutdown();
         try {
             brokerServer.awaitTermination(5, TimeUnit.SECONDS);

@@ -45,7 +45,11 @@ public final class BatchProducerPerfTest {
         int payloadSize = BenchArgs.getInt(args, "--payload-size", 256);
         int batchBytes = BenchArgs.getInt(args, "--batch-bytes", 64 * 1024);
         long lingerMs = BenchArgs.getLong(args, "--linger-ms", 5);
-        int maxOutstanding = BenchArgs.getInt(args, "--max-outstanding", 100_000);
+        // Bounds the closed loop: per_record latency under saturation is
+        // queueing-dominated and scales with this window, so publishable
+        // rows must state it (it rides in the summary via warmup/records
+        // and in the flag defaults documented in bench/README.md).
+        int maxOutstanding = BenchArgs.getInt(args, "--max-outstanding", 10_000);
         var compression =
                 Compression.valueOf(BenchArgs.get(args, "--compression", "none").toUpperCase(Locale.ROOT));
         var bounds = RunBounds.parse(args);
@@ -90,14 +94,16 @@ public final class BatchProducerPerfTest {
                     warm++;
                 }
                 // Drain warmup batches so no warmup completion can land in
-                // the measured window.
+                // the measured window. The drain can take a while with a
+                // deep outstanding window, so the measured window is
+                // anchored AFTER it — otherwise the drain would eat the
+                // measured duration.
                 producer.flush();
 
                 long sent = 0;
-                long measureDeadline =
-                        bounds.durationBounded() ? warmupDeadline + bounds.durationNanos() : Long.MAX_VALUE;
                 long budget = bounds.durationBounded() ? Long.MAX_VALUE : bounds.recordBudget();
                 long start = System.nanoTime();
+                long measureDeadline = bounds.durationBounded() ? start + bounds.durationNanos() : Long.MAX_VALUE;
                 while (sent < budget && System.nanoTime() < measureDeadline) {
                     semaphore.acquire();
                     final long t0 = System.nanoTime();

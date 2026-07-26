@@ -20,11 +20,12 @@ import jbroker.storage.LogManager;
  * Consumer.Fetch path).
  *
  * <p>A fetch carrying {@code max_wait_ms} that finds no data long-polls:
- * the handler parks on the partition's {@link ReplicationSignals} monitor
- * until an append lands, a partition-change record applies, the wait
- * budget runs out, or the broker shuts down — then re-runs the full gate
- * chain and serves. Follower liveness state is recorded once, at request
- * arrival, exactly as an immediate fetch would record it.
+ * the handler parks on the partition's
+ * {@link jbroker.broker.replication.ReplicationSignals} monitor until an
+ * append lands, a partition-change record applies, the wait budget runs
+ * out, or the broker shuts down — then re-runs the full gate chain and
+ * serves. Follower liveness state is recorded once, at request arrival,
+ * exactly as an immediate fetch would record it.
  */
 public final class ReplicaFetchHandler {
 

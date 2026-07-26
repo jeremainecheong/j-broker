@@ -5,18 +5,21 @@ import java.util.ArrayList;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicInteger;
 import jbroker.broker.client.BrokerClient;
 import org.HdrHistogram.Histogram;
 
 /**
- * Produce-path benchmark.
+ * Produce-path benchmark against an already-running broker. Emits one CSV
+ * row: mode=producer, latency_kind=per_rpc — each histogram sample is one
+ * produce RPC round trip, so with {@code --batch-size N} a sample covers
+ * N records' worth of work.
  *
  * <pre>
  *   j-broker-bench producer --broker HOST:PORT --topic T --partition N
- *                           --records N --payload-size BYTES
- *                           [--concurrency N] [--partitions N]
- *                           [--batch-size N] [--acks all] [--csv FILE]
+ *                           [--duration-s S | --records N] [--warmup-s S]
+ *                           [--payload-size BYTES] [--concurrency N]
+ *                           [--partitions N] [--batch-size N] [--acks all]
+ *                           [--csv FILE]
  *                           [--tls-trust CA --tls-cert C --tls-key K]
  * </pre>
  *
@@ -25,32 +28,36 @@ import org.HdrHistogram.Histogram;
  * <ol>
  *   <li>{@code --batch-size N} — records per RPC. Amortizes fixed
  *       per-call cost (encode, gRPC, handler dispatch, Log-append lock
- *       acquire) across N records. Single-record RPCs are RTT-bound;
- *       a batch size of 100 routinely unlocks 20–50× throughput.</li>
+ *       acquire) across N records. Single-record RPCs are RTT-bound.</li>
  *   <li>{@code --concurrency N} — N virtual-thread producers each with
  *       its own BrokerClient (TCP socket). Breaks the serial-RTT cap.</li>
  *   <li>{@code --partitions N} — fan workers across N partitions so
  *       per-partition Log.append locks don't serialize.</li>
  * </ol>
- *
- * <p>Latency samples reflect per-RPC duration; when {@code --batch-size}
- * is set, that's N records' worth of work per sample. Throughput
- * reported is records/s and bytes/s.
  */
 public final class ProducerPerfTest {
 
+    private static final long MAX_LATENCY_NANOS = 60L * 1_000_000_000L;
+
     private ProducerPerfTest() {}
+
+    private record WorkerResult(Histogram histogram, long records, long warmupRecords) {}
 
     static void run(String[] args) throws Exception {
         String broker = BenchArgs.get(args, "--broker", "127.0.0.1:9092");
         String topic = BenchArgs.get(args, "--topic", null);
         int partition = BenchArgs.getInt(args, "--partition", 0);
         int partitionsSpan = Math.max(1, BenchArgs.getInt(args, "--partitions", 1));
-        int records = BenchArgs.getInt(args, "--records", 10_000);
         int payloadSize = BenchArgs.getInt(args, "--payload-size", 256);
         int concurrency = Math.max(1, BenchArgs.getInt(args, "--concurrency", 1));
         int batchSize = Math.max(1, BenchArgs.getInt(args, "--batch-size", 1));
         boolean acksAll = "all".equals(BenchArgs.get(args, "--acks", null));
+        // Label-only: records the topic's flush.messages override in the CSV
+        // row so the two flush-policy rows stay distinguishable. The policy
+        // itself is topic config; the harness does not change it.
+        String flushStr = BenchArgs.get(args, "--flush-messages", null);
+        Long flushMessages = flushStr == null ? null : Long.valueOf(flushStr);
+        var bounds = RunBounds.parse(args);
         String csvStr = BenchArgs.get(args, "--csv", null);
         Path csv = csvStr == null ? null : Path.of(csvStr);
         var tls = BenchArgs.tlsFromArgs(args);
@@ -65,6 +72,11 @@ public final class ProducerPerfTest {
         String host = broker.substring(0, colon);
         int port = Integer.parseInt(broker.substring(colon + 1));
 
+        TopicLabels labels;
+        try (var client = new BrokerClient(host, port, tls)) {
+            labels = TopicLabels.resolve(client, topic);
+        }
+
         // Pre-fill a pool of random payloads so payload allocation doesn't
         // dominate the measured region. Reuse round-robin across the run.
         byte[][] pool = new byte[64][];
@@ -73,95 +85,87 @@ public final class ProducerPerfTest {
             ThreadLocalRandom.current().nextBytes(pool[i]);
         }
 
-        // Single-threaded path preserved for pure-RTT baseline runs.
-        if (concurrency == 1) {
-            var histogram = new Histogram(TimeUnitNanos.ONE_MINUTE, 3);
-            try (var client = new BrokerClient(host, port, tls)) {
-                int warmupBatches = Math.max(5, records / 50 / batchSize);
-                for (int b = 0; b < warmupBatches; b++) {
-                    sendOne(client, topic, partition, pool, b * batchSize, batchSize, acksAll);
-                }
+        // Absolute deadlines shared by all workers: everyone warms until
+        // the same instant, so the measured windows line up.
+        long warmupDeadline = System.nanoTime() + bounds.warmupNanos();
+        long measureDeadline = bounds.durationBounded() ? warmupDeadline + bounds.durationNanos() : Long.MAX_VALUE;
+        long perWorker = bounds.durationBounded() ? -1 : bounds.recordBudget() / concurrency;
+        long spillover = bounds.durationBounded() ? 0 : bounds.recordBudget() - perWorker * concurrency;
 
-                long totalBytes = 0;
-                long totalRecords = 0;
-                int batches = records / batchSize;
-                long start = System.nanoTime();
-                for (int b = 0; b < batches; b++) {
-                    long t0 = System.nanoTime();
-                    sendOne(client, topic, partition, pool, b * batchSize, batchSize, acksAll);
-                    histogram.recordValue(System.nanoTime() - t0);
-                    totalBytes += (long) batchSize * payloadSize;
-                    totalRecords += batchSize;
-                }
-                long elapsed = System.nanoTime() - start;
-                String tag = batchSize == 1 ? "producer" : "producer(bs=" + batchSize + ")";
-                PerfReport.emit(tag, histogram, totalRecords, totalBytes, elapsed, csv);
-            }
-            return;
-        }
-
-        // Multi-worker path.
-        int perWorker = records / concurrency;
-        int spillover = records - perWorker * concurrency;
-        var merged = new Histogram(TimeUnitNanos.ONE_MINUTE, 3);
-        var produced = new AtomicInteger(0);
-        long start = System.nanoTime();
+        var merged = new Histogram(MAX_LATENCY_NANOS, 3);
+        long totalRecords = 0;
+        long totalWarmup = 0;
 
         try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
-            var tasks = new java.util.ArrayList<Callable<Histogram>>();
+            var tasks = new ArrayList<Callable<WorkerResult>>();
             for (int w = 0; w < concurrency; w++) {
-                final int myBudget = perWorker + (w == 0 ? spillover : 0);
+                final long myBudget = perWorker < 0 ? -1 : perWorker + (w == 0 ? spillover : 0);
                 final int myPartition = (partition + w) % partitionsSpan;
                 tasks.add(() -> {
-                    var local = new Histogram(TimeUnitNanos.ONE_MINUTE, 3);
+                    var local = new Histogram(MAX_LATENCY_NANOS, 3);
+                    long warm = 0;
+                    long sent = 0;
                     try (var client = new BrokerClient(host, port, tls)) {
-                        int warmupBatches = Math.max(5, myBudget / 50 / batchSize);
-                        for (int b = 0; b < warmupBatches; b++) {
-                            sendOne(client, topic, myPartition, pool, b * batchSize, batchSize, acksAll);
+                        while (System.nanoTime() < warmupDeadline) {
+                            sendOne(client, topic, myPartition, pool, (int) warm * batchSize, batchSize, acksAll);
+                            warm += batchSize;
                         }
-                        int batches = myBudget / batchSize;
-                        for (int b = 0; b < batches; b++) {
+                        long batchBudget = myBudget < 0 ? Long.MAX_VALUE : myBudget / batchSize;
+                        for (long b = 0; b < batchBudget && System.nanoTime() < measureDeadline; b++) {
                             long t0 = System.nanoTime();
-                            sendOne(client, topic, myPartition, pool, b * batchSize, batchSize, acksAll);
-                            local.recordValue(System.nanoTime() - t0);
-                            produced.addAndGet(batchSize);
+                            sendOne(client, topic, myPartition, pool, (int) (b % 64) * batchSize, batchSize, acksAll);
+                            local.recordValue(Math.min(System.nanoTime() - t0, MAX_LATENCY_NANOS));
+                            sent += batchSize;
                         }
                     }
-                    return local;
+                    return new WorkerResult(local, sent, warm);
                 });
             }
-            for (var f : exec.invokeAll(tasks)) merged.add(f.get());
+            for (var f : exec.invokeAll(tasks)) {
+                var r = f.get();
+                merged.add(r.histogram());
+                totalRecords += r.records();
+                totalWarmup += r.warmupRecords();
+            }
         }
-        long elapsed = System.nanoTime() - start;
-        long totalBytes = (long) produced.get() * payloadSize;
-        String tag = "producer(c=" + concurrency + (batchSize > 1 ? " bs=" + batchSize : "") + ")";
-        PerfReport.emit(tag, merged, produced.get(), totalBytes, elapsed, csv);
+        long elapsed = System.nanoTime() - warmupDeadline;
+
+        PerfReport.row("producer")
+                .latencyKind("per_rpc")
+                .acks(acksAll ? "all" : "1")
+                .partitions(labels.partitions())
+                .replicationFactor(labels.replicationFactor())
+                .minInsyncReplicas(labels.minInsyncReplicas())
+                .payloadSize(payloadSize)
+                .batchSize((long) batchSize)
+                .flushMessages(flushMessages)
+                .warmupRecords(totalWarmup)
+                .records(totalRecords)
+                .bytes(totalRecords * payloadSize)
+                .elapsedNanos(elapsed)
+                .histogram(merged)
+                .emit(csv);
     }
 
     /**
      * Send one RPC. For {@code batchSize==1} routes through the single-record
-     * path so the pre-batching bench baseline is preserved byte-for-byte;
-     * otherwise builds a batch of {@code batchSize} records and calls
+     * path so the no-batching baseline is preserved byte-for-byte; otherwise
+     * builds a batch of {@code batchSize} records and calls
      * {@link BrokerClient#produceBatch}.
      */
     private static void sendOne(
             BrokerClient client, String topic, int partition, byte[][] pool, int seed, int batchSize, boolean acksAll) {
         if (batchSize == 1) {
-            var payload = pool[seed % pool.length];
+            var payload = pool[Math.floorMod(seed, pool.length)];
             if (acksAll) client.produceAcksAll(topic, partition, payload);
             else client.produce(topic, partition, payload);
             return;
         }
         var batch = new ArrayList<byte[]>(batchSize);
         for (int i = 0; i < batchSize; i++) {
-            batch.add(pool[(seed + i) % pool.length]);
+            batch.add(pool[Math.floorMod(seed + i, pool.length)]);
         }
         if (acksAll) client.produceBatchAcksAll(topic, partition, batch);
         else client.produceBatch(topic, partition, batch);
-    }
-
-    /** Nanos in a minute — covers the widest plausible per-op latency we'd ever want to record. */
-    private static final class TimeUnitNanos {
-        static final long ONE_MINUTE = 60L * 1_000_000_000L;
     }
 }

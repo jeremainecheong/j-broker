@@ -1,96 +1,119 @@
 #!/usr/bin/env bash
-# Refresh docs/bench/results.{csv,md} against a running broker.
+# Append one full, environment-stamped benchmark pass to
+# docs/bench/results.csv (append-only history — never truncated) and
+# distill this run's rows into docs/bench/current-snapshot.csv
+# (gitignored) for README table generation.
 #
 # Usage:
 #   scripts/bench/run-readme-bench.sh [BROKER_HOST:PORT]
 #
-# Defaults to 127.0.0.1:9092. Starts a fresh CSV each run so the committed
-# snapshot reflects a consistent hardware pass.
+# BROKER defaults to 127.0.0.1:9092 and must be a running single broker —
+# it hosts the RF=1 baseline and flush-policy scenarios. The RF=3
+# scenarios spin up an in-process loopback 3-broker cluster per
+# invocation; set BENCH_BOOTSTRAP=h:p,h:p,h:p to target an external
+# cluster instead (the bench refuses to run when fewer brokers are
+# reachable than the replication factor requires).
 #
-# Expects `bench/build/install/bench/bin/bench` + `broker-app/.../broker-app`
-# to already be installed — run `./gradlew :bench:installDist :broker-app:installDist`
-# first. Expects a broker reachable at BROKER. Single-broker is fine;
-# multi-broker numbers will differ.
+# Env knobs:
+#   BENCH_DURATION_S  measured seconds per scenario (default 30; warmup
+#                     of max(10s, 20%) is added on top and excluded)
+#   BENCH_WARMUP_S    warmup override — plumbing smokes only; published
+#                     rows must keep the default warmup
+#   BENCH_BOOTSTRAP   external cluster endpoints for the RF=3 scenarios
+#
+# Disk: the high-throughput scenarios write log segments at hundreds of
+# MB/s. Script-created topics carry retention.bytes=2147483648 so each
+# converges to ~2 GiB on disk, but the broker's data volume still needs
+# real headroom (the broker refuses produces below its low-space
+# watermark).
+#
+# Expects `bench/build/install/bench/bin/bench` to be installed — run
+# `./gradlew :bench:installDist` first.
+#
+# This script writes measured rows; it bakes in no expected numbers.
+# Humans read the CSV — percentile cells the harness could not back with
+# enough samples are empty, with the reason on stderr.
 
 set -euo pipefail
 
 BROKER="${1:-127.0.0.1:9092}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CSV="$REPO_ROOT/docs/bench/results.csv"
-MD="$REPO_ROOT/docs/bench/results.md"
+SNAPSHOT="$REPO_ROOT/docs/bench/current-snapshot.csv"
 BENCH="$REPO_ROOT/bench/build/install/bench/bin/bench"
-ADMIN="$REPO_ROOT/broker-app/build/install/broker-app/bin/broker-app"
+DURATION="${BENCH_DURATION_S:-30}"
+SIZES=(256 1024 4096)
+# Bounds each bench topic's on-disk footprint; segments beyond the budget
+# are deleted in the background, which is also the realistic production
+# configuration.
+RETENTION=(--config retention.bytes=2147483648)
+WARMUP_ARGS=()
+if [[ -n "${BENCH_WARMUP_S:-}" ]]; then
+    WARMUP_ARGS=(--warmup-s "$BENCH_WARMUP_S")
+fi
 
 if [[ ! -x "$BENCH" ]]; then
     echo "bench binary not found at $BENCH — run ./gradlew :bench:installDist first" >&2
     exit 2
 fi
-if [[ ! -x "$ADMIN" ]]; then
-    echo "broker-app binary not found at $ADMIN — run ./gradlew :broker-app:installDist first" >&2
-    exit 2
-fi
 
 mkdir -p "$(dirname "$CSV")"
-rm -f "$CSV"
+export BENCH_GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+RUN_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# $MD is gitignored (repo-wide *.md rule except README.md). It's a local
-# rendering users can paste into README.md's perf section on regenerate.
+# Bench stdout carries only summaries (broker/gRPC logging goes to
+# stderr at WARN); any non-zero exit — unreachable broker, refused
+# topology — aborts the whole pass via set -e.
+run() {
+    "$BENCH" "$@"
+}
 
-SIZES=(256 1024 4096)
-RECORDS=5000
-
+# ---- (a) single-broker baseline: 1 partition, RF=1 ----------------------
 for size in "${SIZES[@]}"; do
     topic="bench-p${size}"
-    echo "--- payload ${size}B ---"
-    # Create the topic; ignore failure if it already exists (rerun case).
-    "$ADMIN" topics create --broker "$BROKER" --topic "$topic" --partitions 1 --replication-factor 1 \
-        >/dev/null 2>&1 || true
-    "$BENCH" producer --broker "$BROKER" --topic "$topic" --partition 0 \
-        --records "$RECORDS" --payload-size "$size" --csv "$CSV" \
-        | grep -E "throughput|latency"
-    "$BENCH" consumer --broker "$BROKER" --topic "$topic" --partition 0 \
-        --records "$RECORDS" --csv "$CSV" \
-        | grep -E "throughput|latency"
+    echo "--- baseline payload ${size}B (topic ${topic}) ---"
+    run create-topic --broker "$BROKER" --topic "$topic" --partitions 1 --rf 1 "${RETENTION[@]}"
+    run producer       --broker "$BROKER" --topic "$topic" --partition 0 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+    run batch-producer --broker "$BROKER" --topic "$topic" --partition 0 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+    run produce-batch  --broker "$BROKER" --topic "$topic" --partition 0 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+    run consumer       --broker "$BROKER" --topic "$topic" --partition 0 \
+        --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
 done
 
-# Render a simple markdown table from the CSV so the README can embed
-# it verbatim.
-python3 - <<PY > "$MD"
-import csv
+# ---- (b) replicated path: 3 partitions, RF=3 ----------------------------
+for size in "${SIZES[@]}"; do
+    echo "--- cluster payload ${size}B (3 partitions, RF=3) ---"
+    run acks-all --acks 1   --partitions 3 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+    run acks-all --acks all --partitions 3 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+    run acks-all --acks all --min-insync 2 --partitions 3 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+    run batch-producer --rf 3 --min-insync 2 --partitions 3 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+done
+echo "--- replication catch-up ---"
+run replication --csv "$CSV"
 
-rows = list(csv.DictReader(open("$CSV")))
-# Re-key rows by (mode, bytes) — payload size is implicit in bytes/records.
-producer = [r for r in rows if r["mode"] == "producer"]
-consumer = [r for r in rows if r["mode"] == "consumer"]
+# ---- (c) flush-policy comparison: eager fsync vs default, 1024B ---------
+echo "--- flush policy: flush.messages=1 vs default (1024B) ---"
+run create-topic --broker "$BROKER" --topic bench-flush-default --partitions 1 --rf 1 "${RETENTION[@]}"
+run create-topic --broker "$BROKER" --topic bench-flush-every --partitions 1 --rf 1 \
+    "${RETENTION[@]}" --config flush.messages=1
+run producer --broker "$BROKER" --topic bench-flush-default --partition 0 \
+    --payload-size 1024 --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+run producer --broker "$BROKER" --topic bench-flush-every --partition 0 \
+    --payload-size 1024 --flush-messages 1 --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
 
-def fmt(row):
-    rec = int(row["records"])
-    bytes_ = int(row["bytes"])
-    payload = bytes_ // rec
-    rps = float(row["records_per_s"])
-    mbps = float(row["bytes_per_s"]) / (1024*1024)
-    p50 = float(row["p50_us"]) / 1000  # us -> ms
-    p99 = float(row["p99_us"]) / 1000
-    p999 = float(row["p999_us"]) / 1000
-    return f"| {payload}B | {rec:,} | {rps:,.0f} | {mbps:,.2f} | {p50:.2f}ms | {p99:.2f}ms | {p999:.2f}ms |"
-
-print("<!-- auto-generated by scripts/bench/run-readme-bench.sh — do not edit by hand -->")
-print()
-print("### Producer")
-print()
-print("| Payload | Records | rps | MiB/s | p50 | p99 | p999 |")
-print("|---|---|---|---|---|---|---|")
-for r in producer:
-    print(fmt(r))
-print()
-print("### Consumer")
-print()
-print("| Payload | Records | rps | MiB/s | p50 | p99 | p999 |")
-print("|---|---|---|---|---|---|---|")
-for r in consumer:
-    print(fmt(r))
-PY
+# ---- snapshot: header + only this run's rows ----------------------------
+head -n1 "$CSV" > "$SNAPSHOT"
+awk -F, -v start="$RUN_START" 'NR > 1 && $1 >= start' "$CSV" >> "$SNAPSHOT"
 
 echo
-echo "--- docs/bench/results.md ---"
-cat "$MD"
+echo "--- $SNAPSHOT ---"
+# Display only: mark empty cells so column alignment survives; the file
+# itself keeps true empty cells.
+awk -F, -v OFS=, '{for (i = 1; i <= NF; i++) if ($i == "") $i = "-"; print}' "$SNAPSHOT" | column -s, -t

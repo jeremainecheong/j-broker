@@ -37,7 +37,7 @@ The success metric was never feature count — it was *being able to explain eve
 **Durability & replication**
 
 - Raft-replicated metadata — topics, partition assignments, producer ids, consumer-group offsets, ACLs, and membership changes survive any minority failure.
-- Replicated partition logs — follower pull replication, ISR tracking, high-watermark gating of consumer visibility, `min.insync.replicas` floor on `acks=all`, leader-epoch fencing, ISR-only election.
+- Replicated partition logs — follower pull replication, ISR tracking, `min.insync.replicas` floor on `acks=all`, leader-epoch fencing with log-lineage validation, ISR-only election.
 - Idempotent producer — `(producer_id, epoch, base_sequence)` dedup, rebuilt from the log on restart so it survives failover.
 - Transactions — a two-phase coordinator on a compacted internal topic, control-batch markers replicated like data, `read_committed` fetch capped at the last stable offset, and transactional consumer-offset commits, so a consume-transform-produce loop delivers exactly once end to end.
 - Log compaction that preserves original absolute offsets, plus time- and size-based retention with per-topic overrides.
@@ -185,7 +185,7 @@ Chart reference — values, mTLS setup, NetworkPolicy, ServiceMonitor/alerts: [d
 
 ### Published artifacts
 
-From the first release onward (the [release pipeline](.github/workflows/release.yml) is dormant until a `v*` tag is pushed):
+Published by the tag-triggered [release pipeline](.github/workflows/release.yml); the current release is [v2.0.0-rc.1](https://github.com/jeremainecheong/j-broker/releases/tag/v2.0.0-rc.1):
 
 - **Images** — `ghcr.io/jeremainecheong/jbroker-broker` and `ghcr.io/jeremainecheong/jbroker-admin`; `:latest` tracks stable releases.
 - **Helm chart** — `helm install jb oci://ghcr.io/jeremainecheong/charts/j-broker --version <version>`.
@@ -469,16 +469,56 @@ Requires Java 21 (Temurin). Gradle wrapper pinned to 8.7, SHA-256 verified on do
 
 ## Performance
 
-Single-broker snapshot on an Apple M2 MacBook Air (16 GB, internal SSD, Darwin 24.2), re-run 2026-07-25 on a warmed broker. End-to-end gRPC, single-record-per-RPC, `acks=1`. See [bench/README.md](bench/README.md) for multi-payload-size tables + `acks=all` variants.
+Every number below is a row in [`docs/bench/results.csv`](docs/bench/results.csv) — an append-only, environment-stamped history written by [`scripts/bench/run-readme-bench.sh`](scripts/bench/run-readme-bench.sh). Method: 30 s of steady state per scenario after an excluded warmup of max(10 s, 20%); percentiles print only when the histogram holds enough samples (≥100 for p99, ≥1,000 for p999 — otherwise the cell stays empty and stderr says why); each row carries its full configuration (acks, partitions, RF, min-ISR, payload, batch, linger, flush) plus the machine and commit. This pass: Apple M2 MacBook Air (16 GB, internal SSD), macOS 15.2, JDK 21.0.2, commit `c260f59`, 2026-07-26. Earlier published rows — one-second unwarmed runs whose consumer "percentiles" were single observations — were removed and survive only in git history.
 
-| Workload | rps | MiB/s | p99 |
+### The durable path — batched producer, 3 brokers, RF=3, `min.insync.replicas=2`, acks=all
+
+| Payload | records/s | MiB/s | samples |
 |---|---|---|---|
-| Produce 1KiB | 4,840 | 4.73 | 0.64 ms |
-| Consume 1KiB | 36,769 | 35.91 | 124.3 ms |
+| 256 B | 3,840 | 0.9 | 125,507 |
+| 1 KiB | 993 | 1.0 | 39,825 |
+| 4 KiB | 274 | 1.1 | 18,193 |
 
-Consume latency is per-**fetch-RPC**, not per record: each fetch returns up to 1 MiB (hundreds of records), so the p99 is the cost of the largest disk-read + transfer round trips while per-record throughput stays at ~35k/s. Produce latency is per single-record RPC — hence the three-orders-of-magnitude difference.
+The flat ~1 MiB/s ceiling is real, and measured for the first time here: `BatchingProducer` keeps one RPC in flight (deliberately — pipelining a partition would defeat the broker's contiguous-sequence dedup), and each 64 KiB batch under acks=all waits for the followers' next replica-fetch cycle before acking (~60 ms p50, next table). The durable path is governed by the replication wait, not by batching or disk speed; that makes the follower fetch cadence and per-partition pipelining the two obvious future levers. Per-record latency in these rows is queueing time at the bench's 10,000-record outstanding window (p50 ~2.6 s at 256 B) — an argument for small in-flight windows on this path, not a wire-time claim.
 
-Regression gate runs on every PR: `.github/workflows/ci.yml` perf-gate jobs assert min-rps + log-append floor (50 MB/s, best-of-3 trials).
+### What durability costs per RPC — single-record produce on the same cluster
+
+| Payload | acks=1 | acks=all | acks=all, min-ISR=2 |
+|---|---|---|---|
+| 256 B | 16,004 rps · p50 59 µs · p99 106 µs | 17 rps · p50 60.5 ms · p99 70.0 ms | 17 rps · p50 60.7 ms · p99 71.3 ms |
+| 1 KiB | 14,414 rps · p50 58 µs · p99 201 µs | 17 rps · p50 60.0 ms · p99 68.9 ms | 17 rps · p50 60.0 ms · p99 63.6 ms |
+| 4 KiB | 9,330 rps · p50 74 µs · p99 523 µs | 16 rps · p50 64.3 ms · p99 81.7 ms | 16 rps · p50 64.3 ms · p99 82.1 ms |
+
+acks=1 answers after the leader append. acks=all answers after both followers replicate, dominated by the 25 ms replica-fetch poll cadence — hence ~60 ms p50 and ~17 rps for a *serial* caller. The min-ISR floor adds no measurable latency on a healthy cluster; what it changes is failure behaviour (reject instead of false-ack when the ISR shrinks). The acks=all rows' p999 cells are empty in the CSV: ~500 samples per 30 s run is below the validity floor, and the harness refuses to print what it can't back.
+
+### Single broker, RF=1 — the unreplicated ceiling
+
+| Scenario | 256 B | 1 KiB | 4 KiB |
+|---|---|---|---|
+| `BatchingProducer`, async, idempotent | 981,772 rps (240 MiB/s) | 274,176 rps (268 MiB/s) | 56,975 rps (223 MiB/s) |
+| `produceBatch` — one RPC, 500 records¹ | 1,267,125 rps (309 MiB/s) · p50 209 µs/RPC | 303,910 rps (297 MiB/s) · p50 707 µs/RPC | 89,102 rps (348 MiB/s) · p50 1.51 ms/RPC |
+| Consumer, 1 MiB fetches | 2,901,059 rps (708 MiB/s) | 942,023 rps (920 MiB/s) | 236,351 rps (923 MiB/s) |
+
+¹ 255 records/RPC at 4 KiB — capped so the encoded batch fits `max.message.bytes`. Consumer per-fetch-RPC latency: p50 0.9–1.1 ms, p99 1.9–3.2 ms across sizes (25–28k fetch RPCs sampled per run); reads wrap over page-cache-warm data — a read-path number, not a disk benchmark.
+
+### Single-record produce is a latency claim, not a throughput claim
+
+| Payload | p50 | p99 | p999 | (serial rps) |
+|---|---|---|---|---|
+| 256 B | 68 µs | 89 µs | 206 µs | 14,421 |
+| 1 KiB | 71 µs | 92 µs | 161 µs | 13,569 |
+| 4 KiB | 65 µs | 193 µs | 812 µs | 13,133 |
+
+### What an fsync per batch would cost
+
+| Flush policy (1 KiB, RF=1) | records/s | p50 | p99 |
+|---|---|---|---|
+| default (`flush.messages=-1`, `flush.ms=-1`) | 16,337 | 54 µs | 104 µs |
+| `flush.messages=1` | 214 | 3.41 ms | 10.49 ms |
+
+The default fsyncs on segment roll and clean shutdown; durability between fsyncs comes from replication (the same stance as Kafka's defaults). Reads and produce latencies above are therefore *not* buying a per-record fsync — this table is what that would cost, measured rather than assumed.
+
+Reproduce: `./gradlew :bench:installDist && scripts/bench/run-readme-bench.sh` against a local broker. Regression gates on every PR: `PerfGateIT` + `AppendThroughputTest` (best-of-3, floors documented in [bench/README.md](bench/README.md)).
 
 ---
 
@@ -502,7 +542,7 @@ Everything listed under *What it does* is implemented, integration-tested on rea
 
 That soak once caught a real acked-record loss ([#115](https://github.com/jeremainecheong/j-broker/issues/115)): wedged DNS starved replication, the ISR shrank to one broker, `acks=all` was satisfied by a single copy, and a shorter-log replica was later promoted over it. Closing it took a six-fix campaign — container logging, channel rebuilds on unresolvable hosts, a `min.insync.replicas` floor, ISR-only election with CAS-guarded metadata, dedup that reflects the log rather than the ack, and lineage-aware replica fetch — with the verification soak itself surfacing the last two. The full derivation of why these close every leg of the loss chain is in [`broker-core/README.md`](broker-core/README.md) §durability model.
 
-No versioned release exists yet. The [release pipeline](.github/workflows/release.yml) is dormant until the first `v*` tag; pushing one publishes the GHCR images, the OCI Helm chart, and the GitHub Packages jars, and creates a GitHub Release with the packaged chart attached.
+The current release is [v2.0.0-rc.1](https://github.com/jeremainecheong/j-broker/releases/tag/v2.0.0-rc.1): GHCR images, the OCI Helm chart, and the GitHub Packages jars are published, with the packaged chart and demo video attached to the release. The rc soaks while the remaining gate — a mixed-version rolling-upgrade check — lands; then it becomes 2.0.0.
 
 ---
 

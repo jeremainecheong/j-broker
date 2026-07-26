@@ -77,3 +77,7 @@ var/
 chaos-*.png
 metrics-page.png
 topics-create-modal.png
+
+# Per-run bench distillate rendered by scripts/bench/run-readme-bench.sh;
+# the append-only history lives in docs/bench/results.csv.
+docs/bench/current-snapshot.csv

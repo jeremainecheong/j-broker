@@ -92,6 +92,8 @@ for size in "${SIZES[@]}"; do
         --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
     run acks-all --acks all --min-insync 2 --partitions 3 \
         --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
+    run batch-producer --rf 3 --min-insync 2 --partitions 3 \
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
 done
 echo "--- replication catch-up ---"
 run replication --csv "$CSV"

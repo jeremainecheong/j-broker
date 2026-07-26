@@ -35,7 +35,7 @@ flowchart LR
     Reporter --> CSV
 ```
 
-`producer` / `batch-producer` / `produce-batch` / `consumer` talk to an already-running broker; `acks-all` / `replication` / `compaction` start an in-process 3-broker cluster themselves (`acks-all` targets an external cluster instead when `--bootstrap` or env `BENCH_BOOTSTRAP` is set, and refuses to run — "N of M brokers reachable, replication factor R requires R" — when too few endpoints answer).
+`producer` / `batch-producer` / `produce-batch` / `consumer` talk to an already-running broker (`batch-producer` additionally runs the replicated path when given `--rf`/`--partitions`/`--min-insync`, spinning up the same in-process cluster as `acks-all` — rows from the two paths are told apart by the `replication_factor` column); `acks-all` / `replication` / `compaction` start an in-process 3-broker cluster themselves (`acks-all` targets an external cluster instead when `--bootstrap` or env `BENCH_BOOTSTRAP` is set, and refuses to run — "N of M brokers reachable, replication factor R requires R" — when too few endpoints answer).
 
 ## Scenarios and latency semantics
 
@@ -83,7 +83,7 @@ Rows written before this schema (2026-07, six rows without environment stamps, w
 scripts/bench/run-readme-bench.sh
 ```
 
-The script appends one full pass to `docs/bench/results.csv` and distills only this run's rows into `docs/bench/current-snapshot.csv` (gitignored) for README table generation. It covers: the single-broker baseline (`producer`, `batch-producer`, `produce-batch`, `consumer` × 256/1024/4096 B), the replicated path on a 3-partition RF=3 cluster (acks=1, acks=all, acks=all + `min.insync.replicas=2` × three sizes, plus `replication` catch-up), and the flush-policy comparison below. `BENCH_DURATION_S` overrides the per-scenario measured duration; `BENCH_WARMUP_S` shrinks the warmup for plumbing smokes (never for published rows); `BENCH_BOOTSTRAP` points the RF=3 scenarios at an external cluster. Script-created topics carry `retention.bytes=2147483648` so each converges to ~2 GiB on disk — the high-throughput scenarios write segments at hundreds of MB/s, and the broker refuses produces below its low-disk-space watermark, so give the data volume real headroom. The script bakes in no expected numbers — it writes rows, humans read them.
+The script appends one full pass to `docs/bench/results.csv` and distills only this run's rows into `docs/bench/current-snapshot.csv` (gitignored) for README table generation. It covers: the single-broker baseline (`producer`, `batch-producer`, `produce-batch`, `consumer` × 256/1024/4096 B), the replicated path on a 3-partition RF=3 cluster (single-record acks=1, acks=all, acks=all + `min.insync.replicas=2`, and the batched producer at acks=all + min-ISR=2, × three sizes, plus `replication` catch-up), and the flush-policy comparison below. `BENCH_DURATION_S` overrides the per-scenario measured duration; `BENCH_WARMUP_S` shrinks the warmup for plumbing smokes (never for published rows); `BENCH_BOOTSTRAP` points the RF=3 scenarios at an external cluster. Script-created topics carry `retention.bytes=2147483648` so each converges to ~2 GiB on disk — the high-throughput scenarios write segments at hundreds of MB/s, and the broker refuses produces below its low-disk-space watermark, so give the data volume real headroom. The script bakes in no expected numbers — it writes rows, humans read them.
 
 Ad-hoc single runs work the same way:
 

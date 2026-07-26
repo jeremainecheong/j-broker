@@ -76,7 +76,7 @@ public final class AcksAllPerfTest {
         }
     }
 
-    private static void requireReachable(List<String> endpoints, int rf) {
+    static void requireReachable(List<String> endpoints, int rf) {
         int reachable = 0;
         for (var ep : endpoints) {
             try (var c = client(ep)) {
@@ -172,7 +172,7 @@ public final class AcksAllPerfTest {
      * controller — non-controllers reject with NOT_LEADER, so walk the
      * list until one accepts.
      */
-    private static void createTopic(List<String> endpoints, String topic, int partitions, int rf, int minInsync) {
+    static void createTopic(List<String> endpoints, String topic, int partitions, int rf, int minInsync) {
         var config = new LinkedHashMap<String, String>();
         if (minInsync > 0) config.put("min.insync.replicas", Integer.toString(minInsync));
         RuntimeException last = null;
@@ -187,7 +187,7 @@ public final class AcksAllPerfTest {
         throw new IllegalStateException("createTopic failed on every endpoint", last);
     }
 
-    private static BrokerClient client(String endpoint) {
+    static BrokerClient client(String endpoint) {
         int colon = endpoint.indexOf(':');
         return new BrokerClient(
                 endpoint.substring(0, colon).trim(),

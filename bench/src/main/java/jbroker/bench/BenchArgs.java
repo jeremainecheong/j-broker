@@ -21,6 +21,20 @@ final class BenchArgs {
         return s == null ? defaultValue : Integer.parseInt(s);
     }
 
+    static long getLong(String[] args, String name, long defaultValue) {
+        var s = get(args, name, null);
+        return s == null ? defaultValue : Long.parseLong(s);
+    }
+
+    /** Every value of a repeatable flag, in argument order. */
+    static java.util.List<String> getAll(String[] args, String name) {
+        var values = new java.util.ArrayList<String>();
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals(name)) values.add(args[i + 1]);
+        }
+        return values;
+    }
+
     static boolean has(String[] args, String name) {
         for (var a : args) if (a.equals(name)) return true;
         return false;

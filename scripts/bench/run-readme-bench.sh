@@ -74,24 +74,24 @@ for size in "${SIZES[@]}"; do
     echo "--- baseline payload ${size}B (topic ${topic}) ---"
     run create-topic --broker "$BROKER" --topic "$topic" --partitions 1 --rf 1 "${RETENTION[@]}"
     run producer       --broker "$BROKER" --topic "$topic" --partition 0 \
-        --payload-size "$size" --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
     run batch-producer --broker "$BROKER" --topic "$topic" --partition 0 \
-        --payload-size "$size" --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
     run produce-batch  --broker "$BROKER" --topic "$topic" --partition 0 \
-        --payload-size "$size" --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
     run consumer       --broker "$BROKER" --topic "$topic" --partition 0 \
-        --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+        --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
 done
 
 # ---- (b) replicated path: 3 partitions, RF=3 ----------------------------
 for size in "${SIZES[@]}"; do
     echo "--- cluster payload ${size}B (3 partitions, RF=3) ---"
     run acks-all --acks 1   --partitions 3 \
-        --payload-size "$size" --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
     run acks-all --acks all --partitions 3 \
-        --payload-size "$size" --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
     run acks-all --acks all --min-insync 2 --partitions 3 \
-        --payload-size "$size" --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+        --payload-size "$size" --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
 done
 echo "--- replication catch-up ---"
 run replication --csv "$CSV"
@@ -102,9 +102,9 @@ run create-topic --broker "$BROKER" --topic bench-flush-default --partitions 1 -
 run create-topic --broker "$BROKER" --topic bench-flush-every --partitions 1 --rf 1 \
     "${RETENTION[@]}" --config flush.messages=1
 run producer --broker "$BROKER" --topic bench-flush-default --partition 0 \
-    --payload-size 1024 --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+    --payload-size 1024 --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
 run producer --broker "$BROKER" --topic bench-flush-every --partition 0 \
-    --payload-size 1024 --flush-messages 1 --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+    --payload-size 1024 --flush-messages 1 --duration-s "$DURATION" ${WARMUP_ARGS[@]+"${WARMUP_ARGS[@]}"} --csv "$CSV"
 
 # ---- snapshot: header + only this run's rows ----------------------------
 head -n1 "$CSV" > "$SNAPSHOT"

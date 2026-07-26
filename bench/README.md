@@ -63,7 +63,7 @@ Every run starts with a real warmup pass against the same topic — max(10 s, 20
 `docs/bench/results.csv` is append-only history — the snapshot script never truncates it. Header:
 
 ```
-timestamp,git_sha,hostname,os,cpu_model,jdk_version,mode,latency_kind,acks,partitions,replication_factor,min_insync_replicas,payload_size,batch_size,linger_ms,warmup_records,compression,records,bytes,elapsed_s,records_per_s,bytes_per_s,samples,p50_us,p99_us,p999_us,max_us
+timestamp,git_sha,hostname,os,cpu_model,jdk_version,mode,latency_kind,acks,partitions,replication_factor,min_insync_replicas,payload_size,batch_size,linger_ms,warmup_records,compression,flush_messages,records,bytes,elapsed_s,records_per_s,bytes_per_s,samples,p50_us,p99_us,p999_us,max_us
 ```
 
 - `timestamp` — ISO-8601 UTC at emit time; `git_sha` — short commit (env `BENCH_GIT_SHA`, else `git rev-parse --short HEAD`, else `unknown`); `cpu_model` — `sysctl -n machdep.cpu.brand_string` on macOS, `/proc/cpuinfo` on Linux; `jdk_version` — the running JVM.

@@ -52,6 +52,11 @@ public final class ProducerPerfTest {
         int concurrency = Math.max(1, BenchArgs.getInt(args, "--concurrency", 1));
         int batchSize = Math.max(1, BenchArgs.getInt(args, "--batch-size", 1));
         boolean acksAll = "all".equals(BenchArgs.get(args, "--acks", null));
+        // Label-only: records the topic's flush.messages override in the CSV
+        // row so the two flush-policy rows stay distinguishable. The policy
+        // itself is topic config; the harness does not change it.
+        String flushStr = BenchArgs.get(args, "--flush-messages", null);
+        Long flushMessages = flushStr == null ? null : Long.valueOf(flushStr);
         var bounds = RunBounds.parse(args);
         String csvStr = BenchArgs.get(args, "--csv", null);
         Path csv = csvStr == null ? null : Path.of(csvStr);
@@ -133,6 +138,7 @@ public final class ProducerPerfTest {
                 .minInsyncReplicas(labels.minInsyncReplicas())
                 .payloadSize(payloadSize)
                 .batchSize((long) batchSize)
+                .flushMessages(flushMessages)
                 .warmupRecords(totalWarmup)
                 .records(totalRecords)
                 .bytes(totalRecords * payloadSize)

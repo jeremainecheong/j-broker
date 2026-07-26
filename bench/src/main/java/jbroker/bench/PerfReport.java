@@ -34,7 +34,8 @@ final class PerfReport {
 
     static final String HEADER = "timestamp,git_sha,hostname,os,cpu_model,jdk_version,mode,latency_kind,acks,"
             + "partitions,replication_factor,min_insync_replicas,payload_size,batch_size,linger_ms,warmup_records,"
-            + "compression,records,bytes,elapsed_s,records_per_s,bytes_per_s,samples,p50_us,p99_us,p999_us,max_us";
+            + "compression,flush_messages,records,bytes,elapsed_s,records_per_s,bytes_per_s,samples,"
+            + "p50_us,p99_us,p999_us,max_us";
 
     private PerfReport() {}
 
@@ -54,6 +55,7 @@ final class PerfReport {
         private Long lingerMs;
         private Long warmupRecords;
         private String compression;
+        private Long flushMessages;
         private long records;
         private long bytes;
         private long elapsedNanos;
@@ -110,6 +112,12 @@ final class PerfReport {
 
         Row compression(String v) {
             this.compression = v;
+            return this;
+        }
+
+        /** Topic-level {@code flush.messages} override; empty cell = broker default (lazy). */
+        Row flushMessages(Long v) {
+            this.flushMessages = v;
             return this;
         }
 
@@ -208,6 +216,7 @@ final class PerfReport {
                     cell(lingerMs),
                     cell(warmupRecords),
                     cell(compression),
+                    cell(flushMessages),
                     Long.toString(records),
                     Long.toString(bytes),
                     String.format(Locale.ROOT, "%.6f", elapsedSec),

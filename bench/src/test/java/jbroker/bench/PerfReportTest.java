@@ -56,8 +56,8 @@ class PerfReportTest {
         assertThat(lines.get(0))
                 .isEqualTo("timestamp,git_sha,hostname,os,cpu_model,jdk_version,mode,latency_kind,acks,"
                         + "partitions,replication_factor,min_insync_replicas,payload_size,batch_size,linger_ms,"
-                        + "warmup_records,compression,records,bytes,elapsed_s,records_per_s,bytes_per_s,samples,"
-                        + "p50_us,p99_us,p999_us,max_us");
+                        + "warmup_records,compression,flush_messages,records,bytes,elapsed_s,records_per_s,"
+                        + "bytes_per_s,samples,p50_us,p99_us,p999_us,max_us");
         assertThat(lines.get(1)).doesNotContain("timestamp");
     }
 
@@ -132,6 +132,19 @@ class PerfReportTest {
         assertThat(cell(cells, "min_insync_replicas")).isEmpty();
         assertThat(cell(cells, "acks")).isEqualTo("1");
         assertThat(cell(cells, "payload_size")).isEqualTo("1024");
+        assertThat(cell(cells, "flush_messages")).isEmpty();
+    }
+
+    @Test
+    void flushPolicyOverrideIsStampedSoTheTwoPolicyRowsStayDistinguishable() throws IOException {
+        var cells = emitAndReadCells(PerfReport.row("producer")
+                .latencyKind("per_rpc")
+                .flushMessages(1L)
+                .records(200)
+                .bytes(204_800)
+                .elapsedNanos(1_000_000_000L)
+                .histogram(histogramWith(200)));
+        assertThat(cell(cells, "flush_messages")).isEqualTo("1");
     }
 
     @Test

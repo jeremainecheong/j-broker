@@ -104,7 +104,7 @@ run create-topic --broker "$BROKER" --topic bench-flush-every --partitions 1 --r
 run producer --broker "$BROKER" --topic bench-flush-default --partition 0 \
     --payload-size 1024 --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
 run producer --broker "$BROKER" --topic bench-flush-every --partition 0 \
-    --payload-size 1024 --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
+    --payload-size 1024 --flush-messages 1 --duration-s "$DURATION" "${WARMUP_ARGS[@]}" --csv "$CSV"
 
 # ---- snapshot: header + only this run's rows ----------------------------
 head -n1 "$CSV" > "$SNAPSHOT"

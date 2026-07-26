@@ -121,6 +121,17 @@ public final class ReplicaFetcher {
      * most {@code maxBytes} of records per fetch.
      */
     public PollResult pollOnce(int expectedLeaderEpoch, int maxBytes) throws IOException {
+        return pollOnce(expectedLeaderEpoch, maxBytes, 0, 0);
+    }
+
+    /**
+     * As {@link #pollOnce(int, int)} but long-polled: {@code maxWaitMs > 0}
+     * asks the leader to hold an empty fetch open until data lands (or the
+     * budget runs out) instead of answering empty immediately. A leader
+     * predating the field ignores it — the driver detects the instant
+     * empty and falls back to a fixed cadence.
+     */
+    public PollResult pollOnce(int expectedLeaderEpoch, int maxBytes, int maxWaitMs, int minBytes) throws IOException {
         var local = logManager.logFor(topic, partition);
         long fetchOffset = local.nextOffset();
         var reqBuilder = ReplicaFetchRequest.newBuilder()
@@ -129,7 +140,9 @@ public final class ReplicaFetcher {
                 .setFollowerBrokerId(selfBrokerId)
                 .setLeaderEpoch(expectedLeaderEpoch)
                 .setFetchOffset(fetchOffset)
-                .setMaxBytes(maxBytes);
+                .setMaxBytes(maxBytes)
+                .setMaxWaitMs(maxWaitMs)
+                .setMinBytes(minBytes);
         // Advertise the epoch owning our last local batch (log LINEAGE, not
         // metadata) so the leader can fence a diverged tail before we glue
         // its records on top of one. Absent for empty logs and logs

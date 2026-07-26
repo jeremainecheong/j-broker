@@ -117,6 +117,18 @@ public final class TxnCoordinatorRuntime implements AutoCloseable {
     }
 
     /**
+     * Wakeup hub for the state-record replication wait. Defaults to a
+     * private unsignaled instance (sliced poll); the broker replaces it
+     * with the shared hub so state appends complete on HWM advance.
+     */
+    private volatile jbroker.broker.replication.ReplicationSignals replicationSignals =
+            new jbroker.broker.replication.ReplicationSignals();
+
+    public void setReplicationSignals(jbroker.broker.replication.ReplicationSignals signals) {
+        this.replicationSignals = java.util.Objects.requireNonNull(signals);
+    }
+
+    /**
      * InitTransactions against the coordinator of {@code partition}. The
      * candidate producer id is allocated up front (outside any lock — it
      * is a Raft proposal); ids burned on paths that don't use the
@@ -308,6 +320,7 @@ public final class TxnCoordinatorRuntime implements AutoCloseable {
                     /*baseSequence*/ -1,
                     ps.get().leaderEpoch());
             boolean replicated = IsrReplicationWait.await(
+                    replicationSignals,
                     topicManager,
                     logManager,
                     followerTracker,

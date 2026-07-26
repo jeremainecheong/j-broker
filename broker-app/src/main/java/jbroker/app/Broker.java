@@ -1681,6 +1681,8 @@ public final class Broker implements AutoCloseable {
         final int selfIdForTxn = config.selfId().value();
         var txnMarkerWriter = new jbroker.broker.txn.TxnMarkerWriter(
                 logManager, topicManager, followerTracker, selfIdForTxn, config.minInsyncReplicas(), txnEpochs);
+        // Marker replication waits ride the same wakeup hub as produce.
+        txnMarkerWriter.setReplicationSignals(replicationSignals);
         // Markers landing on __consumer_offsets decide staged transactional
         // offset commits: fold into the committed view + durable re-append
         // of the folded records (see ConsumerHandler.onTxnMarker).
@@ -1746,6 +1748,8 @@ public final class Broker implements AutoCloseable {
                 txnPidAllocator,
                 markerTransport,
                 System::currentTimeMillis);
+        // State-record replication waits ride the same wakeup hub too.
+        txnRuntime.setReplicationSignals(replicationSignals);
         var txnHandler = new jbroker.broker.txn.TxnHandler(topicManager, brokerRegistry, selfIdForTxn, txnRuntime);
         txnHandler.setAuthorizer(authorizer);
         // Metadata service: DescribeCluster now wired to live

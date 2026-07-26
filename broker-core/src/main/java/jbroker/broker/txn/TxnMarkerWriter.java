@@ -82,6 +82,18 @@ public final class TxnMarkerWriter {
     private final TxnPartitionEpochs txnEpochs;
     private final ConcurrentHashMap<Key, LastMarker> lastMarkers = new ConcurrentHashMap<>();
 
+    /**
+     * Wakeup hub for the replication wait. Defaults to a private
+     * unsignaled instance (sliced poll); the broker replaces it with the
+     * shared hub so marker waits complete on HWM advance.
+     */
+    private volatile jbroker.broker.replication.ReplicationSignals replicationSignals =
+            new jbroker.broker.replication.ReplicationSignals();
+
+    public void setReplicationSignals(jbroker.broker.replication.ReplicationSignals signals) {
+        this.replicationSignals = java.util.Objects.requireNonNull(signals);
+    }
+
     public TxnMarkerWriter(
             LogManager logManager,
             TopicManager topicManager,
@@ -171,6 +183,7 @@ public final class TxnMarkerWriter {
         }
         try {
             boolean replicated = IsrReplicationWait.await(
+                    replicationSignals,
                     topicManager,
                     logManager,
                     followerTracker,

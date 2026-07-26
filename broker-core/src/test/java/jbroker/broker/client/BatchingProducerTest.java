@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -85,7 +86,7 @@ class BatchingProducerTest {
     }
 
     @Test
-    void partitionsKeepOrderContiguousSequencesAndOneBatchInFlight() throws Exception {
+    void partitionsKeepOrderContiguousSequencesAndOneBatchInFlightPerPartition() throws Exception {
         var fake = new FakeSender();
         // Small threshold so the 100 sends split into many batches per
         // partition; huge linger so size is the only trigger until flush.
@@ -123,10 +124,106 @@ class BatchingProducerTest {
                             .mapToObj(seq -> "p" + p + "-" + seq)
                             .toList());
             assertSequencesContiguous(fake, "t", partition);
+            // Per-partition, never globally: distinct partitions may overlap.
+            assertThat(fake.maxInFlightFor("t", partition))
+                    .as("batches for one partition must never pipeline — sequence dedup relies on it")
+                    .isEqualTo(1);
         }
-        assertThat(fake.maxInFlight.get())
-                .as("batches must never pipeline — sequence dedup relies on it")
-                .isEqualTo(1);
+    }
+
+    @Test
+    void partitionsShipConcurrentlyOnePartitionsRpcNeverBlocksAnothers() throws Exception {
+        var p0Entered = new CountDownLatch(1);
+        var p0Release = new CountDownLatch(1);
+        // Scripted transport: partition 0's RPC parks until released;
+        // partition 1 commits immediately. The single producer writes each
+        // partition from empty, so offset == baseSequence + count - 1.
+        var scripted = new BatchingProducer.BatchSender() {
+            @Override
+            public long initProducerId() {
+                return 1L;
+            }
+
+            @Override
+            public long send(
+                    String topic,
+                    int partition,
+                    long producerId,
+                    int producerEpoch,
+                    int baseSequence,
+                    List<byte[]> values) {
+                if (partition == 0) {
+                    p0Entered.countDown();
+                    await(p0Release);
+                }
+                return baseSequence + values.size() - 1;
+            }
+        };
+        // One-byte threshold: every record seals its batch on send().
+        var config = new BatchingProducer.Config(1, HUGE_LINGER_MS, 120_000, 1);
+        try (var producer = new BatchingProducer(scripted, config)) {
+            var parked = producer.send("t", 0, value(10));
+            assertThat(p0Entered.await(10, TimeUnit.SECONDS))
+                    .as("partition 0's RPC reached the transport")
+                    .isTrue();
+            try {
+                // Partition 0's RPC is parked INSIDE the transport, yet
+                // partition 1's batches must still go out and complete.
+                var f0 = producer.send("t", 1, value(10));
+                var f1 = producer.send("t", 1, value(10));
+                assertThat(f0.get(10, TimeUnit.SECONDS)).isEqualTo(0L);
+                assertThat(f1.get(10, TimeUnit.SECONDS)).isEqualTo(1L);
+                assertThat(parked.isDone())
+                        .as("partition 0's RPC is still in flight")
+                        .isFalse();
+            } finally {
+                p0Release.countDown();
+            }
+            assertThat(parked.get(10, TimeUnit.SECONDS)).isEqualTo(0L);
+        }
+    }
+
+    @Test
+    void deliveryFailureOnOnePartitionLeavesTheOthersStreamHealthy() throws Exception {
+        // Scripted transport: partition 0 is down for good, partition 1 is
+        // healthy and assigns offset == baseSequence + count - 1.
+        var scripted = new BatchingProducer.BatchSender() {
+            @Override
+            public long initProducerId() {
+                return 1L;
+            }
+
+            @Override
+            public long send(
+                    String topic,
+                    int partition,
+                    long producerId,
+                    int producerEpoch,
+                    int baseSequence,
+                    List<byte[]> values) {
+                if (partition == 0) throw new RuntimeException("partition 0 unavailable");
+                return baseSequence + values.size() - 1;
+            }
+        };
+        var config = new BatchingProducer.Config(HUGE_BYTES, HUGE_LINGER_MS, /*deliveryTimeoutMs*/ 250, 10);
+        try (var producer = new BatchingProducer(scripted, config)) {
+            var doomed = producer.send("t", 0, value(10));
+            var healthy = producer.send("t", 1, value(10));
+            producer.flush();
+
+            assertThat(healthy.get(10, TimeUnit.SECONDS)).isEqualTo(0L);
+            assertThat(doomed.isCompletedExceptionally()).isTrue();
+            assertThatThrownBy(() -> doomed.get(10, TimeUnit.SECONDS))
+                    .isInstanceOf(ExecutionException.class)
+                    .hasMessageContaining("delivery deadline exceeded")
+                    .hasRootCauseMessage("partition 0 unavailable");
+
+            // The failure is scoped to partition 0's stream: partition 1
+            // keeps delivering, its sequence continuing where it left off.
+            var after = producer.send("t", 1, value(10));
+            producer.flush();
+            assertThat(after.get(10, TimeUnit.SECONDS)).isEqualTo(1L);
+        }
     }
 
     @Test
@@ -231,6 +328,18 @@ class BatchingProducerTest {
         return new byte[size];
     }
 
+    /** Bounded latch wait: a failed test releases (or times out) rather than hangs. */
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("latch timed out");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
     private static int totalRecords(FakeSender fake, String topic, int partition) {
         return fake.attemptsFor(topic, partition).stream()
                 .mapToInt(a -> a.values().size())
@@ -262,8 +371,8 @@ class BatchingProducerTest {
         final List<Attempt> attempts = Collections.synchronizedList(new ArrayList<>());
         final ConcurrentHashMap<String, Long> nextOffset = new ConcurrentHashMap<>();
         final AtomicInteger initCalls = new AtomicInteger();
-        final AtomicInteger inFlight = new AtomicInteger();
-        final AtomicInteger maxInFlight = new AtomicInteger();
+        final ConcurrentHashMap<String, AtomicInteger> inFlight = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<String, AtomicInteger> maxInFlight = new ConcurrentHashMap<>();
 
         /** Sends to fail (with a RuntimeException) before succeeding. */
         volatile int failuresRemaining;
@@ -282,20 +391,27 @@ class BatchingProducerTest {
                 int producerEpoch,
                 int baseSequence,
                 List<byte[]> values) {
-            int current = inFlight.incrementAndGet();
-            maxInFlight.updateAndGet(m -> Math.max(m, current));
+            String key = topic + "-" + partition;
+            int current =
+                    inFlight.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
+            maxInFlight.computeIfAbsent(key, k -> new AtomicInteger()).updateAndGet(m -> Math.max(m, current));
             try {
                 attempts.add(new Attempt(topic, partition, producerId, baseSequence, List.copyOf(values)));
                 if (failuresRemaining > 0) {
                     failuresRemaining--;
                     throw new RuntimeException("transient send failure");
                 }
-                String key = topic + "-" + partition;
                 long end = nextOffset.merge(key, (long) values.size(), Long::sum);
                 return end - 1;
             } finally {
-                inFlight.decrementAndGet();
+                inFlight.get(key).decrementAndGet();
             }
+        }
+
+        /** Highest number of concurrently in-flight RPCs seen for one partition. */
+        int maxInFlightFor(String topic, int partition) {
+            var max = maxInFlight.get(topic + "-" + partition);
+            return max == null ? 0 : max.get();
         }
 
         /** Successful and failed attempts for one partition, in arrival order. */

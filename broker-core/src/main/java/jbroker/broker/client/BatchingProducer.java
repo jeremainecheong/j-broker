@@ -14,12 +14,12 @@ import jbroker.storage.RecordBatch;
 
 /**
  * Async batching producer over {@link BrokerClient}. {@link #send} enqueues a
- * record and returns immediately with a future for its absolute offset; a
- * background sender thread packs records into per-(topic, partition) batches
- * and ships each one with a single acks=all RPC. A batch closes when its
- * encoded size reaches {@link Config#batchSizeBytes} or when
- * {@link Config#lingerMs} has elapsed since its first record — whichever
- * comes first.
+ * record and returns immediately with a future for its absolute offset;
+ * records pack into per-(topic, partition) batches, and a per-partition
+ * sender (a virtual thread, created on the partition's first record) ships
+ * each batch with a single acks=all RPC. A batch closes when its encoded
+ * size reaches {@link Config#batchSizeBytes} or when {@link Config#lingerMs}
+ * has elapsed since its first record — whichever comes first.
  *
  * <p>Delivery is idempotent: the producer allocates a producer id lazily on
  * first use ({@link BatchSender#initProducerId}) and stamps every batch with a
@@ -32,15 +32,19 @@ import jbroker.storage.RecordBatch;
  *
  * <p>Ordering: batches for one partition are sent strictly in accumulation
  * order, never pipelined — two in-flight batches for the same partition would
- * defeat the broker's contiguous-sequence dedup check. A single sender thread
- * enforces this globally (one RPC in flight at a time), which is plenty for
- * the client-side batching this class exists to provide.
+ * defeat the broker's contiguous-sequence dedup check. The partition's
+ * dedicated sender enforces this structurally: it takes batches only from
+ * the head of its own FIFO queue and does not take the next until the
+ * current RPC has resolved. Distinct partitions have distinct senders, so
+ * one partition's replication wait never stalls another's.
  *
  * <p>Failure caveat: a batch that exhausts its delivery deadline leaves a gap
- * in the partition's sequence stream, and the broker will reject the
- * subsequent (now non-contiguous) batch as out-of-order. After a delivery
- * failure the producer should be closed and replaced — exactly-once
- * bookkeeping cannot resume across a hole it never delivered.
+ * in ITS partition's sequence stream, and the broker will reject that
+ * partition's subsequent (now non-contiguous) batches as out-of-order, so
+ * they fail too once their own deadlines lapse. Other partitions' streams
+ * are unaffected and keep delivering. After a delivery failure the producer
+ * should still be closed and replaced — exactly-once bookkeeping cannot
+ * resume across a hole it never delivered.
  */
 public final class BatchingProducer implements AutoCloseable {
 
@@ -102,19 +106,21 @@ public final class BatchingProducer implements AutoCloseable {
 
     private final Object lock = new Object();
 
-    /** Per-partition accumulation state; guarded by {@link #lock}. */
+    /** Per-partition accumulation + sender state; guarded by {@link #lock}. */
     private final Map<TopicPartition, PartitionState> partitions = new LinkedHashMap<>();
-
-    /** Batch currently being sent, if any; guarded by {@link #lock}. */
-    private Batch inFlight;
 
     /** Guarded by {@link #lock}; once set, {@link #send} rejects new records. */
     private boolean closed;
 
-    /** Lazily allocated on first delivery; touched only by the sender thread. */
-    private long producerId = -1;
+    /**
+     * Guards the lazy producer-id allocation so concurrent partition senders
+     * agree on one id; separate from {@link #lock} because
+     * {@link BatchSender#initProducerId} hits the network.
+     */
+    private final Object producerIdLock = new Object();
 
-    private final Thread senderThread;
+    /** Lazily allocated on first delivery; guarded by {@link #producerIdLock}. */
+    private long producerId = -1;
 
     public BatchingProducer(BatchSender sender) {
         this(sender, Config.defaults());
@@ -123,9 +129,6 @@ public final class BatchingProducer implements AutoCloseable {
     public BatchingProducer(BatchSender sender, Config config) {
         this.sender = Objects.requireNonNull(sender, "sender");
         this.config = Objects.requireNonNull(config, "config");
-        this.senderThread = new Thread(this::runSenderLoop, "batching-producer-sender");
-        this.senderThread.setDaemon(true);
-        this.senderThread.start();
     }
 
     /** Wire a producer to a live broker: idempotent, acks=all, default config. */
@@ -213,7 +216,13 @@ public final class BatchingProducer implements AutoCloseable {
         var future = new CompletableFuture<Long>();
         synchronized (lock) {
             if (closed) throw new IllegalStateException("producer is closed");
-            var ps = partitions.computeIfAbsent(new TopicPartition(topic, partition), tp -> new PartitionState());
+            var ps = partitions.computeIfAbsent(new TopicPartition(topic, partition), tp -> {
+                var state = new PartitionState();
+                state.senderThread = Thread.ofVirtual()
+                        .name("batching-producer-sender-" + tp.topic() + "-" + tp.partition())
+                        .start(() -> runSenderLoop(state));
+                return state;
+            });
             if (ps.open == null) {
                 ps.open = new Batch(topic, partition, ps.nextSequence, System.nanoTime());
             }
@@ -250,9 +259,9 @@ public final class BatchingProducer implements AutoCloseable {
                 for (var batch : ps.sealed) {
                     pending.addAll(batch.futures);
                 }
-            }
-            if (inFlight != null) {
-                pending.addAll(inFlight.futures);
+                if (ps.inFlight != null) {
+                    pending.addAll(ps.inFlight.futures);
+                }
             }
             lock.notifyAll();
         }
@@ -262,9 +271,9 @@ public final class BatchingProducer implements AutoCloseable {
     }
 
     /**
-     * Flush, then stop the sender thread. Idempotent. Records enqueued
+     * Flush, then stop every partition sender. Idempotent. Records enqueued
      * after close() throws {@code IllegalStateException}; anything accepted
-     * before is delivered (or failed) before the thread exits.
+     * before is delivered (or failed) before the senders exit.
      */
     @Override
     public void close() {
@@ -272,33 +281,45 @@ public final class BatchingProducer implements AutoCloseable {
             if (closed) return;
         }
         flush();
+        List<Thread> senders;
         synchronized (lock) {
             closed = true;
+            senders = partitions.values().stream().map(ps -> ps.senderThread).toList();
             lock.notifyAll();
         }
-        try {
-            senderThread.join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        for (var thread : senders) {
+            try {
+                thread.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 
-    // ---- Sender thread ----
+    // ---- Partition sender threads ----
 
-    private void runSenderLoop() {
+    /**
+     * One partition's delivery loop. Taking a batch and marking it in flight
+     * happen atomically under the lock; the RPC itself runs outside it, so
+     * one partition's replication wait never blocks {@link #send} callers or
+     * other partitions' senders. Being this partition's ONLY sender is what
+     * guarantees one RPC in flight and strict accumulation order.
+     */
+    private void runSenderLoop(PartitionState ps) {
         while (true) {
             Batch batch;
             synchronized (lock) {
                 while (true) {
                     long now = System.nanoTime();
-                    batch = pollDue(now);
+                    batch = pollDue(ps, now);
                     if (batch != null) {
-                        inFlight = batch;
+                        ps.inFlight = batch;
                         break;
                     }
-                    if (closed) return; // fully drained
+                    if (closed) return; // this partition is fully drained
                     try {
-                        long waitNanos = nanosUntilNextLingerDeadline(now);
+                        long waitNanos = nanosUntilLingerDeadline(ps, now);
                         if (waitNanos == Long.MAX_VALUE) {
                             lock.wait();
                         } else {
@@ -316,64 +337,39 @@ public final class BatchingProducer implements AutoCloseable {
             }
             sendWithRetries(batch);
             synchronized (lock) {
-                inFlight = null;
+                ps.inFlight = null;
             }
         }
     }
 
     /**
-     * Pick the next batch to send, oldest first: any sealed batch (closed by
-     * size, flush, or shutdown) before any open batch whose linger expired.
-     * Heads of the per-partition FIFO deques keep partition order intact.
+     * Pick this partition's next batch, oldest first: the head of its sealed
+     * FIFO (closed by size, flush, or shutdown) before an open batch whose
+     * linger expired. Taking only from the head keeps partition order intact.
      */
-    private Batch pollDue(long nowNanos) {
-        if (closed) {
+    private Batch pollDue(PartitionState ps, long nowNanos) {
+        if (closed && ps.open != null) {
             // Records accepted between flush() and the closed flag still
             // must go out; force-seal them so the drain below sees them.
-            for (var ps : partitions.values()) {
-                if (ps.open != null) {
-                    ps.sealed.addLast(ps.open);
-                    ps.open = null;
-                }
-            }
+            ps.sealed.addLast(ps.open);
+            ps.open = null;
         }
-        PartitionState best = null;
-        for (var ps : partitions.values()) {
-            var head = ps.sealed.peekFirst();
-            if (head == null) continue;
-            if (best == null || head.firstAppendNanos < best.sealed.peekFirst().firstAppendNanos) {
-                best = ps;
-            }
-        }
-        if (best != null) return best.sealed.pollFirst();
+        var head = ps.sealed.pollFirst();
+        if (head != null) return head;
 
         long lingerNanos = TimeUnit.MILLISECONDS.toNanos(config.lingerMs());
-        PartitionState duePs = null;
-        for (var ps : partitions.values()) {
-            var open = ps.open;
-            if (open == null || nowNanos - open.firstAppendNanos < lingerNanos) continue;
-            if (duePs == null || open.firstAppendNanos < duePs.open.firstAppendNanos) {
-                duePs = ps;
-            }
-        }
-        if (duePs != null) {
-            var batch = duePs.open;
-            duePs.open = null;
+        if (ps.open != null && nowNanos - ps.open.firstAppendNanos >= lingerNanos) {
+            var batch = ps.open;
+            ps.open = null;
             return batch;
         }
         return null;
     }
 
-    /** Nanos until the earliest open batch lingers out, or MAX_VALUE if none is open. */
-    private long nanosUntilNextLingerDeadline(long nowNanos) {
-        long lingerNanos = TimeUnit.MILLISECONDS.toNanos(config.lingerMs());
-        long earliest = Long.MAX_VALUE;
-        for (var ps : partitions.values()) {
-            if (ps.open != null) {
-                earliest = Math.min(earliest, ps.open.firstAppendNanos + lingerNanos - nowNanos);
-            }
-        }
-        return earliest;
+    /** Nanos until this partition's open batch lingers out, or MAX_VALUE if none is open. */
+    private long nanosUntilLingerDeadline(PartitionState ps, long nowNanos) {
+        if (ps.open == null) return Long.MAX_VALUE;
+        return ps.open.firstAppendNanos + TimeUnit.MILLISECONDS.toNanos(config.lingerMs()) - nowNanos;
     }
 
     /**
@@ -390,11 +386,13 @@ public final class BatchingProducer implements AutoCloseable {
         RuntimeException last = null;
         while (true) {
             try {
-                if (producerId < 0) {
-                    producerId = sender.initProducerId();
-                }
                 long lastOffset = sender.send(
-                        batch.topic, batch.partition, producerId, /*epoch*/ 0, batch.baseSequence, batch.values);
+                        batch.topic,
+                        batch.partition,
+                        producerIdOrInit(), /*epoch*/
+                        0,
+                        batch.baseSequence,
+                        batch.values);
                 long baseOffset = lastOffset - (batch.values.size() - 1);
                 for (int i = 0; i < batch.futures.size(); i++) {
                     batch.futures.get(i).complete(baseOffset + i);
@@ -424,6 +422,22 @@ public final class BatchingProducer implements AutoCloseable {
     }
 
     /**
+     * The shared idempotent-producer id, allocated on the first delivery
+     * attempt to reach here. Concurrent senders serialize on
+     * {@link #producerIdLock}: one allocates, the rest reuse. A failed
+     * allocation throws to the caller's retry loop, so the next attempt
+     * (from any partition) tries again.
+     */
+    private long producerIdOrInit() {
+        synchronized (producerIdLock) {
+            if (producerId < 0) {
+                producerId = sender.initProducerId();
+            }
+            return producerId;
+        }
+    }
+
+    /**
      * Exact encoded size of one null-key, header-less record at this
      * offsetDelta — delegate to the storage layer's own sizing so the
      * accumulator's byte accounting matches the wire format.
@@ -436,21 +450,26 @@ public final class BatchingProducer implements AutoCloseable {
     private record TopicPartition(String topic, int partition) {}
 
     /**
-     * Accumulation state for one partition. {@code nextSequence} is the
-     * partition's monotonic sequence cursor: assigned to a batch at creation,
-     * advanced per record, never reused — the broker's contiguity check
-     * (next base sequence == previous base + previous count) depends on it.
+     * Accumulation + delivery state for one partition; all fields except the
+     * thread handle are guarded by the producer lock. {@code nextSequence} is
+     * the partition's monotonic sequence cursor: assigned to a batch at
+     * creation, advanced per record, never reused — the broker's contiguity
+     * check (next base sequence == previous base + previous count) depends on
+     * it. {@code senderThread} is the partition's ONLY sender: batch order
+     * and the one-RPC-in-flight limit both fall out of its single-threadedness.
      */
     private static final class PartitionState {
         final ArrayDeque<Batch> sealed = new ArrayDeque<>();
         Batch open;
+        Batch inFlight;
         int nextSequence;
+        Thread senderThread;
     }
 
     /**
      * One accumulating (then in-flight) batch. Mutated only under the
      * producer lock while it is the partition's {@code open} batch; once
-     * sealed it is read-only and owned by the sender thread.
+     * sealed it is read-only and owned by that partition's sender thread.
      */
     private static final class Batch {
         final String topic;

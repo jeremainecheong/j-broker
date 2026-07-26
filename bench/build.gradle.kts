@@ -23,4 +23,8 @@ application {
     // Single entry point — dispatches on the first argument
     // (producer/consumer). See PerfMain for supported flags.
     mainClass.set("jbroker.bench.PerfMain")
+    // Named bench-logback.xml, not logback.xml: a classpath-root
+    // logback.xml would leak into every consumer of this project's jar.
+    // Keeps stdout pure summary output — see the config file.
+    applicationDefaultJvmArgs = listOf("-Dlogback.configurationFile=bench-logback.xml")
 }

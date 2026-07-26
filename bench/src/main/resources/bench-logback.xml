@@ -1,0 +1,20 @@
+<!--
+  Logging for the bench distribution. Without an explicit config,
+  logback (pulled in transitively through broker-app) defaults to DEBUG
+  on stdout and drowns the perf summaries in gRPC/netty frame traces.
+  The summaries own stdout; diagnostics go to stderr at WARN — the
+  in-process cluster modes boot three brokers whose INFO chatter is not
+  measurement output.
+-->
+<configuration>
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX, UTC} %-5level [%thread] %logger{30} — %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="WARN">
+        <appender-ref ref="STDERR"/>
+    </root>
+</configuration>

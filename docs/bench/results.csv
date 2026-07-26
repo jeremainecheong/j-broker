@@ -1,7 +1,1 @@
-mode,records,bytes,elapsed_s,records_per_s,bytes_per_s,p50_us,p99_us,p999_us,max_us
-producer,5000,1280000,1.022961,4887.77,1251269.75,149.89,557.57,1015.30,2385.92
-consumer,6427,1645312,0.133087,48291.84,12362710.98,9592.83,123273.22,123273.22,123273.22
-producer,5000,5120000,1.033097,4839.82,4955970.79,143.23,637.44,1588.22,11419.65
-consumer,5738,5875712,0.156055,36769.03,37651485.61,6074.37,124256.26,124256.26,124256.26
-producer,5000,20480000,1.047256,4774.38,19555870.24,154.24,561.15,1180.67,18137.09
-consumer,5020,20561920,0.198234,25323.58,103725386.77,3868.67,117768.19,117768.19,117768.19
+timestamp,git_sha,hostname,os,cpu_model,jdk_version,mode,latency_kind,acks,partitions,replication_factor,min_insync_replicas,payload_size,batch_size,linger_ms,warmup_records,compression,records,bytes,elapsed_s,records_per_s,bytes_per_s,samples,p50_us,p99_us,p999_us,max_us

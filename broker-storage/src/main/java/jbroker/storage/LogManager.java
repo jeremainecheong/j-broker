@@ -91,6 +91,41 @@ public final class LogManager implements AutoCloseable {
     }
 
     /**
+     * Notified after every successful append on any log this manager owns,
+     * with the owning (topic, partition). Installed on already-open logs at
+     * set time and on every log opened later — both under the {@code logs}
+     * monitor, so no open can race past an in-flight registration. Opaque
+     * to storage; the replication layer parks its data-availability waits
+     * on it.
+     */
+    @FunctionalInterface
+    public interface AppendListener {
+        void onAppend(String topic, int partition);
+    }
+
+    private volatile AppendListener appendListener;
+
+    public void setAppendListener(AppendListener listener) {
+        synchronized (logs) {
+            this.appendListener = listener;
+            for (var entry : logs.entrySet()) {
+                wireAppendListener(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    /** Callers hold the {@code logs} monitor. */
+    private void wireAppendListener(String key, Log log) {
+        var listener = appendListener;
+        if (listener == null) return;
+        int dash = key.lastIndexOf('-');
+        if (dash <= 0) return;
+        String topic = key.substring(0, dash);
+        int partition = Integer.parseInt(key.substring(dash + 1));
+        log.setAppendListener(() -> listener.onAppend(topic, partition));
+    }
+
+    /**
      * Flush-tick cadence. Also the freshness bound for pushing per-topic
      * config to open logs — much tighter than the cleaner interval so
      * flush.ms values in the low seconds actually mean what they say.
@@ -164,6 +199,7 @@ public final class LogManager implements AutoCloseable {
                     new Log.Config(effective.segmentBytes(), effective.retentionMillis(), config.indexIntervalBytes());
             var log = Log.open(dir, logConfig);
             log.setControlAppendGate(this::ensureControlWritable);
+            wireAppendListener(key, log);
             logs.put(key, log);
             return log;
         }

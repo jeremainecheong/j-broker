@@ -34,7 +34,14 @@ public final class ProduceHandler {
 
     private static final int ACKS_ALL = -1;
     private static final long ACKS_ALL_TIMEOUT_MS = 5_000L;
-    private static final long ACKS_ALL_POLL_MS = 10L;
+
+    /**
+     * Await slice for the acks=all replication wait. The wait parks on
+     * {@link jbroker.broker.replication.ReplicationSignals} and normally
+     * wakes on the signal; the slice bounds what a lost wakeup can cost
+     * before every predicate re-runs.
+     */
+    private static final long ACKS_ALL_AWAIT_SLICE_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
 
     /**
      * Cluster-wide default for the acks=all durability floor. Two is the
@@ -79,6 +86,19 @@ public final class ProduceHandler {
 
     public void setTxnPartitionEpochs(jbroker.broker.txn.TxnPartitionEpochs epochs) {
         this.txnEpochs = java.util.Objects.requireNonNull(epochs);
+    }
+
+    /**
+     * Wakeup hub for the acks=all replication wait. Defaults to a private
+     * unsignaled instance so the wait degrades to a sliced poll; the
+     * broker replaces it with the hub fed by follower fetch progress,
+     * appends, and partition-change applies.
+     */
+    private volatile jbroker.broker.replication.ReplicationSignals replicationSignals =
+            new jbroker.broker.replication.ReplicationSignals();
+
+    public void setReplicationSignals(jbroker.broker.replication.ReplicationSignals signals) {
+        this.replicationSignals = java.util.Objects.requireNonNull(signals);
     }
 
     private final ProducerStateManager producerState;
@@ -569,11 +589,19 @@ public final class ProduceHandler {
     }
 
     /**
-     * Poll until the partition's HWM advances past {@code producedLastOffset}
+     * Wait until the partition's HWM advances past {@code producedLastOffset}
      * with the ISR still at or above the {@code min.insync.replicas} floor,
      * bounded by {@link #ACKS_ALL_TIMEOUT_MS}. Returns {@code null} on
      * success; on timeout, leadership loss, or an ISR that drops below the
      * floor, returns an error response.
+     *
+     * <p>The wait parks on the partition's {@link
+     * jbroker.broker.replication.ReplicationSignals} monitor and every
+     * predicate — leadership, the floor (re-resolved for live config
+     * changes), ISR size, HWM — re-runs on every wakeup, so a signal can
+     * only ever make the loop re-check, never skip a check. Waits are
+     * sliced at {@link #ACKS_ALL_AWAIT_SLICE_NANOS} as the lost-signal
+     * backstop.
      *
      * <p>The floor re-check inside the loop is load-bearing: an ISR shrink
      * to just the leader makes {@code computeHwm} jump to the leader's LEO
@@ -587,7 +615,12 @@ public final class ProduceHandler {
     private ProduceResponse waitForIsrReplication(String topic, int partition, long producedLastOffset)
             throws IOException {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ACKS_ALL_TIMEOUT_MS);
+        var signals = replicationSignals;
         while (true) {
+            // Stamp precedes the predicates: replication finishing between
+            // the HWM check and the await bumps the generation, and the
+            // await returns without parking.
+            long stamp = signals.stamp(topic, partition);
             var state = topicManager.partitionState(topic, partition);
             if (state.isEmpty() || state.get().leader() != selfBrokerId) {
                 return err(
@@ -630,7 +663,8 @@ public final class ProduceHandler {
                                 + "ms");
             }
             try {
-                Thread.sleep(ACKS_ALL_POLL_MS);
+                long remaining = deadline - System.nanoTime();
+                signals.await(topic, partition, stamp, Math.min(remaining, ACKS_ALL_AWAIT_SLICE_NANOS));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return err(ErrorCodes.IO_ERROR, "interrupted while waiting on acks=all");

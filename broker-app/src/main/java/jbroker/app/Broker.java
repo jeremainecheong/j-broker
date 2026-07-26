@@ -1523,6 +1523,8 @@ public final class Broker implements AutoCloseable {
                 config.minInsyncReplicas(),
                 diskHeadroom,
                 defaults.maxMessageBytes());
+        // acks=all completes on HWM advance instead of a poll cadence.
+        produce.setReplicationSignals(replicationSignals);
         var replicaFetch = new ReplicaFetchHandler(
                 logManager,
                 topicManager,

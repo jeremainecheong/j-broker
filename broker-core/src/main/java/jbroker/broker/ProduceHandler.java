@@ -295,7 +295,10 @@ public final class ProduceHandler {
         // straddle a concurrent PartitionChangeRecord apply. Check-then-
         // append still has a race: a leadership change committed between
         // this snapshot and log.append can let a deposed leader write one
-        // batch locally. The leader-epoch check in Log.append closes the gap.
+        // batch locally. Those bytes never become visible durable state —
+        // acks=all re-checks leadership in the replication wait, and the
+        // divergent tail is truncated by lineage reconciliation when this
+        // broker re-fetches from the new leader.
         var state = topicManager.partitionState(req.getTopic(), req.getPartition());
         if (state.isEmpty()) {
             return err(ErrorCodes.NOT_LEADER, "no leader for partition " + req.getTopic() + "-" + req.getPartition());

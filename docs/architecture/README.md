@@ -156,8 +156,7 @@ Verified against `deploy/helm/j-broker/templates/` (`broker-statefulset.yaml`,
 `ProduceHandler.handle` runs its gates in a fixed order: ACL (`Authorizer`),
 quota (`QuotaEnforcer`, `QUOTA_VIOLATED` with a `throttle_ms` hint), batch
 size (`MESSAGE_TOO_LARGE`, fatal), disk headroom (`DiskHeadroom`,
-`STORAGE_FULL`, retriable), leadership (`NOT_LEADER` — the leader-epoch check
-inside `Log.append` closes the check-then-append race), and — for `acks=-1` —
+`STORAGE_FULL`, retriable), leadership (`NOT_LEADER`), and — for `acks=-1` —
 the `min.insync.replicas` floor *before* the append (`NOT_ENOUGH_REPLICAS`,
 nothing written). `ProducerIdRegistry` dedups idempotent retries. After the
 append, followers pull via `ReplicaConsumer.ReplicaFetch`; the leader records
@@ -180,8 +179,8 @@ sequenceDiagram
     L->>L: DiskHeadroom.low? leader? ISR >= min.insync.replicas?
     Note over L: any gate fails → typed error,<br/>nothing appended
     L->>L: ProducerIdRegistry: dedup / OUT_OF_ORDER_SEQUENCE
-    L->>Log: append (leader-epoch checked, fsync at batch boundary)
-    Note over L: reply held until HWM > last offset
+    L->>Log: append (leader epoch stamped in the batch header)
+    Note over L: reply held until HWM > last offset<br/>and ISR >= min.insync.replicas (10 ms poll)
 
     F->>L: ReplicaFetch(offset, leader_epoch)
     Note over L,F: stale epoch → FENCED_EPOCH —<br/>follower truncates via OffsetsForLeaderEpoch

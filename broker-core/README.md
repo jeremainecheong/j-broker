@@ -115,7 +115,7 @@ sequenceDiagram
 
     P->>L: Produce(records, acks=-1)
     L->>L: append locally, LEO=100
-    Note over L: hold reply in CompletableFuture<br/>keyed by (partition, last-offset=100)
+    Note over L: hold reply; poll HWM + ISR floor<br/>every 10 ms, 5 s deadline
 
     F1->>L: ReplicaFetch(offset=100)
     L->>FT: update(F1, LEO=100, now)
@@ -495,38 +495,30 @@ MappedByteBuffer buf = channel.map(MapMode.READ_ONLY, position, size);
 | Raft log append | `FileChannel.write` + `force(true)` | `raft-core/FileRaftLog.java` |
 | Raft persistent state (term + votedFor) | `FileChannel.write` + `force(true)` | `raft-core/FilePersistentState.java` |
 
-The `transferTo` path is what makes consume throughput ~6× higher than produce throughput in the bench: there's no fsync on the read side, *and* the data goes directly from page cache to socket without bouncing through user space.
+The `transferTo` path is why consume throughput sits far above single-record produce in the bench: the read side has no per-record RPC cost and no replication wait, and the data goes directly from page cache to socket without bouncing through user space.
 
-## CompletableFuture for acks=all coordination
+## The acks=all replication wait
 
-**JDK** (`java.util.concurrent.CompletableFuture`, since Java 8): a future whose completion can be triggered by anyone, with rich composition (`thenApply`, `thenCompose`, `allOf`, `anyOf`, `orTimeout`).
+**JDK** (virtual threads, since Java 21): parking a thread is cheap, so a plain polling wait costs almost nothing while it sleeps — the carrier OS thread is released for other virtual threads.
 
-**j-broker**: every `acks=all` produce is held in a `CompletableFuture<ProduceResp>` keyed by `(partition, last-offset)` until the leader's HWM advances past that offset.
+**j-broker**: an `acks=-1` produce appends, then `ProduceHandler.waitForIsrReplication` polls every 10 ms against a 5 s deadline until the partition's HWM passes the batch's last offset *and* the ISR still meets `min.insync.replicas`. Any exit that cannot prove replication — leadership lost, ISR below the floor, deadline — maps to a retriable error. The floor is re-resolved every iteration, so a live config change or a mid-wait ISR shrink takes effect immediately.
 
 ```java
-// In ProduceHandler.handle(), for acks=-1:
-var future = new CompletableFuture<ProduceResp>();
-pendingAcksAll.put(new Key(partition, lastOffset), future);
-
-// Schedule a timeout safety net (default 5 s):
-scheduledExecutor.schedule(() -> {
-    if (!future.isDone()) {
-        future.complete(buildErr(NOT_ENOUGH_REPLICAS));
-        pendingAcksAll.remove(...);
-    }
-}, 5, TimeUnit.SECONDS);
-
-return future;   // gRPC server awaits this on the VT
-
-// Elsewhere — when ReplicaFetch updates FollowerStateTracker:
-void onFollowerLeoUpdate(...) {
-    long newHwm = recomputeHwm(...);
-    pendingAcksAll.headMap(new Key(partition, newHwm), true)
-                  .forEach((key, fut) -> fut.complete(buildOk(key.offset)));
+// Sketch of the real loop in ProduceHandler.waitForIsrReplication:
+long deadline = System.nanoTime() + MILLISECONDS.toNanos(ACKS_ALL_TIMEOUT_MS);
+while (System.nanoTime() < deadline) {
+    if (!isLeader(topic, partition)) return err(NOT_LEADER);
+    int floor = effectiveMinInsync(topic);          // re-resolved each pass
+    long hwm = tracker.computeHwm(...);
+    int isr = isrSize(topic, partition);
+    if (hwm > lastOffset && isr >= floor) return ok(offsets);
+    if (isr < floor) return err(NOT_ENOUGH_REPLICAS);
+    Thread.sleep(ACKS_ALL_POLL_MS);                 // parks the VT only
 }
+return err(NOT_ENOUGH_REPLICAS);
 ```
 
-The combination of `CompletableFuture` + virtual threads gives "synchronous-looking blocking code" without the cost: the gRPC handler thread (a VT) parks on `future.get()` while the carrier OS thread services other VTs.
+An earlier revision of this README described this path as a `CompletableFuture` completed by a watermark listener. That design was sketched and never built; the poll loop won on simplicity — no listener lifecycle, no completion races — and at 10 ms granularity the extra latency is noise against a replication round trip.
 
 ## try-with-resources lifecycle discipline
 

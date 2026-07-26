@@ -469,54 +469,54 @@ Requires Java 21 (Temurin). Gradle wrapper pinned to 8.7, SHA-256 verified on do
 
 ## Performance
 
-Every number below is a row in [`docs/bench/results.csv`](docs/bench/results.csv) — an append-only, environment-stamped history written by [`scripts/bench/run-readme-bench.sh`](scripts/bench/run-readme-bench.sh). Method: 30 s of steady state per scenario after an excluded warmup of max(10 s, 20%); percentiles print only when the histogram holds enough samples (≥100 for p99, ≥1,000 for p999 — otherwise the cell stays empty and stderr says why); each row carries its full configuration (acks, partitions, RF, min-ISR, payload, batch, linger, flush) plus the machine and commit. This pass: Apple M2 MacBook Air (16 GB, internal SSD), macOS 15.2, JDK 21.0.2, commit `c260f59`, 2026-07-26. Earlier published rows — one-second unwarmed runs whose consumer "percentiles" were single observations — were removed and survive only in git history.
+Every number below is a row in [`docs/bench/results.csv`](docs/bench/results.csv) — an append-only, environment-stamped history written by [`scripts/bench/run-readme-bench.sh`](scripts/bench/run-readme-bench.sh). Method: 30 s of steady state per scenario after an excluded warmup of max(10 s, 20%); percentiles print only when the histogram holds enough samples (≥100 for p99, ≥1,000 for p999 — otherwise the cell stays empty and stderr says why); each row carries its full configuration (acks, partitions, RF, min-ISR, payload, batch, linger, flush) plus the machine and commit. Machine: Apple M2 MacBook Air (16 GB, internal SSD), macOS 15.2, JDK 21.0.2. Current pass: commit `40da416`, 2026-07-26, after replication went event-driven; the poll-driven pass from earlier the same day (`c260f59`) stays in the history as the before-picture.
 
 ### The durable path — batched producer, 3 brokers, RF=3, `min.insync.replicas=2`, acks=all
 
-| Payload | records/s | MiB/s | samples |
+| Payload | before (poll-driven) | after (signal-driven) | speedup |
 |---|---|---|---|
-| 256 B | 3,840 | 0.9 | 125,507 |
-| 1 KiB | 993 | 1.0 | 39,825 |
-| 4 KiB | 274 | 1.1 | 18,193 |
+| 256 B | 3,840 records/s (0.9 MiB/s) | **165,499 records/s (40.4 MiB/s)** | 43× |
+| 1 KiB | 993 records/s (1.0 MiB/s) | **26,064 records/s (25.5 MiB/s)** | 26× |
+| 4 KiB | 274 records/s (1.1 MiB/s) | **10,525 records/s (41.1 MiB/s)** | 38× |
 
-The flat ~1 MiB/s ceiling is real, and measured for the first time here: `BatchingProducer` keeps one RPC in flight (deliberately — pipelining a partition would defeat the broker's contiguous-sequence dedup), and each 64 KiB batch under acks=all waits for the followers' next replica-fetch cycle before acking (~60 ms p50, next table). The durable path is governed by the replication wait, not by batching or disk speed; that makes the follower fetch cadence and per-partition pipelining the two obvious future levers. Per-record latency in these rows is queueing time at the bench's 10,000-record outstanding window (p50 ~2.6 s at 256 B) — an argument for small in-flight windows on this path, not a wire-time claim.
+The before-rows measured a path governed by two poll cadences: followers fetched on a 25 ms tick and the leader confirmed replication on a 10 ms poll, so every batch paid ~60 ms regardless of size. Both polls are gone — appends wake parked replica fetches, replication progress wakes the acks=all waiter, and the batching client runs one delivery lane per partition — so the same configuration now moves 25–41 MiB/s. Per-record latency in these rows is queueing at the bench's 10,000-record outstanding window, not wire time; size the window to your latency budget on this path.
 
 ### What durability costs per RPC — single-record produce on the same cluster
 
 | Payload | acks=1 | acks=all | acks=all, min-ISR=2 |
 |---|---|---|---|
-| 256 B | 16,004 rps · p50 59 µs · p99 106 µs | 17 rps · p50 60.5 ms · p99 70.0 ms | 17 rps · p50 60.7 ms · p99 71.3 ms |
-| 1 KiB | 14,414 rps · p50 58 µs · p99 201 µs | 17 rps · p50 60.0 ms · p99 68.9 ms | 17 rps · p50 60.0 ms · p99 63.6 ms |
-| 4 KiB | 9,330 rps · p50 74 µs · p99 523 µs | 16 rps · p50 64.3 ms · p99 81.7 ms | 16 rps · p50 64.3 ms · p99 82.1 ms |
+| 256 B | 8,846 rps · p50 107 µs · p99 209 µs | 4,756 rps · p50 203 µs · p99 308 µs | 4,754 rps · p50 204 µs · p99 296 µs |
+| 1 KiB | 8,148 rps · p50 110 µs · p99 236 µs | 5,373 rps · p50 165 µs · p99 346 µs | 5,506 rps · p50 161 µs · p99 337 µs |
+| 4 KiB | 6,045 rps · p50 130 µs · p99 392 µs | 4,327 rps · p50 191 µs · p99 433 µs | 4,313 rps · p50 191 µs · p99 422 µs |
 
-acks=1 answers after the leader append. acks=all answers after both followers replicate, dominated by the 25 ms replica-fetch poll cadence — hence ~60 ms p50 and ~17 rps for a *serial* caller. The min-ISR floor adds no measurable latency on a healthy cluster; what it changes is failure behaviour (reject instead of false-ack when the ISR shrinks). The acks=all rows' p999 cells are empty in the CSV: ~500 samples per 30 s run is below the validity floor, and the harness refuses to print what it can't back.
+Full replication now costs roughly 2× the acks=1 latency — ~0.2 ms instead of the ~60 ms the poll cadences used to impose (the before-rows are in the history). The min-ISR floor still adds nothing measurable on a healthy cluster; it changes failure behaviour (reject instead of false-ack when the ISR shrinks). One honest cost of the signal-driven design, visible only in this in-process 3-broker topology: serial acks=1 throughput on the cluster came down from ~16k to ~9k rps — the continuous follower fetch loops and per-append wakeups now do real work on the same shared machine. The RF=1 baseline below is unchanged, and on network-separated brokers the shared-CPU effect shrinks.
 
 ### Single broker, RF=1 — the unreplicated ceiling
 
 | Scenario | 256 B | 1 KiB | 4 KiB |
 |---|---|---|---|
-| `BatchingProducer`, async, idempotent | 981,772 rps (240 MiB/s) | 274,176 rps (268 MiB/s) | 56,975 rps (223 MiB/s) |
-| `produceBatch` — one RPC, 500 records¹ | 1,267,125 rps (309 MiB/s) · p50 209 µs/RPC | 303,910 rps (297 MiB/s) · p50 707 µs/RPC | 89,102 rps (348 MiB/s) · p50 1.51 ms/RPC |
-| Consumer, 1 MiB fetches | 2,901,059 rps (708 MiB/s) | 942,023 rps (920 MiB/s) | 236,351 rps (923 MiB/s) |
+| `BatchingProducer`, async, idempotent | 946,940 rps (231 MiB/s) | 276,507 rps (270 MiB/s) | 46,511 rps (182 MiB/s) |
+| `produceBatch` — one RPC, 500 records¹ | 1,175,740 rps (287 MiB/s) · p50 216 µs/RPC | 366,236 rps (358 MiB/s) · p50 727 µs/RPC | 69,298 rps (271 MiB/s) · p50 1.55 ms/RPC |
+| Consumer, 1 MiB fetches | 2,884,898 rps (704 MiB/s) | 1,021,658 rps (998 MiB/s) | 238,288 rps (931 MiB/s) |
 
-¹ 255 records/RPC at 4 KiB — capped so the encoded batch fits `max.message.bytes`. Consumer per-fetch-RPC latency: p50 0.9–1.1 ms, p99 1.9–3.2 ms across sizes (25–28k fetch RPCs sampled per run); reads wrap over page-cache-warm data — a read-path number, not a disk benchmark.
+¹ 255 records/RPC at 4 KiB — capped so the encoded batch fits `max.message.bytes`. Consumer per-fetch-RPC latency: p50 0.9–1.1 ms, p99 2.1–2.7 ms (25–31k fetch RPCs sampled per run); reads wrap over page-cache-warm data — a read-path number, not a disk benchmark. Follower catch-up replication moves 137k records/s (67 MiB/s) in the dedicated `replication` scenario.
 
 ### Single-record produce is a latency claim, not a throughput claim
 
-| Payload | p50 | p99 | p999 | (serial rps) |
-|---|---|---|---|---|
-| 256 B | 68 µs | 89 µs | 206 µs | 14,421 |
-| 1 KiB | 71 µs | 92 µs | 161 µs | 13,569 |
-| 4 KiB | 65 µs | 193 µs | 812 µs | 13,133 |
+| Payload | p50 | p99 | (serial rps, RF=1) |
+|---|---|---|---|
+| 256 B | 69 µs | 87 µs | 14,165 |
+| 1 KiB | 71 µs | 93 µs | 13,569 |
+| 4 KiB | 68 µs | 230 µs | 12,923 |
 
 ### What an fsync per batch would cost
 
 | Flush policy (1 KiB, RF=1) | records/s | p50 | p99 |
 |---|---|---|---|
-| default (`flush.messages=-1`, `flush.ms=-1`) | 16,337 | 54 µs | 104 µs |
-| `flush.messages=1` | 214 | 3.41 ms | 10.49 ms |
+| default (`flush.messages=-1`, `flush.ms=-1`) | 15,630 | 57 µs | 123 µs |
+| `flush.messages=1` | 189 | 4.00 ms | 12.25 ms |
 
-The default fsyncs on segment roll and clean shutdown; durability between fsyncs comes from replication (the same stance as Kafka's defaults). Reads and produce latencies above are therefore *not* buying a per-record fsync — this table is what that would cost, measured rather than assumed.
+The default fsyncs on segment roll and clean shutdown; durability between fsyncs comes from replication (the same stance as Kafka's defaults). This table is what a per-batch fsync would cost, measured rather than assumed — and unlike the replication waits, it did not move: the disk is the disk.
 
 Reproduce: `./gradlew :bench:installDist && scripts/bench/run-readme-bench.sh` against a local broker. Regression gates on every PR: `PerfGateIT` + `AppendThroughputTest` (best-of-3, floors documented in [bench/README.md](bench/README.md)).
 
